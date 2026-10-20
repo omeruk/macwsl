@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>maw settings, appearance</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0;background:#0E0F12}
+a{color:#7AB0F5}a:hover{color:#A9CBFA}
+button,select,input{font-family:inherit}
+</style>
+</helmet>
+<div style="width: 1100px; height: 700px; box-sizing: border-box; display: flex; flex-direction: column; background: #1B1C21; border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; overflow: hidden; font-family: Inter, system-ui, sans-serif; color: #E6E8EC">
+  <div style="height: 46px; flex-shrink: 0; display: flex; align-items: center; padding: 0 16px; background: #202127; border-bottom: 1px solid rgba(255,255,255,0.07)">
+    <div style="display: flex; gap: 8px" aria-hidden="true">
+      <div style="width: 12px; height: 12px; border-radius: 6px; background: #FF5F57"></div>
+      <div style="width: 12px; height: 12px; border-radius: 6px; background: #FEBC2E"></div>
+      <div style="width: 12px; height: 12px; border-radius: 6px; background: #28C840"></div>
+    </div>
+    <div style="flex: 1; text-align: center; font-size: 13px; font-weight: 600; color: #C9CDD4">Settings</div>
+    <div style="width: 52px"></div>
+  </div>
+
+  <div style="flex: 1; min-height: 0; display: flex">
+    <div style="width: 220px; flex-shrink: 0; display: flex; flex-direction: column; gap: 2px; padding: 16px 10px; box-sizing: border-box; background: #18191D; border-right: 1px solid rgba(255,255,255,0.07)">
+      <sc-for list="{{nav}}" as="n" hint-placeholder-count="5">
+        <button style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border: 0; border-radius: 7px; background: {{n.bg}}; color: {{n.fg}}; font-size: 13px; font-weight: 500; text-align: left">{{n.label}}</button>
+      </sc-for>
+    </div>
+
+    <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 18px; padding: 26px 32px; box-sizing: border-box">
+      <div style="display: flex; align-items: baseline; justify-content: space-between">
+        <h1 style="margin: 0; font-size: 20px; font-weight: 600">Appearance</h1>
+        <span style="font-size: 12px; color: #9AA0AA">Applies to every profile unless a profile overrides it</span>
+      </div>
+
+      <div style="height: 150px; flex-shrink: 0; box-sizing: border-box; padding: 14px 18px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.10); background: {{cur.bg}}; opacity: {{opacityCss}}; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; white-space: pre; overflow: hidden">
+        <div><span style="color: {{cur.green}}">omer@ubuntu</span><span style="color: {{cur.fg}}">:</span><span style="color: {{cur.blue}}">~/projects/maw</span><span style="color: {{cur.fg}}">$ ls</span></div>
+        <div><span style="color: {{cur.blue}}">Guest  Sources  Tests  docs</span><span style="color: {{cur.fg}}">  Package.swift  </span><span style="color: {{cur.green}}">build.sh</span></div>
+        <div><span style="color: {{cur.green}}">omer@ubuntu</span><span style="color: {{cur.fg}}">:</span><span style="color: {{cur.blue}}">~/projects/maw</span><span style="color: {{cur.fg}}">$ git log --oneline -2</span></div>
+        <div><span style="color: {{cur.yellow}}">52d7a1a </span><span style="color: {{cur.fg}}">Phase 02: Kernel and initramfs (#5)</span></div>
+        <div><span style="color: {{cur.yellow}}">afc427f </span><span style="color: {{cur.fg}}">CLI: Report every error in the macwsl: format (#4)</span></div>
+        <div><span style="color: {{cur.green}}">omer@ubuntu</span><span style="color: {{cur.fg}}">:</span><span style="color: {{cur.blue}}">~/projects/maw</span><span style="color: {{cur.fg}}">$ </span><span style="display: inline-block; vertical-align: -3px; background: {{cur.accent}}; width: {{cursorW}}; height: {{cursorH}}; margin-top: {{cursorTop}}"></span></div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px">
+        <sc-for list="{{themes}}" as="t" hint-placeholder-count="6">
+          <button onClick="{{t.pick}}" style="display: flex; flex-direction: column; gap: 0; padding: 0; border-radius: 10px; border: {{t.border}}; background: #202127; overflow: hidden; cursor: pointer; text-align: left">
+            <span style="display: flex; flex-direction: column; gap: 4px; height: 70px; box-sizing: border-box; padding: 10px 12px; background: {{t.bg}}; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 14px; white-space: pre">
+              <span><span style="color: {{t.green}}">omer@ubuntu</span><span style="color: {{t.fg}}">:</span><span style="color: {{t.blue}}">~</span><span style="color: {{t.fg}}">$ ls</span></span>
+              <span><span style="color: {{t.blue}}">Sources  </span><span style="color: {{t.green}}">build.sh  </span><span style="color: {{t.yellow}}">README</span></span>
+              <span style="display: flex; gap: 4px; padding-top: 4px">
+                <span style="width: 10px; height: 10px; border-radius: 5px; background: {{t.red}}"></span>
+                <span style="width: 10px; height: 10px; border-radius: 5px; background: {{t.green}}"></span>
+                <span style="width: 10px; height: 10px; border-radius: 5px; background: {{t.yellow}}"></span>
+                <span style="width: 10px; height: 10px; border-radius: 5px; background: {{t.blue}}"></span>
+                <span style="width: 10px; height: 10px; border-radius: 5px; background: {{t.magenta}}"></span>
+              </span>
+            </span>
+            <span style="display: flex; align-items: center; justify-content: space-between; height: 36px; padding: 0 12px; font-size: 13px; font-weight: 500; color: #E6E8EC">
+              {{t.name}}
+              <span style="font-size: 11px; font-weight: 400; color: {{t.tagFg}}">{{t.tag}}</span>
+            </span>
+          </button>
+        </sc-for>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 24px; padding-top: 4px">
+        <label style="display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #9AA0AA">Font
+          <select style="height: 32px; min-width: 180px; padding: 0 10px; border-radius: 7px; border: 1px solid rgba(255,255,255,0.12); background: #24252C; color: #E6E8EC; font-size: 13px">
+            <option>JetBrains Mono</option>
+            <option>SF Mono</option>
+            <option>Fira Code</option>
+            <option>Menlo</option>
+          </select>
+        </label>
+        <label style="display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #9AA0AA">Size
+          <input type="number" value="13" min="9" max="28" style="width: 72px; height: 32px; box-sizing: border-box; padding: 0 10px; border-radius: 7px; border: 1px solid rgba(255,255,255,0.12); background: #24252C; color: #E6E8EC; font-size: 13px">
+        </label>
+        <div style="display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #9AA0AA">Cursor
+          <div style="display: flex; padding: 2px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.12); background: #24252C">
+            <sc-for list="{{cursors}}" as="c" hint-placeholder-count="3">
+              <button onClick="{{c.pick}}" style="height: 28px; padding: 0 12px; border: 0; border-radius: 6px; background: {{c.bg}}; color: {{c.fg}}; font-size: 12px; cursor: pointer">{{c.label}}</button>
+            </sc-for>
+          </div>
+        </div>
+        <label style="display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #9AA0AA">Background opacity · {{opacity}}%
+          <input type="range" min="60" max="100" value="{{opacity}}" onChange="{{onOpacity}}" style="width: 200px; accent-color: {{cur.accent}}">
+        </label>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1100,"height":700}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { theme: 0, cursor: 0, opacity: 94 };
+  }
+  renderVals() {
+    const defs = [
+      { name: 'maw Night', bg: '#16171C', fg: '#D7DAE0', green: '#8BD49C', blue: '#7AB0F5', yellow: '#E6C07B', magenta: '#C792EA', red: '#F07178', accent: '#F59E5B', tag: 'default' },
+      { name: 'Catppuccin Mocha', bg: '#1E1E2E', fg: '#CDD6F4', green: '#A6E3A1', blue: '#89B4FA', yellow: '#F9E2AF', magenta: '#F5C2E7', red: '#F38BA8', accent: '#F5C2E7', tag: '' },
+      { name: 'Dracula', bg: '#282A36', fg: '#F8F8F2', green: '#50FA7B', blue: '#BD93F9', yellow: '#F1FA8C', magenta: '#FF79C6', red: '#FF5555', accent: '#FF79C6', tag: '' },
+      { name: 'One Dark', bg: '#282C34', fg: '#ABB2BF', green: '#98C379', blue: '#61AFEF', yellow: '#E5C07B', magenta: '#C678DD', red: '#E06C75', accent: '#61AFEF', tag: '' },
+      { name: 'Gruvbox Dark', bg: '#282828', fg: '#EBDBB2', green: '#B8BB26', blue: '#83A598', yellow: '#FABD2F', magenta: '#D3869B', red: '#FB4934', accent: '#FE8019', tag: '' },
+      { name: 'Solarized Light', bg: '#FDF6E3', fg: '#586E75', green: '#859900', blue: '#268BD2', yellow: '#B58900', magenta: '#D33682', red: '#DC322F', accent: '#268BD2', tag: 'light' }
+    ];
+    const sel = this.state.theme;
+    const cur = defs[sel];
+    const themes = defs.map((t, i) => ({
+      ...t,
+      pick: () => this.setState({ theme: i }),
+      border: i === sel ? '2px solid ' + cur.accent : '1px solid rgba(255,255,255,0.10)',
+      tag: i === sel ? 'selected' : t.tag,
+      tagFg: i === sel ? cur.accent : '#8B93A1'
+    }));
+    const cursorDefs = [
+      { label: 'Block', w: '8px', h: '17px', top: '0px' },
+      { label: 'Bar', w: '2px', h: '17px', top: '0px' },
+      { label: 'Underline', w: '8px', h: '2px', top: '15px' }
+    ];
+    const cs = this.state.cursor;
+    const cursors = cursorDefs.map((c, i) => ({
+      label: c.label,
+      pick: () => this.setState({ cursor: i }),
+      bg: i === cs ? 'rgba(255,255,255,0.12)' : 'transparent',
+      fg: i === cs ? '#F2F3F5' : '#9AA0AA'
+    }));
+    const navDefs = ['General', 'Profiles', 'Appearance', 'Keyboard', 'Distributions'];
+    const nav = navDefs.map((label, i) => ({
+      label: label,
+      bg: i === 2 ? 'rgba(255,255,255,0.08)' : 'transparent',
+      fg: i === 2 ? '#F2F3F5' : '#B8BDC6'
+    }));
+    return {
+      cur: cur,
+      themes: themes,
+      cursors: cursors,
+      cursorW: cursorDefs[cs].w,
+      cursorH: cursorDefs[cs].h,
+      cursorTop: cursorDefs[cs].top,
+      nav: nav,
+      opacity: this.state.opacity,
+      opacityCss: String(this.state.opacity / 100),
+      onOpacity: (e) => this.setState({ opacity: Number(e.target.value) })
+    };
+  }
+}
+</script>
+</body>
+</html>
