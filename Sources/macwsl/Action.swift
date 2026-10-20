@@ -1,0 +1,65 @@
+import MacWSLCore
+
+/// What one invocation of `macwsl` asks for, after parsing and validation.
+enum Action: Equatable, Sendable {
+    /// No action and no command: open the user's login shell.
+    case shell(Session)
+    /// `macwsl [--] <command> [<arguments>...]`: run a command through the user's login shell.
+    case run([String], Session)
+    /// `macwsl -e <command> [<arguments>...]`: run a command directly, without a shell.
+    case exec([String], Session)
+    /// `--install [<distro>]`. `nil` installs the recommended distribution.
+    case install(DistroName?)
+    case list(ListMode)
+    case setDefault(DistroName)
+    case terminate(DistroName)
+    case shutdown
+    case export(DistroName, file: String)
+    case importDistro(DistroName, file: String)
+    case unregister(DistroName)
+    case status
+    case version
+
+    /// How the action is named in user-facing messages.
+    var displayName: String {
+        switch self {
+        case .shell: "opening a shell"
+        case .run, .exec: "running a command"
+        case .install: "--install"
+        case .list(.installed(verbose: false)): "--list"
+        case .list(.installed(verbose: true)): "--list --verbose"
+        case .list(.online): "--list --online"
+        case .setDefault: "--set-default"
+        case .terminate: "--terminate"
+        case .shutdown: "--shutdown"
+        case .export: "--export"
+        case .importDistro: "--import"
+        case .unregister: "--unregister"
+        case .status: "--status"
+        case .version: "--version"
+        }
+    }
+}
+
+/// Where and as whom a shell or command runs.
+struct Session: Equatable, Sendable {
+    /// `nil` means the default distribution.
+    var distro: DistroName?
+    /// `nil` means the distribution's default user.
+    var user: String?
+    /// `nil` means the current macOS directory, translated into the distribution.
+    var directory: String?
+
+    init(distro: DistroName? = nil, user: String? = nil, directory: String? = nil) {
+        self.distro = distro
+        self.user = user
+        self.directory = directory
+    }
+}
+
+enum ListMode: Equatable, Sendable {
+    /// Installed distributions; `verbose` adds state and details.
+    case installed(verbose: Bool)
+    /// Distributions available to install.
+    case online
+}
