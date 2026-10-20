@@ -126,3 +126,53 @@ Integration tests that boot a real VM are tagged `.integration` and only run on 
   `.github/pull_request_template.md`, including the actual result of each acceptance
   check.
 - Never merge a pull request yourself. The owner reviews and merges.
+
+## Writing standards
+
+Commit messages, pull request titles and descriptions, review comments, and replies are
+part of the project's permanent record. Write them in English, in a formal, precise, and
+neutral register.
+
+### General rules
+
+- Use complete sentences and a neutral tone.
+- State facts and measured results. Do not speculate. Where something is uncertain, say so
+  explicitly and explain how it will be resolved.
+- No emoji, exclamation marks, slang, or conversational filler. For example, avoid "just",
+  "simply", "basically", "Good catch!", and "LGTM".
+- Refer to code by repository-relative path, and add a line number where relevant
+  (`Sources/macwsl/ArgumentNormalizer.swift:42`). Put identifiers, commands, and flags in
+  backticks.
+- Report failures, skipped checks, and known limitations as plainly as successes.
+
+### Commit messages
+
+- **Subject line:**
+  - Imperative mood, capitalized, no trailing period, at most 72 characters.
+  - May carry a module prefix, for example
+    `CLI: Reject --shutdown combined with --distribution`.
+- **Body:** Separated from the subject by a blank line and wrapped at 72 columns. It
+  explains what changed and why, not how.
+
+### Pull requests
+
+- **Title:** `Phase NN: <Name>` for phase work. Otherwise `<Area>: <Summary>`, in the same
+  form as a commit subject.
+- **Body:** Follows `.github/pull_request_template.md`. Every section is filled in, or
+  marked "Not applicable." with a one-line reason.
+
+### Review comments and replies
+
+- **Comment structure:** Each comment states three things, in this order:
+  1. The observation.
+  2. Its impact.
+  3. The proposed resolution.
+- **Replying to a comment:**
+  - Name the commit that addresses it, or give the reason no change was made.
+  - Do not resolve a thread you did not open unless the change fully addresses it.
+
+### Merging
+
+- Pull requests are squash-merged.
+- The squash commit title is the pull request title, followed by the pull request number.
+- The squash commit body is the pull request's Summary section.
