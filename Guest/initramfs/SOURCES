@@ -1,0 +1,12 @@
+# Source tarballs for the initramfs binaries. Each sha256 is verified before the build
+# extracts the tarball.
+#
+# busybox 1.37.0: busybox.net labels every x.y.0 release "unstable"; 1.37.0 is the version
+# shipped by Debian 13 and Alpine Linux. The sha256 comes from busybox.net's .sha256 file.
+BUSYBOX_VERSION=1.37.0
+BUSYBOX_URL=https://busybox.net/downloads/busybox-1.37.0.tar.bz2
+BUSYBOX_SHA256=3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4
+# e2fsprogs: the sha256 comes from the release's sha256sums.asc on kernel.org.
+E2FSPROGS_VERSION=1.47.4
+E2FSPROGS_URL=https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.xz
+E2FSPROGS_SHA256=fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b
