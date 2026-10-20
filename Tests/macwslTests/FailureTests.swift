@@ -1,4 +1,5 @@
 import ArgumentParser
+import MacWSLCommandLine
 import MacWSLCore
 import Testing
 
@@ -28,7 +29,7 @@ import Testing
         }
     }
 
-    private func failure(_ arguments: [String]) async throws -> MacWSL.Failure {
+    private func failure(_ arguments: [String]) async throws -> CommandFailure {
         let error = try #require(await caughtError(arguments))
         return try #require(MacWSL.failure(for: error))
     }
@@ -82,7 +83,7 @@ import Testing
     @Test func reportsARuntimeErrorWithoutUsage() async throws {
         #expect(
             try await failure(["-l", "-v"])
-                == MacWSL.Failure(
+                == CommandFailure(
                     output: "macwsl: --list --verbose is not implemented yet\n",
                     exitCode: .failure))
     }
@@ -98,9 +99,9 @@ import Testing
 
     @Test func printsNothingForAnErrorWithoutAMessage() {
         #expect(
-            MacWSL.failure(for: ExitCode.failure) == MacWSL.Failure(output: "", exitCode: .failure))
+            MacWSL.failure(for: ExitCode.failure) == CommandFailure(output: "", exitCode: .failure))
         #expect(
-            MacWSL.failure(for: ExitCode(70)) == MacWSL.Failure(output: "", exitCode: ExitCode(70)))
+            MacWSL.failure(for: ExitCode(70)) == CommandFailure(output: "", exitCode: ExitCode(70)))
     }
 
     // MARK: Clean exits

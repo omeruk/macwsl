@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import MacWSLCommandLine
 import MacWSLCore
 
 /// The `macwsl` command line, modeled on `wsl.exe`: one root command whose flags select a single
@@ -65,12 +66,7 @@ struct MacWSL: AsyncParsableCommand {
             let invocation = try parse(arguments)
             try await invocation.run()
         } catch {
-            guard let failure = failure(for: error) else {
-                // Help and other clean exits: ArgumentParser prints them to stdout and exits 0.
-                exit(withError: error)
-            }
-            FileHandle.standardError.write(Data(failure.output.utf8))
-            Foundation.exit(failure.exitCode.rawValue)
+            exit(reporting: error)
         }
     }
 
