@@ -15,6 +15,7 @@ pass on a real Apple Silicon Mac.
 | 08 | Networking                     | NAT networking, DNS, automatic localhost port forwarding                 | Planned |
 | 09 | Interop                        | Run macOS commands from Linux, clipboard, `open`                         | Planned |
 | 10 | Rosetta                        | Run x86_64 Linux binaries through Rosetta                                 | Planned |
+| 11a | Terminal app foundation      | maw app: title-bar tabs, split panes, command palette, themes, settings (local shell) | Planned |
 | 11 | Terminal app                   | SwiftUI + SwiftTerm app: tabs, distro profiles, themes, settings         | Planned |
 | 12 | Configuration and lifecycle    | `.macwslconfig`, `macwsl.conf`, idle shutdown, sleep/wake clock sync     | Planned |
 | 13 | Packaging and release          | Signed, notarized app; Homebrew cask; auto-update                        | Planned |
