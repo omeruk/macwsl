@@ -43,7 +43,16 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
-        .executableTarget(name: "macwsld", dependencies: ["MacWSLCore", "MacWSLDaemonKit"]),
+        .executableTarget(
+            name: "macwsld",
+            dependencies: [
+                "MacWSLCore",
+                "MacWSLCommandLine",
+                "MacWSLDaemonKit",
+                "MacWSLVirtualization",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
 
         // Linux only (guest). Also compiles on macOS so that a plain `swift build` succeeds.
         .executableTarget(name: "macwsl-agent", dependencies: ["MacWSLCore", "MacWSLProtocol"]),
@@ -63,6 +72,15 @@ let package = Package(
                 "macwsl",
                 "MacWSLCore",
                 "MacWSLCommandLine",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
+        .testTarget(
+            name: "macwsldTests",
+            dependencies: [
+                "macwsld",
+                "MacWSLCore",
+                "MacWSLVirtualization",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
