@@ -68,6 +68,13 @@ import Testing
         #expect(normalize("--distribution=Ubuntu", "-v") == ["--distribution=Ubuntu", "--version"])
     }
 
+    @Test func readsTheKnownLettersOfAnUnknownClusterAsTheParserDoes() {
+        // `-dUbuntu` yields -d, -u, -t and -u, as in ArgumentParser, so `ls` stays the value of
+        // the trailing -u. Inserting `--` here would change the parser's error message.
+        #expect(normalize("-dUbuntu", "ls") == ["-dUbuntu", "ls"])
+        #expect(normalize("-dUbuntu", "-v") == ["-dUbuntu", "-v"])
+    }
+
     @Test func treatsAValueThatLooksLikeListAsAValue() {
         // `-l` here is a user name, so the following -v is still --version.
         #expect(normalize("-u", "-l", "-v") == ["-u", "-l", "--version"])

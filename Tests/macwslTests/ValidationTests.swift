@@ -6,6 +6,10 @@ import Testing
 @Suite struct ValidationTests {
     /// The message `macwsl` prints for `arguments`, or `nil` if they are valid.
     private func failure(_ arguments: String...) -> String? {
+        failure(arguments)
+    }
+
+    private func failure(_ arguments: [String]) -> String? {
         do {
             _ = try MacWSL.parse(ArgumentNormalizer.normalize(arguments))
             return nil
@@ -60,6 +64,18 @@ import Testing
     @Test func rejectsAMissingOptionValue() {
         #expect(failure("--cd")?.hasPrefix("Missing value for '--cd <directory>'") == true)
         #expect(failure("-d")?.hasPrefix("Missing value for '-d <distro>'") == true)
+    }
+
+    @Test func reportsAttachedShortOptionValuesAsUnknownOptions() {
+        // ArgumentParser may add an "or:" line naming letters of the cluster; only the first line
+        // depends on how `ArgumentNormalizer` reads the cluster.
+        func firstLine(_ arguments: String...) -> String? {
+            failure(arguments).flatMap { $0.split(separator: "\n").first.map(String.init) }
+        }
+        #expect(firstLine("-dUbuntu") == "Unknown option '-dUbuntu'")
+        #expect(firstLine("-dUbuntu", "ls", "-la") == "Unknown option '-dUbuntu'")
+        #expect(firstLine("-uroot", "ls") == "Unknown option '-uroot'")
+        #expect(firstLine("-lx", "-v") == "Unknown option '-x'")
     }
 
     // MARK: List modifiers
