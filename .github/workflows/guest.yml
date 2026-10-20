@@ -44,6 +44,9 @@ jobs:
       - name: Check out
         uses: actions/checkout@v7
         with:
+          # Build the pull request's head commit rather than GitHub's temporary merge commit,
+          # so that the commit in manifest.json and the /init banner exists in the history.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           # Guest/build.sh runs `git describe` against guest-v* tags.
           fetch-depth: 0
 
