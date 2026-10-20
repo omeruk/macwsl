@@ -77,7 +77,8 @@ tar -xf "$sources/$(basename "$BUSYBOX_URL")" -C "$work/busybox" --strip-compone
     cd "$work/busybox"
     make defconfig > /dev/null
     "$guest_dir/scripts/merge-fragment.sh" .config "$initramfs_dir/busybox.config"
-    yes '' | make oldconfig > /dev/null
+    # `yes` is killed by SIGPIPE when oldconfig exits; that must not fail the pipeline.
+    { yes '' || true; } | make oldconfig > /dev/null
     "$guest_dir/scripts/verify-fragment.sh" "$initramfs_dir/busybox.config" .config
     make -j"$jobs" CC="$cc" HOSTCC=gcc busybox > /dev/null
 )
