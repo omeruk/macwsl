@@ -1,30 +1,36 @@
 import ArgumentParser
 import Foundation
 
-extension MacWSL {
-    /// How `main()` reports an error that ends the run unsuccessfully.
-    struct Failure: Equatable {
-        /// The text for standard error, ending in a newline. Empty when the error carries no
-        /// message, as with `throw ExitCode.failure`.
-        var output: String
-        /// 64 (`EX_USAGE`) for usage errors, 1 for runtime errors.
-        var exitCode: ExitCode
-    }
+/// How a MacWSL command-line tool reports an error that ends the run unsuccessfully. Shared by
+/// `macwsl` and `macwsld`, so that both report errors in the same `macwsl:` format.
+public struct CommandFailure: Equatable, Sendable {
+    /// The text for standard error, ending in a newline. Empty when the error carries no
+    /// message, as with `throw ExitCode.failure`.
+    public var output: String
+    /// 64 (`EX_USAGE`) for usage errors, 1 for runtime errors.
+    public var exitCode: ExitCode
 
+    public init(output: String, exitCode: ExitCode) {
+        self.output = output
+        self.exitCode = exitCode
+    }
+}
+
+extension ParsableArguments {
     /// Describes how to report `error` in the single `macwsl:` format: the message, the
     /// suggested fix if the error has one, and the usage hint that ArgumentParser shows for
     /// usage errors.
     ///
     /// Returns `nil` for help, completion scripts and other clean exits, whose output
     /// ArgumentParser prints unchanged.
-    static func failure(for error: any Error) -> Failure? {
+    public static func failure(for error: any Error) -> CommandFailure? {
         let exitCode = exitCode(for: error)
         if exitCode == .success {
             return nil
         }
         let message = message(for: error)
         if message.isEmpty {
-            return Failure(output: "", exitCode: exitCode)
+            return CommandFailure(output: "", exitCode: exitCode)
         }
 
         var lines = ["macwsl: \(message)"]
@@ -34,7 +40,17 @@ extension MacWSL {
         if let hint = usageHint(for: error, following: message) {
             lines.append(hint)
         }
-        return Failure(output: lines.joined(separator: "\n") + "\n", exitCode: exitCode)
+        return CommandFailure(output: lines.joined(separator: "\n") + "\n", exitCode: exitCode)
+    }
+
+    /// Reports `error` as `failure(for:)` describes and exits. Help and other clean exits are
+    /// left to ArgumentParser, which prints them to standard output and exits with status 0.
+    public static func exit(reporting error: any Error) -> Never {
+        guard let failure = failure(for: error) else {
+            exit(withError: error)
+        }
+        FileHandle.standardError.write(Data(failure.output.utf8))
+        Foundation.exit(failure.exitCode.rawValue)
     }
 
     /// The `Help:` line and usage block that ArgumentParser prints after `message`, or `nil` if

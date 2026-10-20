@@ -26,6 +26,11 @@ let package = Package(
 
         // macOS only.
         .target(name: "MacWSLVirtualization", dependencies: ["MacWSLCore"]),
+        // Error reporting shared by the macwsl and macwsld command lines.
+        .target(
+            name: "MacWSLCommandLine",
+            dependencies: [.product(name: "ArgumentParser", package: "swift-argument-parser")]
+        ),
         .target(
             name: "MacWSLDaemonKit",
             dependencies: ["MacWSLCore", "MacWSLProtocol", "MacWSLVirtualization"]
@@ -34,6 +39,7 @@ let package = Package(
             name: "macwsl",
             dependencies: [
                 "MacWSLCore",
+                "MacWSLCommandLine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
@@ -44,10 +50,18 @@ let package = Package(
 
         .testTarget(name: "MacWSLCoreTests", dependencies: ["MacWSLCore"]),
         .testTarget(
+            name: "MacWSLCommandLineTests",
+            dependencies: [
+                "MacWSLCommandLine",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
+        .testTarget(
             name: "macwslTests",
             dependencies: [
                 "macwsl",
                 "MacWSLCore",
+                "MacWSLCommandLine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
