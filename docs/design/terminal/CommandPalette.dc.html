@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>maw command palette</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0;background:#0E0F12}
+a{color:#7AB0F5}a:hover{color:#A9CBFA}
+button{font-family:inherit}
+input::placeholder{color:#8B93A1}
+</style>
+</helmet>
+<div style="width: 960px; height: 600px; box-sizing: border-box; position: relative; display: flex; flex-direction: column; background: #16171C; border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; overflow: hidden; font-family: Inter, system-ui, sans-serif; color: #E6E8EC">
+  <div style="height: 46px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 16px; background: #202127; border-bottom: 1px solid rgba(255,255,255,0.07)">
+    <div style="display: flex; gap: 8px; padding-right: 10px" aria-hidden="true">
+      <div style="width: 12px; height: 12px; border-radius: 6px; background: #FF5F57"></div>
+      <div style="width: 12px; height: 12px; border-radius: 6px; background: #FEBC2E"></div>
+      <div style="width: 12px; height: 12px; border-radius: 6px; background: #28C840"></div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: 8px; background: rgba(255,255,255,0.09); font-size: 13px; font-weight: 500">
+      <span style="width: 8px; height: 8px; border-radius: 4px; background: #E95420" aria-hidden="true"></span>Ubuntu<span style="color: #8B93A1; font-weight: 400">~/projects/maw</span>
+    </div>
+  </div>
+  <div style="flex: 1; padding: 14px 16px; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; white-space: pre; color: #D7DAE0"><span style="color: #8BD49C">omer@ubuntu</span>:<span style="color: #7AB0F5">/mnt/mac/projects/maw</span>$ swift test
+<span style="color: #8BD49C">✔</span> Test run with 83 tests in 5 suites passed after 0.727 seconds.
+<span style="color: #8BD49C">omer@ubuntu</span>:<span style="color: #7AB0F5">/mnt/mac/projects/maw</span>$ </div>
+
+  <div style="position: absolute; top: 46px; left: 0; right: 0; bottom: 0; background: rgba(8,9,11,0.55)" aria-hidden="true"></div>
+
+  <div style="position: absolute; top: 84px; left: 50%; margin-left: -300px; width: 600px; display: flex; flex-direction: column; background: #24252C; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; box-shadow: 0 24px 64px rgba(0,0,0,0.6); overflow: hidden">
+    <label style="display: flex; align-items: center; gap: 12px; height: 54px; padding: 0 16px; border-bottom: 1px solid rgba(255,255,255,0.08)">
+      <svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="#9AA0AA" stroke-width="1.5" aria-hidden="true"><circle cx="6" cy="6" r="4.25"></circle><line x1="9.2" y1="9.2" x2="12.5" y2="12.5"></line></svg>
+      <span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Search commands</span>
+      <input value="{{query}}" onChange="{{onQuery}}" onKeyDown="{{onKey}}" placeholder="Type a command or a distribution…" style="flex: 1; height: 40px; border: 0; outline: none; background: transparent; color: #F2F3F5; font-family: Inter, system-ui, sans-serif; font-size: 15px">
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8B93A1; padding: 3px 6px; border: 1px solid rgba(255,255,255,0.12); border-radius: 5px">esc</span>
+    </label>
+    <div style="max-height: 360px; overflow-y: auto; padding: 6px">
+      <sc-for list="{{results}}" as="r" hint-placeholder-count="8">
+        <sc-if value="{{r.showGroup}}" hint-placeholder-val="{{ false }}">
+          <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: #8B93A1; padding: 10px 10px 4px">{{r.group}}</div>
+        </sc-if>
+        <button onMouseEnter="{{r.hover}}" style="display: flex; align-items: center; gap: 12px; width: 100%; height: 38px; padding: 0 10px; border: 0; border-radius: 7px; background: {{r.bg}}; color: {{r.fg}}; font-size: 13px; text-align: left; cursor: pointer">
+          <span style="width: 8px; height: 8px; border-radius: 4px; background: {{r.dot}}" aria-hidden="true"></span>
+          <span>{{r.title}}</span>
+          <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: {{r.keyFg}}">{{r.keys}}</span>
+        </button>
+      </sc-for>
+      <sc-if value="{{empty}}" hint-placeholder-val="{{ false }}">
+        <div style="padding: 24px 10px; text-align: center; font-size: 13px; color: #9AA0AA">No matching commands</div>
+      </sc-if>
+    </div>
+    <div style="display: flex; gap: 16px; padding: 8px 16px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 11px; color: #8B93A1">
+      <span>↑↓ to move</span><span>↩ to run</span><span style="margin-left: auto">{{count}} commands</span>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#F59E5B","options":["#F59E5B","#7AB0F5","#8BD49C","#C792EA"]},"$preview":{"width":960,"height":600}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { query: '', selected: 0 };
+  }
+  renderVals() {
+    const accent = this.props.accent ?? '#F59E5B';
+    const all = [
+      { group: 'TABS', title: 'New tab: Ubuntu 24.04', keys: '⌘1', dot: '#E95420' },
+      { group: 'TABS', title: 'New tab: Debian 13', keys: '⌘2', dot: '#D70A53' },
+      { group: 'TABS', title: 'New tab: zsh on this Mac', keys: '⌘3', dot: '#9AA0AA' },
+      { group: 'PANES', title: 'Split pane right', keys: '⌘D', dot: '#7AB0F5' },
+      { group: 'PANES', title: 'Split pane down', keys: '⌘⇧D', dot: '#7AB0F5' },
+      { group: 'DISTRIBUTIONS', title: 'Stop Ubuntu 24.04', keys: '', dot: '#E95420' },
+      { group: 'DISTRIBUTIONS', title: 'Restart Debian 13', keys: '', dot: '#D70A53' },
+      { group: 'DISTRIBUTIONS', title: 'Install a distribution…', keys: '', dot: '#8BD49C' },
+      { group: 'DISTRIBUTIONS', title: 'Open current folder in Finder', keys: '⌘⇧O', dot: '#8BD49C' },
+      { group: 'APPEARANCE', title: 'Change theme…', keys: '', dot: '#C792EA' },
+      { group: 'APPEARANCE', title: 'Toggle sidebar', keys: '⌘⇧S', dot: '#C792EA' },
+      { group: 'APPEARANCE', title: 'Increase font size', keys: '⌘+', dot: '#C792EA' }
+    ];
+    const q = (this.state.query || '').trim().toLowerCase();
+    const filtered = q ? all.filter((c) => c.title.toLowerCase().includes(q)) : all;
+    const selected = Math.min(this.state.selected, Math.max(filtered.length - 1, 0));
+    const results = filtered.map((c, i) => ({
+      ...c,
+      showGroup: i === 0 || filtered[i - 1].group !== c.group,
+      bg: i === selected ? accent : 'transparent',
+      fg: i === selected ? '#1B1C21' : '#E6E8EC',
+      keyFg: i === selected ? '#1B1C21' : '#8B93A1',
+      hover: () => this.setState({ selected: i })
+    }));
+    return {
+      query: this.state.query,
+      onQuery: (e) => this.setState({ query: e.target.value, selected: 0 }),
+      onKey: (e) => {
+        if (e.key === 'ArrowDown') { e.preventDefault(); this.setState({ selected: Math.min(selected + 1, filtered.length - 1) }); }
+        if (e.key === 'ArrowUp') { e.preventDefault(); this.setState({ selected: Math.max(selected - 1, 0) }); }
+        if (e.key === 'Escape') { this.setState({ query: '', selected: 0 }); }
+      },
+      results: results,
+      empty: filtered.length === 0,
+      count: filtered.length
+    };
+  }
+}
+</script>
+</body>
+</html>
