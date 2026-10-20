@@ -56,6 +56,7 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
+        .testTarget(name: "MacWSLVirtualizationTests", dependencies: ["MacWSLVirtualization"]),
         .testTarget(
             name: "macwslTests",
             dependencies: [
