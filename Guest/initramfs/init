@@ -3,11 +3,13 @@
 #
 # 1. Mounts proc, sysfs, devtmpfs, and a tmpfs on /run.
 # 2. Prints one banner line: macwsl-initramfs <version> kernel=<uname -r>.
-# 3. With macwsl.test=poweroff on the kernel command line, prints
+# 3. With macwsl.test=lsblk on the kernel command line, lists /dev/vd* (the virtio block
+#    devices). The phase 03 integration tests use this.
+# 4. With macwsl.test=poweroff on the kernel command line, prints
 #    "macwsl-initramfs: poweroff" and powers off. Phase 03 and CI use this.
-# 4. Otherwise, runs an interactive shell on /dev/hvc0.
+# 5. Otherwise, runs an interactive shell on /dev/hvc0.
 #
-# Phase 04 replaces step 4 with the guest agent.
+# Phase 04 replaces step 5 with the guest agent.
 
 export PATH=/sbin:/bin:/usr/sbin:/usr/bin
 
@@ -17,6 +19,12 @@ mountpoint -q /dev || mount -t devtmpfs -o nosuid,mode=0755 devtmpfs /dev
 mountpoint -q /run || mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs /run
 
 echo "macwsl-initramfs $(cat /etc/macwsl-initramfs-version) kernel=$(uname -r)"
+
+case " $(cat /proc/cmdline) " in
+*" macwsl.test=lsblk "*)
+    ls /dev/vd*
+    ;;
+esac
 
 case " $(cat /proc/cmdline) " in
 *" macwsl.test=poweroff "*)
