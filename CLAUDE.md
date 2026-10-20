@@ -116,5 +116,13 @@ Integration tests that boot a real VM are tagged `.integration` and only run on 
 ## Workflow
 
 - Work one phase from `prompts/` at a time. Plan first, show the plan, then implement.
+- `main` always builds and passes tests. Never commit to `main` directly.
+- Each phase gets its own branch from the latest `main`: `phase/NN-short-name` (for example
+  `phase/02-kernel`). Small fixes outside a phase use `fix/short-name`.
 - Keep commits small, with messages in the imperative mood.
-- When a phase is done, update `docs/ROADMAP.md` with its status.
+- When a phase is done, update `docs/ROADMAP.md` with its status in the same branch.
+- When every acceptance criterion passes locally, push the branch and open a pull request
+  into `main` with `gh pr create`. Title: `Phase NN: <name>`. Fill in the body from
+  `.github/pull_request_template.md`, including the actual result of each acceptance
+  check.
+- Never merge a pull request yourself. The owner reviews and merges.
