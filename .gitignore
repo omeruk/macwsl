@@ -25,3 +25,7 @@ build/
 .vscode/
 .idea/
 *.swp
+
+# Guest build (Guest/build.sh)
+Guest/out/
+Guest/.cache/
