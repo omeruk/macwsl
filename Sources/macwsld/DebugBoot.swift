@@ -17,10 +17,14 @@ struct DebugBoot: AsyncParsableCommand {
             machine first.
 
             With --interactive, the terminal is connected to the guest console. Ctrl-C is passed \
-            to the guest; Ctrl-] stops the virtual machine and detaches.
+            to the guest. To stop the virtual machine and detach, type ~. at the start of a line \
+            (after Enter), or press the detach key, Ctrl-] by default. ~? lists the escape \
+            sequences, and ~~ sends a single ~. The ~ sequences work on every keyboard layout; \
+            Ctrl-] needs the Option key on many non-US layouts.
 
-            The executable must be signed with the virtualization entitlement: run \
-            scripts/sign-dev.sh after building. scripts/fetch-guest.sh installs the kernel files.
+            The executable must be signed with the virtualization entitlement. Build it with \
+            scripts/sign-dev.sh, which builds and signs; a plain swift build removes the \
+            signature. scripts/fetch-guest.sh installs the kernel files.
             """
     )
 
@@ -28,8 +32,6 @@ struct DebugBoot: AsyncParsableCommand {
     static let name = "debug-boot"
     /// How long `stop(timeout:)` waits for the guest after asking it to power off.
     static let stopTimeout = Duration.seconds(5)
-    /// Ctrl-]: detaches an interactive session, like telnet's escape character.
-    static let detachByte: UInt8 = 0x1D
 
     @Option(
         name: .customLong("kernel-dir"),
@@ -71,8 +73,18 @@ struct DebugBoot: AsyncParsableCommand {
         transform: { try ByteSize(parsing: $0) })
     var createDiskSize: ByteSize?
 
-    @Flag(help: "Connect the terminal to the guest console. Ctrl-] stops the VM and detaches.")
+    @Flag(
+        help: "Connect the terminal to the guest console. ~. at the start of a line detaches.")
     var interactive = false
+
+    @Option(
+        name: .customLong("detach-key"),
+        help: ArgumentHelp(
+            "The control key that detaches an interactive session, such as ^Q, or none "
+                + "(default: ^]). ~. always works as well.",
+            valueName: "key"),
+        transform: { try DetachKey(parsing: $0) })
+    var detachKey: DetachKey?
 
     @Option(
         help: ArgumentHelp(
@@ -83,6 +95,9 @@ struct DebugBoot: AsyncParsableCommand {
     func validate() throws {
         if interactive && timeout != nil {
             throw ValidationError("--timeout cannot be combined with --interactive.")
+        }
+        if detachKey != nil && !interactive {
+            throw ValidationError("--detach-key needs --interactive.")
         }
         if createDiskSize != nil && disks.isEmpty {
             throw ValidationError("--create-disk needs at least one --disk.")
@@ -155,19 +170,20 @@ struct DebugBoot: AsyncParsableCommand {
         try await finish(machine, after: ending, started: started)
     }
 
-    /// Connects the terminal to the guest console in raw mode until the guest stops, Ctrl-] is
-    /// pressed, or a signal arrives. The terminal is restored on every path (see `RawMode`).
+    /// Connects the terminal to the guest console in raw mode until the guest stops, the user
+    /// detaches (see `ConsoleEscapes`), or a signal arrives. The terminal is restored on every path (see `RawMode`).
     private func runInteractive(_ configuration: VMConfiguration) async throws {
         let toGuest = Pipe()
         let machine = try VirtualMachine(
             name: Self.name, configuration: configuration,
             consoleIO: .init(input: toGuest.fileHandleForReading, output: .standardOutput))
         let signals = SignalMonitor()
-        report("Press Ctrl-] to stop the virtual machine and detach.")
+        let escapes = ConsoleEscapes(detachKey: detachKey ?? .default)
+        report(escapes.instructions)
 
         let rawMode = try RawMode()
         defer { rawMode.restore() }
-        let detach = Self.forwardStandardInput(to: toGuest.fileHandleForWriting)
+        let detach = Self.forwardStandardInput(to: toGuest.fileHandleForWriting, escapes: escapes)
         let started = ContinuousClock.now
         let banner = Task {
             await Self.reportBanner(in: machine.consoleLines, since: started, lineEnding: "\r\n")
@@ -268,22 +284,31 @@ struct DebugBoot: AsyncParsableCommand {
 
     // MARK: Console
 
-    /// Copies standard input to the guest until Ctrl-]. Returns a stream that yields once when
-    /// the user detaches, or when standard input ends.
-    private static func forwardStandardInput(to destination: FileHandle) -> AsyncStream<Void> {
+    /// Copies standard input to the guest, interpreting the escape sequences, until the user
+    /// detaches. Returns a stream that yields once when the user detaches, or when standard
+    /// input ends.
+    private static func forwardStandardInput(
+        to destination: FileHandle, escapes: ConsoleEscapes
+    ) -> AsyncStream<Void> {
         let (stream, continuation) = AsyncStream.makeStream(of: Void.self)
         Thread {
+            var escapes = escapes
             var buffer = [UInt8](repeating: 0, count: 1024)
-            while true {
+            reading: while true {
                 let count = read(STDIN_FILENO, &buffer, buffer.count)
                 if count < 0 && errno == EINTR { continue }
                 guard count > 0 else { break }
-                let chunk = buffer[..<count]
-                if let detachIndex = chunk.firstIndex(of: detachByte) {
-                    try? destination.write(contentsOf: Data(chunk[..<detachIndex]))
-                    break
+                for action in escapes.process(buffer[..<count]) {
+                    switch action {
+                    case .send(let bytes):
+                        try? destination.write(contentsOf: Data(bytes))
+                    case .showHelp:
+                        // The terminal is in raw mode, which does not translate "\n".
+                        writeToStandardError("\r\n" + escapes.help(lineEnding: "\r\n"))
+                    case .detach:
+                        break reading
+                    }
                 }
-                try? destination.write(contentsOf: Data(chunk))
             }
             continuation.yield()
             continuation.finish()

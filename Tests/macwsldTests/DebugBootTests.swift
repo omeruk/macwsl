@@ -32,6 +32,7 @@ import Testing
         #expect(command.disks.isEmpty)
         #expect(command.createDiskSize == nil)
         #expect(command.interactive == false)
+        #expect(command.detachKey == nil)
         #expect(command.timeout == nil)
     }
 
@@ -50,7 +51,21 @@ import Testing
     }
 
     @Test func parsesInteractive() throws {
-        #expect(try parse("--interactive").interactive)
+        let command = try parse("--interactive")
+        #expect(command.interactive)
+        #expect(command.detachKey == nil)
+        #expect(try parse("--interactive", "--detach-key", "^Q").detachKey?.byte == 0x11)
+    }
+
+    @Test func rejectsADetachKeyWithoutInteractive() {
+        #expect(failure("--detach-key", "^Q") == "--detach-key needs --interactive.")
+    }
+
+    @Test func explainsAnInvalidDetachKey() {
+        #expect(
+            failure("--interactive", "--detach-key", "^[")
+                == "The value '^[' is invalid for '--detach-key <key>': '^[' cannot be the detach "
+                + "key: it is Escape, which starts arrow-key sequences.")
     }
 
     @Test func rejectsTimeoutWithInteractive() {

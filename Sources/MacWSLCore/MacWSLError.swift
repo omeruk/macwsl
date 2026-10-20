@@ -49,6 +49,8 @@ public enum MacWSLError: Error, Equatable, Sendable {
     case consoleLogFailed(path: String, reason: String)
     /// An interactive session needs a terminal, but `stream` is not one.
     case notATerminal(stream: String)
+    /// `--detach-key` could not be parsed or names a key that the session needs.
+    case invalidDetachKey(String, reason: String)
 }
 
 extension MacWSLError: LocalizedError {
@@ -87,6 +89,8 @@ extension MacWSLError: LocalizedError {
             "Could not write the console log \(path): \(reason)."
         case .notATerminal(let stream):
             "--interactive needs a terminal, but \(stream) is not a terminal."
+        case .invalidDetachKey(let text, let reason):
+            "'\(text)' cannot be the detach key: \(reason)."
         }
     }
 
@@ -121,6 +125,8 @@ extension MacWSLError: LocalizedError {
             "Check that ~/Library/Logs/MacWSL is writable."
         case .notATerminal:
             "Run the command from a terminal, or omit --interactive."
+        case .invalidDetachKey:
+            "Use a control key such as ^Q or ^], or none. The ~. escape always works."
         }
     }
 }
