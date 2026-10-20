@@ -1,0 +1,7 @@
+# The Linux kernel built for the MacWSL guest: the newest longterm (LTS) release from
+# kernel.org at the time it was pinned. The sha256 comes from the signed
+# https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc and is verified before the
+# build extracts the tarball. Guest/README.md describes how to bump it.
+LINUX_VERSION=6.18.57
+LINUX_URL=https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.57.tar.xz
+LINUX_SHA256=5bd9acdc82ec5efc3790ae840e5aaa40dfde7efff261cf6dde902dc570acf98c

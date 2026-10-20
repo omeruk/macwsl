@@ -1,0 +1,38 @@
+#!/bin/sh
+# /init for the MacWSL initramfs.
+#
+# 1. Mounts proc, sysfs, devtmpfs, and a tmpfs on /run.
+# 2. Prints one banner line: macwsl-initramfs <version> kernel=<uname -r>.
+# 3. With macwsl.test=poweroff on the kernel command line, prints
+#    "macwsl-initramfs: poweroff" and powers off. Phase 03 and CI use this.
+# 4. Otherwise, runs an interactive shell on /dev/hvc0.
+#
+# Phase 04 replaces step 4 with the guest agent.
+
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+mountpoint -q /proc || mount -t proc -o nosuid,nodev,noexec proc /proc
+mountpoint -q /sys || mount -t sysfs -o nosuid,nodev,noexec sysfs /sys
+mountpoint -q /dev || mount -t devtmpfs -o nosuid,mode=0755 devtmpfs /dev
+mountpoint -q /run || mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs /run
+
+echo "macwsl-initramfs $(cat /etc/macwsl-initramfs-version) kernel=$(uname -r)"
+
+case " $(cat /proc/cmdline) " in
+*" macwsl.test=poweroff "*)
+    echo "macwsl-initramfs: poweroff"
+    poweroff -f
+    ;;
+esac
+
+console=/dev/hvc0
+if [ ! -c "$console" ]; then
+    echo "macwsl-initramfs: $console is not available; using /dev/console"
+    console=/dev/console
+fi
+
+# PID 1 must not exit, or the kernel panics. Restart the shell whenever it exits.
+while true; do
+    setsid cttyhack sh -l < "$console" > "$console" 2>&1
+    sleep 1
+done

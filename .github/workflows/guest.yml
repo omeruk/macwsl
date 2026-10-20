@@ -1,0 +1,198 @@
+name: Guest
+
+on:
+  push:
+    branches: [main]
+    # Path filters do not apply to tag pushes, so every guest-v* tag builds a release.
+    tags: ['guest-v*']
+    paths:
+      - 'Guest/**'
+      - '.github/workflows/guest.yml'
+      - 'scripts/fetch-guest.sh'
+  pull_request:
+    paths:
+      - 'Guest/**'
+      - '.github/workflows/guest.yml'
+      - 'scripts/fetch-guest.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # Explicit, so that every step also runs with `-o pipefail`.
+    shell: bash
+
+jobs:
+  build:
+    name: Build, check, boot, reproduce
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - name: Show runner and tool versions
+        run: |
+          uname -a
+          echo "CPUs: $(nproc)"
+          free -h
+          docker version --format 'Docker client {{.Client.Version}}, server {{.Server.Version}}'
+
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          # Build the pull request's head commit rather than GitHub's temporary merge commit,
+          # so that the commit in manifest.json and the /init banner exists in the history.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Guest/build.sh runs `git describe` against guest-v* tags.
+          fetch-depth: 0
+
+      - name: Test container runtime detection
+        run: Guest/test/runtime-detection.sh
+
+      - name: Restore source tarballs
+        id: sources-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: Guest/.cache/sources
+          # The pin files contain the sha256 of every tarball and of moby's check-config.sh.
+          key: guest-sources-${{ hashFiles('Guest/kernel/VERSION', 'Guest/initramfs/SOURCES', 'Guest/kernel/check-config.sh') }}
+
+      - name: Restore builder image
+        id: builder-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/builder-image.tar
+          key: guest-builder-${{ runner.arch }}-${{ hashFiles('Guest/Containerfile') }}
+
+      - name: Prepare builder image
+        run: |
+          if [ -f "$RUNNER_TEMP/builder-image.tar" ]; then
+            docker load --input "$RUNNER_TEMP/builder-image.tar"
+          fi
+          Guest/build.sh --prepare-builder
+          if [ ! -f "$RUNNER_TEMP/builder-image.tar" ]; then
+            docker save --output "$RUNNER_TEMP/builder-image.tar" "$(Guest/build.sh --print-builder-image)"
+          fi
+
+      # Saved right away rather than at the end of the job, so that a failure in a later step
+      # does not cause the next run to rebuild the image from snapshot.debian.org.
+      - name: Save builder image
+        if: steps.builder-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/builder-image.tar
+          key: ${{ steps.builder-cache.outputs.cache-primary-key }}
+
+      - name: Build
+        id: build
+        run: |
+          start=$(date +%s)
+          Guest/build.sh
+          echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
+
+      - name: Check kernel configuration
+        run: Guest/kernel/check-config.sh Guest/out/kernel.config
+
+      - name: Save source tarballs
+        if: steps.sources-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: Guest/.cache/sources
+          key: ${{ steps.sources-cache.outputs.cache-primary-key }}
+
+      - name: Check that Image is an uncompressed arm64 kernel
+        run: |
+          file Guest/out/Image
+          file --brief Guest/out/Image | grep -q '^Linux kernel ARM64 boot executable Image'
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends qemu-system-arm
+          qemu-system-aarch64 --version | head -n 1
+
+      - name: Boot smoke test
+        run: Guest/test/boot-smoke.sh | tee "$RUNNER_TEMP/boot-smoke.log"
+
+      - name: Rebuild and compare
+        run: |
+          mv Guest/out "$RUNNER_TEMP/first-build"
+          Guest/build.sh
+          if diff -u "$RUNNER_TEMP/first-build/SHA256SUMS" Guest/out/SHA256SUMS; then
+            echo "The second build is byte-identical to the first."
+            exit 0
+          fi
+          echo "::error::The second build differs from the first."
+          for file in Image initramfs.cpio.gz kernel.config manifest.json; do
+            if ! cmp --quiet "$RUNNER_TEMP/first-build/$file" "Guest/out/$file"; then
+              echo "$file differs; first differing bytes:"
+              cmp --verbose "$RUNNER_TEMP/first-build/$file" "Guest/out/$file" | head -n 10 || true
+            fi
+          done
+          exit 1
+
+      - name: Summarize
+        run: |
+          {
+            echo "### Guest build"
+            echo
+            echo "| File | Size |"
+            echo "|------|------|"
+            for file in Image initramfs.cpio.gz; do
+              bytes=$(stat --format %s "Guest/out/$file")
+              echo "| \`$file\` | $bytes bytes ($(numfmt --to=iec-i --suffix=B "$bytes")) |"
+            done
+            echo
+            echo "First build: ${{ steps.build.outputs.seconds }} seconds."
+            echo
+            grep '^boot-smoke: passed' "$RUNNER_TEMP/boot-smoke.log"
+            echo
+            echo '```'
+            cat Guest/out/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload guest files
+        uses: actions/upload-artifact@v7
+        with:
+          name: macwsl-guest
+          path: Guest/out/
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/guest-v')
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    steps:
+      - name: Download guest files
+        uses: actions/download-artifact@v8
+        with:
+          name: macwsl-guest
+          path: guest
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd guest
+          sha256sum --check SHA256SUMS
+          {
+            echo "MacWSL guest kernel and initramfs built from ${GITHUB_SHA}."
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Guest ${GITHUB_REF_NAME#guest-v}" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            Image initramfs.cpio.gz kernel.config manifest.json SHA256SUMS
