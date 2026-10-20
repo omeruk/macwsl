@@ -53,6 +53,12 @@ swift test -Xswiftc -F -Xswiftc $DEV/Frameworks \
 
 ## Booting the guest on your Mac
 
+> **Build with `scripts/sign-dev.sh`, not `swift build`, before you boot.** Virtualization.framework
+> only runs virtual machines for executables signed with the virtualization entitlement, and
+> every `swift build` or `swift test` that relinks `macwsld` removes the signature.
+> `scripts/sign-dev.sh` builds and signs in one step. If you forget, `macwsld` stops with a
+> message that names the script.
+
 Until the daemon and the CLI are connected, `macwsld debug-boot` boots the guest kernel and
 initramfs directly, which is useful for development:
 
@@ -62,11 +68,17 @@ scripts/sign-dev.sh                               # 2. build and sign macwsld
 .build/debug/macwsld debug-boot --interactive     # 3. boot and open the initramfs shell
 ```
 
-In the interactive session, Ctrl-C goes to the guest. Ctrl-] stops the virtual machine and
-returns to your shell. The guest's console is also written to
-`~/Library/Logs/MacWSL/debug-boot-console.log`. Run `.build/debug/macwsld debug-boot --help`
-for the other options, such as `--cmdline`, `--memory`, and `--disk`. If the terminal is ever
-left in raw mode, for example after `kill -9`, `stty sane` restores it.
+In the interactive session, Ctrl-C goes to the guest. To stop the virtual machine and return
+to your shell, type `~.` at the start of a line, that is, after pressing Enter, as in ssh.
+`~?` lists the escape sequences, and `~~` types a single `~`. The `~` sequences work on every
+keyboard layout. Ctrl-] works as well, but needs the Option key on many non-US layouts, such
+as Turkish, German, and French; `--detach-key ^Q` chooses another control key, and
+`--detach-key none` turns it off.
+
+The guest's console is also written to `~/Library/Logs/MacWSL/debug-boot-console.log`. Run
+`.build/debug/macwsld debug-boot --help` for the other options, such as `--cmdline`,
+`--memory`, and `--disk`. If the terminal is ever left in raw mode, for example after
+`kill -9`, `stty sane` restores it.
 
 ## Documentation
 
