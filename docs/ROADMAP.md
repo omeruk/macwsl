@@ -5,7 +5,7 @@ pass on a real Apple Silicon Mac.
 
 | #  | Phase                          | Outcome                                                                  | Status  |
 |----|--------------------------------|--------------------------------------------------------------------------|---------|
-| 01 | Scaffold                       | Package layout, CLI skeleton with all commands stubbed, CI, lint         | Planned |
+| 01 | Scaffold                       | Package layout, CLI skeleton with all commands stubbed, CI, lint         | Done    |
 | 02 | Kernel and initramfs           | Reproducible build of a minimal arm64 kernel and initramfs in CI         | Planned |
 | 03 | First boot                     | `macwsld` boots a VM, serial console logged, clean shutdown              | Planned |
 | 04 | Guest agent and exec protocol  | `macwsl -- uname -a` works with stdio and exit codes; interactive shell  | Planned |

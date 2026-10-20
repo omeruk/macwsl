@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build, test, lint
+    # Newest Apple Silicon runner. Bump this when GitHub ships a newer one.
+    runs-on: macos-26
+    steps:
+      # First, so that toolchain differences between CI and local machines are easy to spot.
+      - name: Show toolchain versions
+        run: |
+          swift --version
+          swift format --version
+
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Build
+        run: swift build -Xswiftc -warnings-as-errors
+
+      - name: Test
+        run: swift test -Xswiftc -warnings-as-errors
+
+      - name: Lint
+        run: swift format lint --strict --recursive Sources Tests Package.swift
+
+      - name: Sign macwsld
+        run: ./scripts/sign-dev.sh
