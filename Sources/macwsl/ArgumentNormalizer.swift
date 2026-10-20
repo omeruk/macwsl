@@ -72,6 +72,12 @@ enum ArgumentNormalizer {
 
     /// The known options `token` names: one for `--long`, `--long=value` or `-s`, several for a
     /// cluster of short flags such as `-lv`. Unknown names are skipped; the parser reports them.
+    ///
+    /// A cluster with unknown characters still yields its known ones, so `-dUbuntu` yields `-d`,
+    /// `-u`, `-t` and `-u`. ArgumentParser reads such a cluster the same way, which keeps the
+    /// two in step and lets the parser report `Unknown option '-dUbuntu'`. Ignoring the cluster
+    /// instead would make the normalizer insert `--` or rewrite `-v` where the parser expects an
+    /// option value, and the parser would then report a token the user did not type.
     private static func options(in token: String) -> [CLIOption] {
         if token.hasPrefix("--") {
             let name = token.dropFirst(2).prefix { $0 != "=" }

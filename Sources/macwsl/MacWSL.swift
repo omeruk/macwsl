@@ -64,11 +64,13 @@ struct MacWSL: AsyncParsableCommand {
         do {
             let invocation = try parse(arguments)
             try await invocation.run()
-        } catch let error as MacWSLError {
-            report(error)
-            Foundation.exit(EXIT_FAILURE)
         } catch {
-            exit(withError: error)
+            guard let failure = failure(for: error) else {
+                // Help and other clean exits: ArgumentParser prints them to stdout and exits 0.
+                exit(withError: error)
+            }
+            FileHandle.standardError.write(Data(failure.output.utf8))
+            Foundation.exit(failure.exitCode.rawValue)
         }
     }
 
@@ -79,15 +81,6 @@ struct MacWSL: AsyncParsableCommand {
     func run() async throws {
         let action = try resolveAction()
         throw MacWSLError.notImplemented(feature: action.displayName)
-    }
-
-    /// Prints `error` the way every MacWSL front end does: the message, then the suggested fix.
-    private static func report(_ error: MacWSLError) {
-        var message = "macwsl: \(error.description)\n"
-        if let suggestion = error.recoverySuggestion {
-            message += "\(suggestion)\n"
-        }
-        FileHandle.standardError.write(Data(message.utf8))
     }
 }
 
