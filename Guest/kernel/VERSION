@@ -1,4 +1,4 @@
-# The Linux kernel built for the MacWSL guest: the newest longterm (LTS) release from
+# The Linux kernel built for the maw guest: the newest longterm (LTS) release from
 # kernel.org at the time it was pinned. The sha256 comes from the signed
 # https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc and is verified before the
 # build extracts the tarball. Guest/README.md describes how to bump it.

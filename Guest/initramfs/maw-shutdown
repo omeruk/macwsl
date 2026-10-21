@@ -1,5 +1,5 @@
 #!/bin/sh
-# /sbin/macwsl-shutdown: the inittab shutdown action. busybox init runs it when it receives
+# /sbin/maw-shutdown: the inittab shutdown action. busybox init runs it when it receives
 # SIGUSR2 (power off), before its own shutdown sequence.
 #
 # 1. Sends SIGTERM to every process except init and this script.
@@ -24,7 +24,7 @@ others_running() {
     return 1
 }
 
-echo "macwsl-shutdown: stopping processes"
+echo "maw-shutdown: stopping processes"
 kill -TERM -1 2> /dev/null
 tries=0
 while others_running && [ "$tries" -lt 20 ]; do
@@ -32,11 +32,11 @@ while others_running && [ "$tries" -lt 20 ]; do
     tries=$((tries + 1))
 done
 if others_running; then
-    echo "macwsl-shutdown: sending SIGKILL to the remaining processes"
+    echo "maw-shutdown: sending SIGKILL to the remaining processes"
     kill -KILL -1 2> /dev/null
 fi
 
 sync
 umount -a -r 2> /dev/null
-echo "macwsl-shutdown: powering off"
+echo "maw-shutdown: powering off"
 poweroff -f

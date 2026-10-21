@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds the MacWSL initramfs: static busybox with applet symlinks, static e2fsprogs tools,
+# Builds the maw initramfs: static busybox with applet symlinks, static e2fsprogs tools,
 # and /init, packed as a reproducible gzip-compressed cpio archive. Runs inside the builder
 # container; start it through Guest/build.sh.
 #
@@ -12,8 +12,8 @@
 #   --gen-init-cpio  the kernel's usr/gen_init_cpio, built for this machine
 #   --version        version string for the /init banner
 #   --output         path of the initramfs.cpio.gz to write
-#   --agent          the guest agent, installed as /sbin/macwsl-agent; without it, /init has
-#                    nothing to supervise and only the macwsl.test hooks are useful
+#   --agent          the guest agent, installed as /sbin/maw-agent; without it, /init has
+#                    nothing to supervise and only the maw.test hooks are useful
 #
 # SOURCE_DATE_EPOCH must be set. It is the modification time of every archive entry.
 
@@ -124,12 +124,12 @@ done
 ln -sfn mke2fs "$root/sbin/mkfs.ext4"
 
 if [ -n "$agent" ]; then
-    install -m 0755 "$agent" "$root/sbin/macwsl-agent"
+    install -m 0755 "$agent" "$root/sbin/maw-agent"
 fi
 
 install -m 0755 "$initramfs_dir/init" "$root/init"
-install -m 0755 "$initramfs_dir/macwsl-shutdown" "$root/sbin/macwsl-shutdown"
-printf '%s\n' "$version" > "$root/etc/macwsl-initramfs-version"
+install -m 0755 "$initramfs_dir/maw-shutdown" "$root/sbin/maw-shutdown"
+printf '%s\n' "$version" > "$root/etc/maw-initramfs-version"
 printf 'root:x:0:0:root:/root:/bin/sh\n' > "$root/etc/passwd"
 printf 'root:x:0:\n' > "$root/etc/group"
 strip --strip-all "$root/bin/busybox" "$root"/sbin/{mke2fs,e2fsck,resize2fs}

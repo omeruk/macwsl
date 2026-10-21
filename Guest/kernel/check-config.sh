@@ -1,7 +1,7 @@
 #!/bin/sh
 # Checks a built kernel configuration against two lists of required options:
 #
-#   1. MacWSL's own list, below: what the guest needs to boot under Virtualization.framework,
+#   1. maw's own list, below: what the guest needs to boot under Virtualization.framework,
 #      run the agent, share files, run systemd, and run Docker or Podman.
 #   2. The "Generally Necessary" section of moby's contrib/check-config.sh, pinned by commit
 #      and sha256. Its "Optional Features" are reported but do not fail the check.
@@ -14,7 +14,7 @@ set -eu
 
 guest_dir=$(cd "$(dirname "$0")/.." && pwd)
 config=${1:-$guest_dir/out/kernel.config}
-cache_dir=${MACWSL_GUEST_CACHE:-$guest_dir/.cache/sources}
+cache_dir=${MAW_GUEST_CACHE:-$guest_dir/.cache/sources}
 
 MOBY_COMMIT=a4c5b2be6f69f86fe7b13eb4822676f8d273cf8b
 MOBY_SHA256=fda4343e9b50c47896653ca774ccbe9614bfcdb60f080d2b6277baf27efc0a71
@@ -178,8 +178,8 @@ sha256() {
 
 failed=0
 
-# 1. MacWSL's required list.
-echo "MacWSL required options:"
+# 1. maw's required list.
+echo "maw required options:"
 printf '%s\n' "$REQUIRED_OPTIONS" | awk -v config="$config" '
     BEGIN {
         while ((getline line < config) > 0) {
