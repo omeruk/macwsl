@@ -5,7 +5,14 @@ Every MacWSL VM boots from two files built here:
 - `Image`: an uncompressed arm64 Linux kernel. `VZLinuxBootLoader` cannot boot a compressed
   kernel on Apple Silicon.
 - `initramfs.cpio.gz`: static busybox, static `mke2fs`/`mkfs.ext4`, `e2fsck`, and
-  `resize2fs`, and `/init`.
+  `resize2fs`, the guest agent `/sbin/macwsl-agent`, and `/init`.
+
+`/init` mounts the pseudo-file systems, prints the banner, and runs the `macwsl.test=` hooks.
+It then executes busybox `init` as PID 1, which supervises the agent; with
+`macwsl.debug=shell` on the kernel command line, `init` also runs a shell on `hvc0`.
+[Decision record 0005](../docs/decisions/0005-init-supervises-the-agent.md) explains the
+arrangement, and [docs/protocol.md](../docs/protocol.md) specifies how the host talks to the
+agent.
 
 [Decision record 0003](../docs/decisions/0003-guest-kernel.md) explains why MacWSL ships its
 own monolithic kernel with 4K pages, and why the initramfs provisions disks.
@@ -27,10 +34,13 @@ Guest/
     SOURCES              pinned busybox and e2fsprogs versions, URLs, and sha256 sums
     busybox.config       busybox configuration overrides
     init                 /init
+    macwsl-shutdown      the inittab shutdown action: stops processes, powers off
     build.sh             builds busybox and e2fsprogs, packs the cpio archive
+  agent/
+    SWIFT                pinned Swift toolchains and Static Linux SDK for the agent
   scripts/               helpers shared by the kernel and busybox configuration
   test/
-    boot-smoke.sh        boots the output under QEMU
+    boot-smoke.sh        boots the output under QEMU, and runs the agent's self-test
     runtime-detection.sh tests build.sh's container runtime detection
   out/                   build output (not in git)
   .cache/sources/        downloaded source tarballs (not in git)
@@ -50,8 +60,10 @@ neither runtime is usable, the script says what to install or start, and exits w
 69.
 
 ```sh
-Guest/build.sh                         # build into Guest/out/
-Guest/build.sh --agent path/to/agent   # also install a binary as /sbin/macwsl-agent
+scripts/build-guest-agent.sh           # build the agent (see "Building the agent locally")
+Guest/build.sh --agent .build/guest-agent/macwsl-agent
+                                       # build into Guest/out/ with the agent
+Guest/build.sh                         # build without the agent; /init then starts a shell
 Guest/kernel/check-config.sh           # check Guest/out/kernel.config
 Guest/test/boot-smoke.sh               # boot Guest/out/ under QEMU (needs qemu-system-aarch64)
 Guest/test/runtime-detection.sh        # test runtime detection; needs no runtime
@@ -68,12 +80,50 @@ reference build.
 | `Image` | the kernel |
 | `initramfs.cpio.gz` | the initramfs |
 | `kernel.config` | the final kernel configuration |
-| `manifest.json` | kernel version and source sha256, initramfs component versions, `SOURCE_DATE_EPOCH`, git commit, builder image |
+| `manifest.json` | kernel version and source sha256, initramfs component versions, the agent's sha256, `SOURCE_DATE_EPOCH`, git commit, builder image |
 | `SHA256SUMS` | sha256 of the four files above |
 
 To use a CI build instead of building locally, run `scripts/fetch-guest.sh [<branch>]`. It
 downloads the latest successful build of the branch (default `main`), verifies it, and
 installs it into `~/Library/Application Support/MacWSL/kernel/`.
+
+## Building the agent locally
+
+Local agent builds are optional: `scripts/fetch-guest.sh` installs guest files that the Guest
+workflow built, agent included. To build the agent yourself, you need the swift.org toolchain
+and the Static Linux SDK of the same release, both pinned in `agent/SWIFT`. Xcode's toolchain
+cannot use the SDK.
+
+1. Download the macOS toolchain package (`SWIFT_MACOS_URL` in `agent/SWIFT`), check its
+   sha256 against `SWIFT_MACOS_SHA256`, and install it for your user only:
+
+   ```sh
+   installer -pkg swift-6.4.1-RELEASE-osx.pkg -target CurrentUserHomeDirectory
+   ```
+
+   It goes into `~/Library/Developer/Toolchains/` and does not change PATH: `swift` in a new
+   shell is still Xcode's. Do not install swiftly or other tools that put a proxy on PATH.
+
+2. Install the SDK with the toolchain selected for that one command:
+
+   ```sh
+   id=$(plutil -extract CFBundleIdentifier raw \
+       ~/Library/Developer/Toolchains/swift-6.4.1-RELEASE.xctoolchain/Info.plist)
+   TOOLCHAINS=$id swift sdk install <SWIFT_SDK_URL> --checksum <SWIFT_SDK_SHA256>
+   ```
+
+3. Build:
+
+   ```sh
+   scripts/build-guest-agent.sh    # writes .build/guest-agent/macwsl-agent
+   ```
+
+   The script finds the pinned toolchain, selects it with `TOOLCHAINS` for its own commands
+   only, checks the toolchain and SDK versions, and builds a static, stripped binary for
+   `aarch64-swift-linux-musl`.
+
+The agent's logic lives in `Sources/MacWSLAgentKit`, which also builds on macOS, so its unit
+tests run with `swift test` and need none of the above.
 
 ## Reproducibility
 
@@ -91,6 +141,13 @@ The build achieves this as follows:
   `SOURCE_DATE_EPOCH`, and `gzip -n`.
 
 A build from a working tree with uncommitted changes is marked `-dirty` in its version.
+
+The agent is the exception. Two builds of `macwsl-agent` from the same commit, toolchain, and
+path differ in the `.swift_modhash` section that Swift 6.4 emits (146 16-byte module hashes,
+of which about 17 differ), and therefore in the GNU build ID. No compiler option to make the
+section deterministic was found. CI builds the agent twice, reports the difference as a
+warning, and compares the two guest builds with the same agent, so that everything except the
+agent is still checked.
 
 ## Changing the kernel configuration
 
