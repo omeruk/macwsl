@@ -77,7 +77,7 @@ import Testing
     @Test func distributionsHintsShowInstallAsNotYetAvailable() {
         let context = CommandContext(selection: .screen(.distributions), tabCount: 2)
         let hints = registry.hints(in: context)
-        #expect(hints.map(\.keys) == ["I", "esc"])
+        #expect(hints.map(\.keys) == ["i", "esc"])
         #expect(hints[0].label == "install…")
         #expect(!hints[0].isEnabled)
         #expect(hints[0].note == "arrives in a later version")

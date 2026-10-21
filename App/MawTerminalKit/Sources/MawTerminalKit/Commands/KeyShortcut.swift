@@ -64,9 +64,13 @@ public struct KeyShortcut: Hashable, Sendable {
         KeyShortcut(.character(character), extra.union(.command))
     }
 
-    /// The shortcut as the design writes it, for example `⌘⇧P`, `⌘,`, or `⌥⌘←`.
+    /// The shortcut as the design writes it, for example `⌘⇧P`, `⌘,`, or `⌥⌘←`. A letter on
+    /// its own, such as a screen's `i`, stays lowercase, as the key hints show it.
     public var displayString: String {
-        modifiers.symbols + key.symbol
+        if modifiers.isEmpty, case .character(let character) = key {
+            return String(character)
+        }
+        return modifiers.symbols + key.symbol
     }
 
     /// Characters that are typed with Shift on common layouts but whose shortcut is written
