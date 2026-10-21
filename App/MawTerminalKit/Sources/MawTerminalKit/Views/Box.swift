@@ -4,6 +4,9 @@ import SwiftUI
 /// another at the right, as every pane and panel in the design has.
 struct Box<Content: View>: View {
     var title: String?
+    /// Secondary text after the title, in `text.secondary`, such as the count in
+    /// `distributions (0)`.
+    var titleDetail: String?
     var trailingTitle: String?
     var titleColor: ThemeColor
     var trailingTitleColor: ThemeColor?
@@ -25,7 +28,7 @@ struct Box<Content: View>: View {
             }
             .overlay(alignment: .topLeading) {
                 if let title {
-                    borderTitle(title, color: titleColor)
+                    borderTitle(title, color: titleColor, detail: titleDetail)
                         .offset(x: 10, y: -10)
                 }
             }
@@ -37,9 +40,17 @@ struct Box<Content: View>: View {
             }
     }
 
-    private func borderTitle(_ text: String, color: ThemeColor) -> some View {
-        Text(text)
-            .chromeStyle(color)
+    private func borderTitle(_ text: String, color: ThemeColor, detail: String? = nil)
+        -> some View
+    {
+        var title = Text(text).foregroundColor(color.color)
+        if let detail {
+            title = title + Text(" " + detail).foregroundColor(chrome.textSecondary.color)
+        }
+        return
+            title
+            .font(MawFonts.chromeFont())
+            .lineLimit(1)
             .truncationMode(.middle)
             .padding(.horizontal, 6)
             .frame(height: MawFonts.chromeLineHeight)

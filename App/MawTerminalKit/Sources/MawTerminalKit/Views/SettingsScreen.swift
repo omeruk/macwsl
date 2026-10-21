@@ -361,7 +361,7 @@ private struct KeyboardPage: View {
 
     var body: some View {
         Box(
-            title: "keyboard (\(shortcuts.count))", titleColor: chrome.text,
+            title: "keyboard", titleDetail: "(\(shortcuts.count))", titleColor: chrome.text,
             borderColor: borderColor
         ) {
             ScrollViewReader { proxy in

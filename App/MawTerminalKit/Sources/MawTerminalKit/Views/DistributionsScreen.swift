@@ -51,7 +51,8 @@ struct DistributionsContent: View {
     var body: some View {
         VStack(spacing: 10) {
             Box(
-                title: "distributions (\(distributions.count))", trailingTitle: host.description,
+                title: "distributions", titleDetail: "(\(distributions.count))",
+                trailingTitle: host.description,
                 titleColor: chrome.text, trailingTitleColor: chrome.textSecondary,
                 borderColor: chrome.lineStrong
             ) {
