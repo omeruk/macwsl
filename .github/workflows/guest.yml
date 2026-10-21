@@ -5,15 +5,21 @@ on:
     branches: [main]
     # Path filters do not apply to tag pushes, so every guest-v* tag builds a release.
     tags: ['guest-v*']
-    paths:
+    paths: &guest-paths
       - 'Guest/**'
       - '.github/workflows/guest.yml'
       - 'scripts/fetch-guest.sh'
+      - 'scripts/build-guest-agent.sh'
+      # Everything the guest agent is built from.
+      - 'Package.swift'
+      - 'Package.resolved'
+      - 'Sources/CMacWSLSystem/**'
+      - 'Sources/MacWSLCore/**'
+      - 'Sources/MacWSLProtocol/**'
+      - 'Sources/MacWSLAgentKit/**'
+      - 'Sources/macwsl-agent/**'
   pull_request:
-    paths:
-      - 'Guest/**'
-      - '.github/workflows/guest.yml'
-      - 'scripts/fetch-guest.sh'
+    paths: *guest-paths
   workflow_dispatch:
 
 permissions:
@@ -29,8 +35,112 @@ defaults:
     shell: bash
 
 jobs:
+  agent:
+    name: Build the guest agent
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Read the toolchain pins
+        id: pins
+        run: |
+          . Guest/agent/SWIFT
+          {
+            echo "linux-url=$SWIFT_LINUX_URL"
+            echo "linux-sha256=$SWIFT_LINUX_SHA256"
+            echo "sdk-url=$SWIFT_SDK_URL"
+            echo "sdk-sha256=$SWIFT_SDK_SHA256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore the toolchain downloads
+        id: swift-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/swift-downloads
+          key: swift-downloads-${{ runner.arch }}-${{ hashFiles('Guest/agent/SWIFT') }}
+
+      - name: Download and verify the toolchain and the Static Linux SDK
+        env:
+          LINUX_URL: ${{ steps.pins.outputs.linux-url }}
+          LINUX_SHA256: ${{ steps.pins.outputs.linux-sha256 }}
+          SDK_URL: ${{ steps.pins.outputs.sdk-url }}
+          SDK_SHA256: ${{ steps.pins.outputs.sdk-sha256 }}
+        run: |
+          downloads=$RUNNER_TEMP/swift-downloads
+          mkdir -p "$downloads"
+          for pair in "$LINUX_URL $LINUX_SHA256" "$SDK_URL $SDK_SHA256"; do
+            set -- $pair
+            file=$downloads/$(basename "$1")
+            if [ ! -f "$file" ]; then
+              curl --fail --silent --show-error --location --retry 3 --output "$file" "$1"
+            fi
+            # A mismatch fails the job; the pins in Guest/agent/SWIFT are the only source.
+            echo "$2  $file" | sha256sum --check --strict
+          done
+
+      - name: Save the toolchain downloads
+        if: steps.swift-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/swift-downloads
+          key: ${{ steps.swift-cache.outputs.cache-primary-key }}
+
+      - name: Install the toolchain and the Static Linux SDK
+        env:
+          LINUX_URL: ${{ steps.pins.outputs.linux-url }}
+          SDK_URL: ${{ steps.pins.outputs.sdk-url }}
+          SDK_SHA256: ${{ steps.pins.outputs.sdk-sha256 }}
+        run: |
+          # Run-time libraries of the swift.org toolchain that the runner image may lack.
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            binutils libc6-dev libcurl4-openssl-dev libedit2 libncurses-dev libsqlite3-0 \
+            libxml2-dev libz3-dev pkg-config zlib1g-dev
+          mkdir -p "$RUNNER_TEMP/swift"
+          tar --extract --gzip --strip-components=1 --directory "$RUNNER_TEMP/swift" \
+            --file "$RUNNER_TEMP/swift-downloads/$(basename "$LINUX_URL")"
+          echo "MACWSL_SWIFT=$RUNNER_TEMP/swift/usr/bin/swift" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/swift/usr/bin/swift" --version
+          "$RUNNER_TEMP/swift/usr/bin/swift" sdk install \
+            "$RUNNER_TEMP/swift-downloads/$(basename "$SDK_URL")" --checksum "$SDK_SHA256"
+
+      # Built twice from a clean state at the same path, so that the build job can check
+      # whether the agent is byte-reproducible.
+      - name: Build the agent twice
+        id: build
+        run: |
+          start=$(date +%s)
+          scripts/build-guest-agent.sh --output "$RUNNER_TEMP/agent/first/macwsl-agent"
+          echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
+          rm -rf .build
+          scripts/build-guest-agent.sh --output "$RUNNER_TEMP/agent/second/macwsl-agent"
+          file "$RUNNER_TEMP/agent/first/macwsl-agent"
+          sha256sum "$RUNNER_TEMP"/agent/*/macwsl-agent
+
+      - name: Summarize
+        run: |
+          bytes=$(stat --format %s "$RUNNER_TEMP/agent/first/macwsl-agent")
+          {
+            echo "### Guest agent"
+            echo
+            echo "Stripped size: $bytes bytes ($(numfmt --to=iec-i --suffix=B "$bytes"))."
+            echo "First build: ${{ steps.build.outputs.seconds }} seconds."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the agent builds
+        uses: actions/upload-artifact@v7
+        with:
+          name: macwsl-agent
+          path: ${{ runner.temp }}/agent/
+          if-no-files-found: error
+
   build:
     name: Build, check, boot, reproduce
+    needs: agent
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     steps:
@@ -87,11 +197,18 @@ jobs:
           path: ${{ runner.temp }}/builder-image.tar
           key: ${{ steps.builder-cache.outputs.cache-primary-key }}
 
+      - name: Download the agent builds
+        uses: actions/download-artifact@v8
+        with:
+          name: macwsl-agent
+          path: ${{ runner.temp }}/agent
+
       - name: Build
         id: build
         run: |
+          chmod +x "$RUNNER_TEMP"/agent/*/macwsl-agent
           start=$(date +%s)
-          Guest/build.sh
+          Guest/build.sh --agent "$RUNNER_TEMP/agent/first/macwsl-agent"
           echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
 
       - name: Check kernel configuration
@@ -116,12 +233,31 @@ jobs:
           qemu-system-aarch64 --version | head -n 1
 
       - name: Boot smoke test
-        run: Guest/test/boot-smoke.sh | tee "$RUNNER_TEMP/boot-smoke.log"
+        run: Guest/test/boot-smoke.sh --require-agent | tee "$RUNNER_TEMP/boot-smoke.log"
 
+      # The second guest build uses the second agent build. If the two agents differ, the
+      # difference is reported as a warning with the evidence, and the guest is rebuilt with
+      # the first agent instead, so that everything except the agent is still compared.
       - name: Rebuild and compare
+        id: reproduce
         run: |
           mv Guest/out "$RUNNER_TEMP/first-build"
-          Guest/build.sh
+          first=$RUNNER_TEMP/agent/first/macwsl-agent
+          second=$RUNNER_TEMP/agent/second/macwsl-agent
+          if cmp --quiet "$first" "$second"; then
+            echo "agent=identical" >> "$GITHUB_OUTPUT"
+            echo "The two agent builds are byte-identical."
+            Guest/build.sh --agent "$second"
+          else
+            echo "agent=different" >> "$GITHUB_OUTPUT"
+            echo "::warning::The two builds of the guest agent differ; the guest is compared with the first agent in both builds."
+            ls -l "$first" "$second"
+            sha256sum "$first" "$second"
+            echo "Differing bytes (offset, first, second), up to 20:"
+            cmp --verbose "$first" "$second" | head -n 20 || true
+            echo "Total differing bytes: $(cmp --verbose "$first" "$second" | wc -l || true)"
+            Guest/build.sh --agent "$first"
+          fi
           if diff -u "$RUNNER_TEMP/first-build/SHA256SUMS" Guest/out/SHA256SUMS; then
             echo "The second build is byte-identical to the first."
             exit 0
@@ -146,10 +282,18 @@ jobs:
               bytes=$(stat --format %s "Guest/out/$file")
               echo "| \`$file\` | $bytes bytes ($(numfmt --to=iec-i --suffix=B "$bytes")) |"
             done
+            bytes=$(stat --format %s "$RUNNER_TEMP/agent/first/macwsl-agent")
+            echo "| \`macwsl-agent\` (in the initramfs) | $bytes bytes ($(numfmt --to=iec-i --suffix=B "$bytes")) |"
             echo
             echo "First build: ${{ steps.build.outputs.seconds }} seconds."
             echo
-            grep '^boot-smoke: passed' "$RUNNER_TEMP/boot-smoke.log"
+            grep '^boot-smoke: .*passed' "$RUNNER_TEMP/boot-smoke.log"
+            echo
+            if [ "${{ steps.reproduce.outputs.agent }}" = identical ]; then
+              echo "The two agent builds are byte-identical."
+            else
+              echo "**The two agent builds differ.** The guest was compared with the first agent in both builds."
+            fi
             echo
             echo '```'
             cat Guest/out/SHA256SUMS

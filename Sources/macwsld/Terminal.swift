@@ -1,16 +1,31 @@
 import Darwin
 import Dispatch
 import MacWSLCore
+import MacWSLProtocol
 
 /// Terminal handling for `debug-boot --interactive`.
 enum Terminal {
     /// Throws unless both descriptors refer to terminals. Called before anything else in an
     /// interactive session, so that nothing touches termios or starts a VM without a terminal.
+    /// `option` names the option that needs the terminal.
     static func requireTerminals(
-        input: Int32 = STDIN_FILENO, output: Int32 = STDOUT_FILENO
+        for option: String, input: Int32 = STDIN_FILENO, output: Int32 = STDOUT_FILENO
     ) throws(MacWSLError) {
-        guard isatty(input) == 1 else { throw .notATerminal(stream: "standard input") }
-        guard isatty(output) == 1 else { throw .notATerminal(stream: "standard output") }
+        guard isatty(input) == 1 else {
+            throw .notATerminal(option: option, stream: "standard input")
+        }
+        guard isatty(output) == 1 else {
+            throw .notATerminal(option: option, stream: "standard output")
+        }
+    }
+
+    /// The terminal's window size, or `nil` if `descriptor` is not a terminal or reports none.
+    static func windowSize(of descriptor: Int32 = STDOUT_FILENO) -> TerminalSize? {
+        var size = winsize()
+        guard ioctl(descriptor, TIOCGWINSZ, &size) == 0, size.ws_row > 0, size.ws_col > 0 else {
+            return nil
+        }
+        return TerminalSize(rows: size.ws_row, columns: size.ws_col)
     }
 }
 
@@ -43,10 +58,10 @@ final class RawMode {
 
     private let descriptor: Int32
 
-    init(descriptor: Int32 = STDIN_FILENO) throws(MacWSLError) {
+    init(for option: String, descriptor: Int32 = STDIN_FILENO) throws(MacWSLError) {
         var original = termios()
         guard tcgetattr(descriptor, &original) == 0 else {
-            throw .notATerminal(stream: "standard input")
+            throw .notATerminal(option: option, stream: "standard input")
         }
         self.descriptor = descriptor
         rawModeOriginal = original

@@ -1,4 +1,8 @@
-import Foundation
+#if canImport(FoundationEssentials)
+    import FoundationEssentials
+#else
+    import Foundation
+#endif
 
 /// Errors shared by every MacWSL component.
 ///
@@ -47,10 +51,23 @@ public enum MacWSLError: Error, Equatable, Sendable {
 
     /// The console log could not be opened or written.
     case consoleLogFailed(path: String, reason: String)
-    /// An interactive session needs a terminal, but `stream` is not one.
-    case notATerminal(stream: String)
+    /// An interactive session, selected by `option`, needs a terminal, but `stream` is not one.
+    case notATerminal(option: String, stream: String)
     /// `--detach-key` could not be parsed or names a key that the session needs.
     case invalidDetachKey(String, reason: String)
+
+    // MARK: Guest agent
+
+    /// The guest agent did not answer before the deadline, or could not be reached.
+    case guestAgentUnavailable(reason: String)
+    /// The host and the guest agent speak different protocol versions.
+    case guestAgentVersionMismatch(host: UInt32, guest: UInt32)
+    /// A conversation with the guest agent failed partway through.
+    case guestAgentFailed(reason: String)
+    /// The command to run in the guest does not exist there. Shells report this as 127.
+    case guestCommandNotFound(command: String, reason: String)
+    /// The command exists in the guest but could not be started. Shells report this as 126.
+    case guestCommandNotStarted(command: String, reason: String)
 }
 
 extension MacWSLError: LocalizedError {
@@ -87,10 +104,21 @@ extension MacWSLError: LocalizedError {
             "Could not create the disk image \(path): \(reason)."
         case .consoleLogFailed(let path, let reason):
             "Could not write the console log \(path): \(reason)."
-        case .notATerminal(let stream):
-            "--interactive needs a terminal, but \(stream) is not a terminal."
+        case .notATerminal(let option, let stream):
+            "\(option) needs a terminal, but \(stream) is not a terminal."
         case .invalidDetachKey(let text, let reason):
             "'\(text)' cannot be the detach key: \(reason)."
+        case .guestAgentUnavailable(let reason):
+            "The guest agent is not responding: \(reason)."
+        case .guestAgentVersionMismatch(let host, let guest):
+            "The guest agent speaks protocol version \(guest), but this build of MacWSL speaks "
+                + "version \(host)."
+        case .guestAgentFailed(let reason):
+            "The connection to the guest agent failed: \(reason)."
+        case .guestCommandNotFound(let command, let reason):
+            "\(command): command not found in the guest (\(reason))."
+        case .guestCommandNotStarted(let command, let reason):
+            "\(command) could not be started in the guest: \(reason)."
         }
     }
 
@@ -123,10 +151,21 @@ extension MacWSLError: LocalizedError {
             nil
         case .consoleLogFailed:
             "Check that ~/Library/Logs/MacWSL is writable."
-        case .notATerminal:
-            "Run the command from a terminal, or omit --interactive."
+        case .notATerminal(let option, _):
+            "Run the command from a terminal, or omit \(option)."
         case .invalidDetachKey:
             "Use a control key such as ^Q or ^], or none. The ~. escape always works."
+        case .guestAgentUnavailable:
+            "Check the console log. Guest files from before the agent existed have no agent; "
+                + "update them with scripts/fetch-guest.sh."
+        case .guestAgentVersionMismatch:
+            "Update the guest files with scripts/fetch-guest.sh."
+        case .guestAgentFailed:
+            "The console log may contain details."
+        case .guestCommandNotFound:
+            "Check the command's name, or give its full path."
+        case .guestCommandNotStarted:
+            nil
         }
     }
 }

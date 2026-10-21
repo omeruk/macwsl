@@ -1,7 +1,9 @@
 import ArgumentParser
 import Darwin
 import Foundation
+import MacWSLCommandLine
 import MacWSLCore
+import MacWSLProtocol
 import MacWSLVirtualization
 
 /// `macwsld debug-boot`: boots the guest kernel and initramfs for development.
@@ -16,11 +18,18 @@ struct DebugBoot: AsyncParsableCommand {
             ~/Library/Logs/MacWSL/debug-boot-console.log. SIGINT and SIGTERM stop the virtual \
             machine first.
 
-            With --interactive, the terminal is connected to the guest console. Ctrl-C is passed \
-            to the guest. To stop the virtual machine and detach, type ~. at the start of a line \
-            (after Enter), or press the detach key, Ctrl-] by default. ~? lists the escape \
-            sequences, and ~~ sends a single ~. The ~ sequences work on every keyboard layout; \
-            Ctrl-] needs the Option key on many non-US layouts.
+            With --exec -- <command> [<argument>...], runs one command in the guest through the \
+            guest agent instead of showing the console. Standard input, output, and error are \
+            connected to the command, SIGINT, SIGTERM, and SIGHUP are passed to it, and \
+            debug-boot exits with its exit status after the virtual machine has shut down.
+
+            With --shell, runs /bin/sh -l in the guest on a pseudo-terminal, through the guest \
+            agent. With --interactive, the terminal is connected to the guest console (hvc0) \
+            instead, where the kernel command line gets macwsl.debug=shell. In both, Ctrl-C is \
+            passed to the guest. To stop the virtual machine and detach, type ~. at the start of \
+            a line (after Enter), or press the detach key, Ctrl-] by default. ~? lists the \
+            escape sequences, and ~~ sends a single ~. The ~ sequences work on every keyboard \
+            layout; Ctrl-] needs the Option key on many non-US layouts.
 
             The executable must be signed with the virtualization entitlement. Build it with \
             scripts/sign-dev.sh, which builds and signs; a plain swift build removes the \
@@ -30,8 +39,10 @@ struct DebugBoot: AsyncParsableCommand {
 
     /// The virtual machine's name, which also names its console log.
     static let name = "debug-boot"
-    /// How long `stop(timeout:)` waits for the guest after asking it to power off.
+    /// How long `stop(timeout:)` waits for the guest after each request to power off.
     static let stopTimeout = Duration.seconds(5)
+    /// How long --exec and --shell wait for the guest agent after the virtual machine starts.
+    static let agentReadyTimeout = Duration.seconds(30)
 
     @Option(
         name: .customLong("kernel-dir"),
@@ -77,27 +88,87 @@ struct DebugBoot: AsyncParsableCommand {
         help: "Connect the terminal to the guest console. ~. at the start of a line detaches.")
     var interactive = false
 
+    @Flag(
+        help: ArgumentHelp(
+            "Run the command after -- in the guest through the guest agent, and exit with its "
+                + "status."))
+    var exec = false
+
+    @Flag(
+        help: ArgumentHelp(
+            "Run /bin/sh -l in the guest on a pseudo-terminal through the guest agent. ~. at "
+                + "the start of a line detaches."))
+    var shell = false
+
     @Option(
         name: .customLong("detach-key"),
         help: ArgumentHelp(
-            "The control key that detaches an interactive session, such as ^Q, or none "
-                + "(default: ^]). ~. always works as well.",
+            "The control key that detaches an --interactive or --shell session, such as ^Q, or "
+                + "none (default: ^]). ~. always works as well.",
             valueName: "key"),
         transform: { try DetachKey(parsing: $0) })
     var detachKey: DetachKey?
 
     @Option(
         help: ArgumentHelp(
-            "Fail if the guest has not stopped within this many seconds. Not with --interactive.",
+            "Fail if the guest has not stopped within this many seconds. Only without "
+                + "--interactive, --exec, and --shell.",
             valueName: "seconds"))
     var timeout: Int?
 
+    /// For measurements: runs the --exec command this many times in the same virtual machine
+    /// and reports the median and 95th-percentile round-trip time.
+    @Option(name: .customLong("repeat"), help: .hidden)
+    var repeatCount: Int?
+
+    @Argument(
+        parsing: .postTerminator,
+        help: ArgumentHelp(
+            "With --exec, the command to run and its arguments.", valueName: "command"))
+    var command: [String] = []
+
+    /// The session the options select.
+    enum Mode: Equatable {
+        /// The console on standard output until the guest powers off.
+        case attached
+        case interactive
+        case exec
+        case shell
+    }
+
+    var mode: Mode {
+        if interactive { return .interactive }
+        if exec { return .exec }
+        if shell { return .shell }
+        return .attached
+    }
+
     func validate() throws {
-        if interactive && timeout != nil {
-            throw ValidationError("--timeout cannot be combined with --interactive.")
+        let modes = [("--interactive", interactive), ("--exec", exec), ("--shell", shell)]
+            .filter(\.1).map(\.0)
+        if modes.count > 1 {
+            throw ValidationError("\(modes.joined(separator: " and ")) cannot be combined.")
         }
-        if detachKey != nil && !interactive {
-            throw ValidationError("--detach-key needs --interactive.")
+        if timeout != nil, let selected = modes.first {
+            throw ValidationError("--timeout cannot be combined with \(selected).")
+        }
+        if detachKey != nil && !interactive && !shell {
+            throw ValidationError("--detach-key needs --interactive or --shell.")
+        }
+        if exec && command.isEmpty {
+            throw ValidationError(
+                "--exec needs a command after --, for example --exec -- uname -a.")
+        }
+        if !exec && !command.isEmpty {
+            throw ValidationError("A command after -- needs --exec.")
+        }
+        if let repeatCount {
+            if !exec {
+                throw ValidationError("--repeat needs --exec.")
+            }
+            if repeatCount < 1 {
+                throw ValidationError("--repeat must be at least 1.")
+            }
         }
         if createDiskSize != nil && disks.isEmpty {
             throw ValidationError("--create-disk needs at least one --disk.")
@@ -112,8 +183,13 @@ struct DebugBoot: AsyncParsableCommand {
 
     func run() async throws {
         // Before anything else, so that nothing touches termios or starts a VM without a terminal.
-        if interactive {
-            try Terminal.requireTerminals()
+        switch mode {
+        case .interactive:
+            try Terminal.requireTerminals(for: "--interactive")
+        case .shell:
+            try Terminal.requireTerminals(for: "--shell")
+        case .attached, .exec:
+            break
         }
 
         let guest = try GuestFiles(directory: kernelDirectoryURL)
@@ -125,16 +201,28 @@ struct DebugBoot: AsyncParsableCommand {
             consoleLogURL: MacWSLPaths().logsDirectory.appending(path: "\(Self.name)-console.log"),
             cpuCount: cpus ?? VMConfiguration.defaultCPUCount(),
             memorySize: memory ?? VMConfiguration.defaultMemorySize,
-            commandLine: VMConfiguration.commandLine(appending: cmdline),
+            commandLine: VMConfiguration.commandLine(appending: kernelArguments),
             disks: try prepareDisks())
         reportLimits(of: configuration)
         report("console log: \(configuration.consoleLogURL.path(percentEncoded: false))")
 
-        if interactive {
-            try await runInteractive(configuration)
-        } else {
+        switch mode {
+        case .attached:
             try await runAttached(configuration)
+        case .interactive:
+            try await runInteractive(configuration)
+        case .exec:
+            try await runExec(configuration)
+        case .shell:
+            try await runShell(configuration)
         }
+    }
+
+    /// --cmdline, plus macwsl.debug=shell for --interactive, which makes the guest's init run
+    /// a shell on the console.
+    var kernelArguments: String? {
+        let arguments = [cmdline, interactive ? "macwsl.debug=shell" : nil].compactMap { $0 }
+        return arguments.isEmpty ? nil : arguments.joined(separator: " ")
     }
 
     var kernelDirectoryURL: URL {
@@ -150,6 +238,8 @@ struct DebugBoot: AsyncParsableCommand {
         case signal(Int32)
         case detached
         case timedOut
+        /// The command run through the agent ended, or its connection failed.
+        case processExited(Result<ExitStatus, MacWSLError>)
     }
 
     /// Prints the guest console to standard output and waits for the guest to stop, a signal,
@@ -181,9 +271,13 @@ struct DebugBoot: AsyncParsableCommand {
         let escapes = ConsoleEscapes(detachKey: detachKey ?? .default)
         report(escapes.instructions)
 
-        let rawMode = try RawMode()
+        let rawMode = try RawMode(for: "--interactive")
         defer { rawMode.restore() }
-        let detach = Self.forwardStandardInput(to: toGuest.fileHandleForWriting, escapes: escapes)
+        let console = toGuest.fileHandleForWriting
+        let detach = Self.forwardStandardInput(escapes: escapes) { bytes in
+            try? console.write(contentsOf: Data(bytes))
+            return true
+        }
         let started = ContinuousClock.now
         let banner = Task {
             await Self.reportBanner(in: machine.consoleLines, since: started, lineEnding: "\r\n")
@@ -200,7 +294,7 @@ struct DebugBoot: AsyncParsableCommand {
 
     /// Stops the machine if it is still running, reports how the session ended, and turns the
     /// ending into the command's result. `beforeReport` runs once the machine has stopped.
-    private func finish(
+    func finish(
         _ machine: VirtualMachine, after ending: Ending, started: ContinuousClock.Instant,
         beforeReport: () -> Void = {}
     ) async throws {
@@ -208,16 +302,18 @@ struct DebugBoot: AsyncParsableCommand {
         switch ending {
         case .guestStopped:
             break
-        case .signal, .detached, .timedOut:
+        case .signal, .detached, .timedOut, .processExited:
             outcome = try await machine.stop(timeout: Self.stopTimeout)
         }
         await machine.waitUntilStopped()
         beforeReport()
 
         if let outcome {
-            // The guest was stopped while running, usually at its shell prompt, whose line
-            // has no newline yet. Start the report on a line of its own.
-            Self.writeToStandardError("\n")
+            if mode != .exec {
+                // The guest was stopped while running, usually at its shell prompt, whose
+                // line has no newline yet. Start the report on a line of its own.
+                Self.writeToStandardError("\n")
+            }
             report(Self.describe(outcome))
         }
         report("vm: stopped after \((ContinuousClock.now - started).milliseconds) ms")
@@ -230,15 +326,32 @@ struct DebugBoot: AsyncParsableCommand {
             throw ExitCode(128 + number)
         case .timedOut:
             throw MacWSLError.guestStopTimedOut(seconds: timeout ?? 0)
+        case .processExited(.success(let status)):
+            if status.shellStatus != 0 {
+                throw ExitCode(status.shellStatus)
+            }
+        case .processExited(.failure(let error)):
+            // A command that cannot be started ends as it would in a shell: 127 if it does not
+            // exist, 126 otherwise.
+            let status: Int32
+            switch error {
+            case .guestCommandNotFound: status = 127
+            case .guestCommandNotStarted: status = 126
+            default: throw error
+            }
+            Self.writeToStandardError(Self.failure(for: error)?.output ?? "")
+            throw ExitCode(status)
         }
     }
 
-    /// Waits for whichever happens first: the guest stops, a signal, a detach, or the timeout.
+    /// Waits for whichever happens first: the guest stops, a signal, a detach, the timeout, or
+    /// the guest process ends.
     static func firstEnding(
         of machine: VirtualMachine,
-        signals: AsyncStream<Int32>,
+        signals: AsyncStream<Int32>?,
         detach: AsyncStream<Void>?,
-        timeout: Duration?
+        timeout: Duration?,
+        process: GuestProcess? = nil
     ) async -> Ending {
         await withTaskGroup(of: Ending?.self) { group in
             group.addTask {
@@ -250,11 +363,33 @@ struct DebugBoot: AsyncParsableCommand {
                 }
                 return .guestStopped(await machine.state)
             }
-            group.addTask {
-                for await number in signals {
-                    return .signal(number)
+            if let signals {
+                group.addTask {
+                    for await number in signals {
+                        return .signal(number)
+                    }
+                    return nil
                 }
-                return nil
+            }
+            if let process {
+                // The group waits for every task after cancelling them, and waitForExit() does
+                // not end on cancellation. A stream does, so the exit is observed through one.
+                let (exits, continuation) = AsyncStream.makeStream(
+                    of: Result<ExitStatus, MacWSLError>.self)
+                Task {
+                    do throws(MacWSLError) {
+                        continuation.yield(.success(try await process.waitForExit()))
+                    } catch {
+                        continuation.yield(.failure(error))
+                    }
+                    continuation.finish()
+                }
+                group.addTask {
+                    for await result in exits {
+                        return .processExited(result)
+                    }
+                    return nil
+                }
             }
             if let detach {
                 group.addTask {
@@ -284,11 +419,11 @@ struct DebugBoot: AsyncParsableCommand {
 
     // MARK: Console
 
-    /// Copies standard input to the guest, interpreting the escape sequences, until the user
-    /// detaches. Returns a stream that yields once when the user detaches, or when standard
-    /// input ends.
-    private static func forwardStandardInput(
-        to destination: FileHandle, escapes: ConsoleEscapes
+    /// Copies standard input to `send`, interpreting the escape sequences, until the user
+    /// detaches or `send` returns false. Returns a stream that yields once when the user
+    /// detaches, or when standard input ends.
+    static func forwardStandardInput(
+        escapes: ConsoleEscapes, send: @escaping @Sendable ([UInt8]) -> Bool
     ) -> AsyncStream<Void> {
         let (stream, continuation) = AsyncStream.makeStream(of: Void.self)
         Thread {
@@ -301,7 +436,9 @@ struct DebugBoot: AsyncParsableCommand {
                 for action in escapes.process(buffer[..<count]) {
                     switch action {
                     case .send(let bytes):
-                        try? destination.write(contentsOf: Data(bytes))
+                        if !send(bytes) {
+                            break reading
+                        }
                     case .showHelp:
                         // The terminal is in raw mode, which does not translate "\n".
                         writeToStandardError("\r\n" + escapes.help(lineEnding: "\r\n"))
@@ -376,8 +513,8 @@ struct DebugBoot: AsyncParsableCommand {
         switch outcome {
         case .alreadyStopped:
             "shutdown: the virtual machine had already stopped"
-        case .clean(let elapsed):
-            "shutdown: clean after \(elapsed.milliseconds) ms"
+        case .clean(let elapsed, let request):
+            "shutdown: clean after \(elapsed.milliseconds) ms via \(request)"
         case .forced(let elapsed):
             "shutdown: forced after \(elapsed.milliseconds) ms (the guest did not power off when asked)"
         }
@@ -385,7 +522,7 @@ struct DebugBoot: AsyncParsableCommand {
 
     /// Writes a status line to standard error. In an interactive session the terminal is in
     /// raw mode, which does not translate "\n", so status lines are written before and after it.
-    private func report(_ message: String) {
+    func report(_ message: String) {
         Self.writeToStandardError("debug-boot: \(message)\n")
     }
 

@@ -1,46 +1,77 @@
 #!/bin/sh
 # /init for the MacWSL initramfs.
 #
-# 1. Mounts proc, sysfs, devtmpfs, and a tmpfs on /run.
+# 1. Mounts proc, sysfs, devtmpfs, devpts, and a tmpfs on /run.
 # 2. Prints one banner line: macwsl-initramfs <version> kernel=<uname -r>.
 # 3. With macwsl.test=lsblk on the kernel command line, lists /dev/vd* (the virtio block
 #    devices). The phase 03 integration tests use this.
-# 4. With macwsl.test=poweroff on the kernel command line, prints
-#    "macwsl-initramfs: poweroff" and powers off. Phase 03 and CI use this.
-# 5. Otherwise, runs an interactive shell on /dev/hvc0.
+# 4. With macwsl.test=poweroff, prints "macwsl-initramfs: poweroff" and powers off. Phase 03
+#    and CI use this.
+# 5. With macwsl.test=agent, runs the guest agent's self-test, which prints
+#    "macwsl-agent self-test: ok" on success, and powers off. The QEMU smoke test uses this.
+# 6. Otherwise, writes /etc/inittab and executes busybox init, which becomes PID 1 and
+#    supervises the guest agent. With macwsl.debug=shell, init also runs a shell on /dev/hvc0.
 #
-# Phase 04 replaces step 5 with the guest agent.
+# docs/decisions/0005-init-supervises-the-agent.md explains why init, not the agent, is PID 1.
 
 export PATH=/sbin:/bin:/usr/sbin:/usr/bin
 
 mountpoint -q /proc || mount -t proc -o nosuid,nodev,noexec proc /proc
 mountpoint -q /sys || mount -t sysfs -o nosuid,nodev,noexec sysfs /sys
 mountpoint -q /dev || mount -t devtmpfs -o nosuid,mode=0755 devtmpfs /dev
+mkdir -p /dev/pts
+mountpoint -q /dev/pts || mount -t devpts -o nosuid,noexec,mode=0620,ptmxmode=0666 devpts /dev/pts
 mountpoint -q /run || mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs /run
 
 echo "macwsl-initramfs $(cat /etc/macwsl-initramfs-version) kernel=$(uname -r)"
 
-case " $(cat /proc/cmdline) " in
+cmdline=" $(cat /proc/cmdline) "
+
+case $cmdline in
 *" macwsl.test=lsblk "*)
     ls /dev/vd*
     ;;
 esac
 
-case " $(cat /proc/cmdline) " in
+case $cmdline in
 *" macwsl.test=poweroff "*)
     echo "macwsl-initramfs: poweroff"
     poweroff -f
     ;;
+*" macwsl.test=agent "*)
+    if [ -x /sbin/macwsl-agent ]; then
+        /sbin/macwsl-agent self-test
+    else
+        echo "macwsl-agent self-test: FAILED: /sbin/macwsl-agent is not in this initramfs"
+    fi
+    poweroff -f
+    ;;
 esac
 
-console=/dev/hvc0
-if [ ! -c "$console" ]; then
-    echo "macwsl-initramfs: $console is not available; using /dev/console"
-    console=/dev/console
-fi
+# busybox init reads /etc/inittab. Each line is <tty>::<action>:<command>; an empty <tty>
+# means the console.
+#
+# - The agent is respawned whenever it exits, so that an agent crash does not panic the
+#   kernel; init also reaps orphaned processes.
+# - SIGUSR2 (from the agent's shutdown request, or `poweroff`) runs the shutdown actions.
+#   macwsl-shutdown ends in `poweroff -f`, so init's own sequence, which sleeps for two
+#   seconds, never runs.
+debug_shell=false
+case $cmdline in
+*" macwsl.debug=shell "*) debug_shell=true ;;
+esac
+{
+    if [ -x /sbin/macwsl-agent ]; then
+        echo "::respawn:/sbin/macwsl-agent"
+    else
+        # A guest built without --agent: keep the console useful instead.
+        echo "macwsl-initramfs: /sbin/macwsl-agent is missing; starting a shell on hvc0" >&2
+        debug_shell=true
+    fi
+    if [ "$debug_shell" = true ]; then
+        echo "hvc0::respawn:/bin/cttyhack /bin/sh -l"
+    fi
+    echo "::shutdown:/sbin/macwsl-shutdown"
+} > /etc/inittab
 
-# PID 1 must not exit, or the kernel panics. Restart the shell whenever it exits.
-while true; do
-    setsid cttyhack sh -l < "$console" > "$console" 2>&1
-    sleep 1
-done
+exec /sbin/init
