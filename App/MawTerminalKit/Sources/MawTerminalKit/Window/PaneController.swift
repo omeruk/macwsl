@@ -56,6 +56,7 @@ final class PaneController {
         self.id = id
         self.session = session
         terminalView = MawTerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 400))
+        terminalView.hideScroller()
         terminalView.terminalDelegate = self
         terminalView.pane = self
         session.delegate = self
@@ -171,6 +172,15 @@ extension PaneController: @preconcurrency TerminalViewDelegate {
 }
 
 extension TerminalView {
+    /// Hides SwiftTerm's scroller, which the design does not have. SwiftTerm then reserves no
+    /// width for it, so the grid uses the pane's full width. Scrollback stays available with the
+    /// trackpad or mouse wheel, and with Page Up and Page Down (fn-↑ and fn-↓).
+    func hideScroller() {
+        for case let scroller as NSScroller in subviews {
+            scroller.isHidden = true
+        }
+    }
+
     /// Applies the parts of `appearance` that differ from `previous`.
     func apply(_ appearance: TerminalAppearance, previous: TerminalAppearance?) {
         let theme = appearance.theme

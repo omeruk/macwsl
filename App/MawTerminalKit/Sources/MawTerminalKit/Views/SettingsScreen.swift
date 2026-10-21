@@ -406,6 +406,7 @@ struct ThemePreview: NSViewRepresentable {
 
     func makeNSView(context: Context) -> PreviewTerminalView {
         let view = PreviewTerminalView(frame: CGRect(x: 0, y: 0, width: 600, height: 170))
+        view.hideScroller()
         view.apply(appearance, previous: nil)
         view.lastAppearance = appearance
         view.feed(text: Self.sample)

@@ -20,6 +20,9 @@ let package = Package(
             name: "MawTerminalKit",
             dependencies: [.product(name: "SwiftTerm", package: "SwiftTerm")]
         ),
-        .testTarget(name: "MawTerminalKitTests", dependencies: ["MawTerminalKit"]),
+        .testTarget(
+            name: "MawTerminalKitTests",
+            dependencies: ["MawTerminalKit", .product(name: "SwiftTerm", package: "SwiftTerm")]
+        ),
     ]
 )
