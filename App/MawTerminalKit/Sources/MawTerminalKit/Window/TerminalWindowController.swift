@@ -39,7 +39,7 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         window.contentView = NSHostingView(rootView: WindowRootView(model: model))
         window.setFrameAutosaveName("maw.terminal")
         updateTitleBarMetrics()
-        applyWindowOpacity()
+        applyChrome()
         model.start()
     }
 
@@ -62,7 +62,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    func applyWindowOpacity() {
+    /// Applies the chrome colors that AppKit draws: the window background and its translucency.
+    /// Called when the settings or the previewed theme change.
+    func applyChrome() {
         guard let window else { return }
         let translucent = model.settings.backgroundOpacity < 1
         window.isOpaque = !translucent
@@ -146,6 +148,10 @@ extension TerminalWindowController: WindowHost {
 
     func openNewWindow() {
         onNewWindow?()
+    }
+
+    func chromeDidChange() {
+        applyChrome()
     }
 
     func setWindowTitle(_ title: String) {

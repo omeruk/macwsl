@@ -122,7 +122,6 @@ public final class AppController: NSObject, NSApplicationDelegate, NSMenuItemVal
                 guard let self else { return }
                 for window in self.windows {
                     window.model.applyAppearance()
-                    window.applyWindowOpacity()
                 }
                 if self.currentRegistry != self.lastMenuRegistry {
                     self.rebuildMenus()

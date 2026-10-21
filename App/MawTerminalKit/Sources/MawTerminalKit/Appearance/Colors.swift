@@ -50,3 +50,14 @@ extension Text {
             .lineLimit(1)
     }
 }
+
+extension View {
+    /// The style of every text field the app draws: plain, in the chrome font and text color,
+    /// with the caret in the text color too rather than the system accent color.
+    func chromeTextField(_ chrome: ChromePalette) -> some View {
+        textFieldStyle(.plain)
+            .font(MawFonts.chromeFont())
+            .foregroundStyle(chrome.text.color)
+            .tint(chrome.text.color)
+    }
+}

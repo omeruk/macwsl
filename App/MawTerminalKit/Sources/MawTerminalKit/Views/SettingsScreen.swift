@@ -125,16 +125,18 @@ struct SettingsScreen: View {
     }
 
     private func fieldRow(_ field: SettingsForm.Field, index: Int) -> some View {
-        let focused = area == .fields && index == fieldIndex
+        let selected = area == .fields && index == fieldIndex
+        // While its text is edited, a row is not drawn in reverse video, so that the text and
+        // the caret, both in the text color, stay visible.
+        let editing = selected && editingText != nil
+        let focused = selected && !editing
         return HStack(spacing: 0) {
             Text(field.label)
                 .chromeStyle(focused ? chrome.textSelectedSecondary : chrome.textSecondary)
                 .frame(width: Self.labelWidth, alignment: .leading)
-            if editingText != nil, focused, case .text = field.kind {
+            if editing, case .text = field.kind {
                 TextField("", text: Binding(get: { editingText ?? "" }, set: { editingText = $0 }))
-                    .textFieldStyle(.plain)
-                    .font(MawFonts.chromeFont())
-                    .foregroundStyle(chrome.textSelected.color)
+                    .chromeTextField(chrome)
                     .focused($textFocused)
                     .onSubmit { finishEditing(field, commit: true) }
                     .onKeyPress(.escape) {
@@ -158,6 +160,8 @@ struct SettingsScreen: View {
             Spacer(minLength: 0)
             if focused {
                 Text(hints(for: field)).chromeStyle(chrome.textSelectedSecondary)
+            } else if editing {
+                Text("↩ save   esc cancel").chromeStyle(chrome.textMuted)
             }
         }
         .padding(.horizontal, 6)

@@ -90,12 +90,9 @@ struct CommandPaletteView: View {
                 prompt: Text(state.mode == .commands ? "Search commands" : "Search themes")
                     .foregroundStyle(chrome.textTabNumber.color)
             )
-            .textFieldStyle(.plain)
-            .font(MawFonts.chromeFont())
-            .foregroundStyle(chrome.text.color)
+            .chromeTextField(chrome)
             .focused($queryFocused)
             .accessibilityLabel(state.mode == .commands ? "Search commands" : "Search themes")
-            Text("esc").chromeStyle(chrome.textMuted)
         }
         .padding(.horizontal, 14)
         .frame(height: 44)

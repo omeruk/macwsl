@@ -17,6 +17,8 @@ protocol WindowHost: AnyObject {
     func focusTerminal(_ view: NSView)
     func openNewWindow()
     func setWindowTitle(_ title: String)
+    /// The theme in use changed: the settings changed, or a theme is being previewed.
+    func chromeDidChange()
 }
 
 /// The state of the command palette.
@@ -428,6 +430,7 @@ final class WindowModel {
         for pane in panes.values {
             pane.apply(appearance)
         }
+        host?.chromeDidChange()
     }
 
     // MARK: Palette
