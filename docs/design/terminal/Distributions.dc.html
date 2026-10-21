@@ -87,11 +87,11 @@ class Component extends DCLogic {
   renderVals() {
     const fg = '#CFD5E3', dim = '#8B91A1', orange = '#E99173', yellow = '#F7CE46', green = '#CAE797', blue = '#A783F7', violet = '#7AD3D5';
     const defs = [
-      { name: 'ubuntu-24.04', state: 'running', mem: '412M', cpu: '0.4%', disk: '3.1G/64G', up: '2h 14m', kernel: '6.18.57-macwsl', def: true,
+      { name: 'ubuntu-24.04', state: 'running', mem: '412M', cpu: '0.4%', disk: '3.1G/64G', up: '2h 14m', kernel: '6.18.57-maw', def: true,
         details: [['default', 'yes', green], ['user', 'omer', fg], ['ip', '192.168.64.3', orange], ['forwarded', 'localhost:8000 → 8000', blue], ['mounts', '/mnt/mac  ← ~', blue], ['disk image', '~/Library/…/ubuntu-24.04/disk.img', fg], ['boot', '271 ms to agent', violet]] },
-      { name: 'debian-13', state: 'running', mem: '188M', cpu: '0.0%', disk: '1.4G/64G', up: '41m', kernel: '6.18.57-macwsl', def: false,
+      { name: 'debian-13', state: 'running', mem: '188M', cpu: '0.0%', disk: '1.4G/64G', up: '41m', kernel: '6.18.57-maw', def: false,
         details: [['default', 'no', dim], ['user', 'omer', fg], ['ip', '192.168.64.4', orange], ['forwarded', '—', dim], ['mounts', '/mnt/mac  ← ~', blue], ['disk image', '~/Library/…/debian-13/disk.img', fg], ['boot', '263 ms to agent', violet]] },
-      { name: 'alpine-3.22', state: 'stopped', mem: '—', cpu: '—', disk: '0.2G/16G', up: '—', kernel: '6.18.57-macwsl', def: false,
+      { name: 'alpine-3.22', state: 'stopped', mem: '—', cpu: '—', disk: '0.2G/16G', up: '—', kernel: '6.18.57-maw', def: false,
         details: [['default', 'no', dim], ['user', 'root', fg], ['ip', '—', dim], ['forwarded', '—', dim], ['mounts', '/mnt/mac  ← ~', blue], ['disk image', '~/Library/…/alpine-3.22/disk.img', fg], ['boot', '—', dim]] }
     ];
     const s = this.state.sel;

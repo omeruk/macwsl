@@ -1,20 +1,20 @@
 # Guest kernel and initramfs
 
-Every MacWSL VM boots from two files built here:
+Every maw VM boots from two files built here:
 
 - `Image`: an uncompressed arm64 Linux kernel. `VZLinuxBootLoader` cannot boot a compressed
   kernel on Apple Silicon.
 - `initramfs.cpio.gz`: static busybox, static `mke2fs`/`mkfs.ext4`, `e2fsck`, and
-  `resize2fs`, the guest agent `/sbin/macwsl-agent`, and `/init`.
+  `resize2fs`, the guest agent `/sbin/maw-agent`, and `/init`.
 
-`/init` mounts the pseudo-file systems, prints the banner, and runs the `macwsl.test=` hooks.
+`/init` mounts the pseudo-file systems, prints the banner, and runs the `maw.test=` hooks.
 It then executes busybox `init` as PID 1, which supervises the agent; with
-`macwsl.debug=shell` on the kernel command line, `init` also runs a shell on `hvc0`.
+`maw.debug=shell` on the kernel command line, `init` also runs a shell on `hvc0`.
 [Decision record 0005](../docs/decisions/0005-init-supervises-the-agent.md) explains the
 arrangement, and [docs/protocol.md](../docs/protocol.md) specifies how the host talks to the
 agent.
 
-[Decision record 0003](../docs/decisions/0003-guest-kernel.md) explains why MacWSL ships its
+[Decision record 0003](../docs/decisions/0003-guest-kernel.md) explains why maw ships its
 own monolithic kernel with 4K pages, and why the initramfs provisions disks.
 
 ## Layout
@@ -27,14 +27,14 @@ Guest/
   container-build.sh     runs inside the builder: kernel, initramfs, manifest, checksums
   kernel/
     VERSION              pinned kernel version, URL, and sha256
-    macwsl.config        configuration fragment, applied on top of allnoconfig
+    maw.config           configuration fragment, applied on top of allnoconfig
     build-kernel.sh      allnoconfig, merge_config.sh, olddefconfig, verification, `make Image`
     check-config.sh      checks the final configuration against the required lists
   initramfs/
     SOURCES              pinned busybox and e2fsprogs versions, URLs, and sha256 sums
     busybox.config       busybox configuration overrides
     init                 /init
-    macwsl-shutdown      the inittab shutdown action: stops processes, powers off
+    maw-shutdown         the inittab shutdown action: stops processes, powers off
     build.sh             builds busybox and e2fsprogs, packs the cpio archive
   agent/
     SWIFT                pinned Swift toolchains and Static Linux SDK for the agent
@@ -55,13 +55,13 @@ The build runs inside a Linux container, so it needs a container runtime on the 
 - **Docker** works as well.
 
 `Guest/build.sh` uses the first of these that is installed and running, in that order. Set
-`MACWSL_CONTAINER_RUNTIME=docker` or `MACWSL_CONTAINER_RUNTIME=container` to choose. When
+`MAW_CONTAINER_RUNTIME=docker` or `MAW_CONTAINER_RUNTIME=container` to choose. When
 neither runtime is usable, the script says what to install or start, and exits with status
 69.
 
 ```sh
 scripts/build-guest-agent.sh           # build the agent (see "Building the agent locally")
-Guest/build.sh --agent .build/guest-agent/macwsl-agent
+Guest/build.sh --agent .build/guest-agent/maw-agent
                                        # build into Guest/out/ with the agent
 Guest/build.sh                         # build without the agent; /init then starts a shell
 Guest/kernel/check-config.sh           # check Guest/out/kernel.config
@@ -85,7 +85,7 @@ reference build.
 
 To use a CI build instead of building locally, run `scripts/fetch-guest.sh [<branch>]`. It
 downloads the latest successful build of the branch (default `main`), verifies it, and
-installs it into `~/Library/Application Support/MacWSL/kernel/`.
+installs it into `~/Library/Application Support/maw/kernel/`.
 
 ## Building the agent locally
 
@@ -115,14 +115,14 @@ cannot use the SDK.
 3. Build:
 
    ```sh
-   scripts/build-guest-agent.sh    # writes .build/guest-agent/macwsl-agent
+   scripts/build-guest-agent.sh    # writes .build/guest-agent/maw-agent
    ```
 
    The script finds the pinned toolchain, selects it with `TOOLCHAINS` for its own commands
    only, checks the toolchain and SDK versions, and builds a static, stripped binary for
    `aarch64-swift-linux-musl`.
 
-The agent's logic lives in `Sources/MacWSLAgentKit`, which also builds on macOS, so its unit
+The agent's logic lives in `Sources/MawAgentKit`, which also builds on macOS, so its unit
 tests run with `swift test` and need none of the above.
 
 ## Reproducibility
@@ -142,7 +142,7 @@ The build achieves this as follows:
 
 A build from a working tree with uncommitted changes is marked `-dirty` in its version.
 
-The agent is the exception. Two builds of `macwsl-agent` from the same commit, toolchain, and
+The agent is the exception. Two builds of `maw-agent` from the same commit, toolchain, and
 path differ in the `.swift_modhash` section that Swift 6.4 emits (146 16-byte module hashes,
 of which about 17 differ), and therefore in the GNU build ID. No compiler option to make the
 section deterministic was found. CI builds the agent twice, reports the difference as a
@@ -151,7 +151,7 @@ agent is still checked.
 
 ## Changing the kernel configuration
 
-1. Edit `kernel/macwsl.config`. Add the option to the group that matches its purpose, with
+1. Edit `kernel/maw.config`. Add the option to the group that matches its purpose, with
    a comment if the reason is not obvious.
 2. If the guest depends on the option, add it to `REQUIRED_OPTIONS` in
    `kernel/check-config.sh` as well.
@@ -169,7 +169,7 @@ from `Guest/build.sh --print-builder-image`), extract the kernel source from
 
 ## Bumping the kernel
 
-MacWSL tracks the newest longterm release listed at <https://www.kernel.org/releases.json>.
+maw tracks the newest longterm release listed at <https://www.kernel.org/releases.json>.
 
 1. Update `LINUX_VERSION`, `LINUX_URL`, and `LINUX_SHA256` in `kernel/VERSION`. Take the
    sha256 from `sha256sums.asc` in the same directory as the tarball on cdn.kernel.org, and
