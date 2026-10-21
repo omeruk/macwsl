@@ -148,8 +148,8 @@ final class ExecSession {
         }
         guard ready > 0 else { return }
 
-        // Outputs are handled from the highest index down, so that closing one does not shift
-        // the indices still to be handled.
+        // Outputs that reached end-of-file are removed after the loop, highest index first, so
+        // that the indices in `sources` stay valid while it runs.
         var closedOutputs: [Int] = []
         for (request, source) in zip(requests, sources) where request.revents != 0 {
             switch source {
