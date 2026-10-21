@@ -113,14 +113,90 @@ import Testing
         }
     }
 
-    @Test func buildsALangFromTheLocale() {
-        #expect(LocalShellSession.lang(for: Locale(identifier: "tr_TR")) == "tr_TR.UTF-8")
-        #expect(LocalShellSession.lang(for: Locale(identifier: "en")) == "en_US.UTF-8")
+    /// The prompt the test `.zshrc` sets, so that tests can tell when zsh is ready for input.
+    static let prompt = "maw-ready> "
+
+    /// The app's environment as the Finder or Xcode starts it, without locale variables, and with
+    /// a `ZDOTDIR` of its own, so that the user's zsh startup files do not run. Its `.zshrc` only
+    /// sets a known prompt.
+    func finderLikeEnvironment() throws -> [String: String] {
+        let zdotdir = FileManager.default.temporaryDirectory
+            .appending(path: "maw-zdotdir-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: zdotdir, withIntermediateDirectories: true)
+        try Data("PROMPT='\(Self.prompt)'\n".utf8).write(to: zdotdir.appending(path: ".zshrc"))
+        var environment = ProcessInfo.processInfo.environment.filter { key, _ in
+            key != "LANG" && !key.hasPrefix("LC_")
+        }
+        environment["ZDOTDIR"] = zdotdir.path
+        return environment
+    }
+
+    func startZsh(_ recorder: Recorder, environment: [String: String]) throws -> LocalShellSession {
+        // English with the region Turkey: the reported case, whose obvious locale does not exist.
+        let session = LocalShellSession(
+            shell: "/bin/zsh", startDirectory: "/tmp", baseEnvironment: environment,
+            locale: Locale(identifier: "en_TR"))
+        session.delegate = recorder
+        try session.start(size: .default)
+        return session
+    }
+
+    /// Waits until zsh shows its prompt, so that typed input reaches its line editor rather than
+    /// the terminal driver's echo, then clears what was recorded so far.
+    func waitForPrompt(_ recorder: Recorder) async -> Bool {
+        let ready = await waitUntil(seconds: 5) { recorder.text.contains(Self.prompt) }
+        recorder.output.removeAll()
+        return ready
+    }
+
+    @Test func theShellGetsAUTF8CharacterType() async throws {
+        let recorder = Recorder()
+        let session = try startZsh(recorder, environment: finderLikeEnvironment())
+        #expect(await waitForPrompt(recorder), "\(recorder.text)")
+        session.send(ArraySlice("print -r -- \"charmap:$(locale charmap)\"\r".utf8))
+        #expect(
+            await waitUntil(seconds: 5) { recorder.text.contains("charmap:UTF-8") },
+            "\(recorder.text)")
+        session.terminate()
+    }
+
+    /// Turkish letters typed at the prompt, before Return. A shell in a single-byte locale
+    /// echoes each byte separately, for example `ö` as `Ã¶` or `<00B6>`.
+    static let typed = "echo şğüöçı ŞĞÜÖÇİ"
+
+    @Test func multibyteCharactersTypedAtTheZshPromptEchoIntact() async throws {
+        let recorder = Recorder()
+        let session = try startZsh(recorder, environment: finderLikeEnvironment())
+        #expect(await waitForPrompt(recorder), "\(recorder.text)")
+        session.send(ArraySlice(Self.typed.utf8))
+        #expect(
+            await waitUntil(seconds: 5) { recorder.text.contains(Self.typed) },
+            "\(recorder.text)")
+        #expect(!recorder.text.contains("<00"))
+        session.send(ArraySlice("\r".utf8))
+        #expect(await waitUntil(seconds: 5) { recorder.text.contains("\r\nşğüöçı ŞĞÜÖÇİ\r\n") })
+        session.terminate()
+    }
+
+    /// The control for the test above: in the C locale, which is valid and therefore kept, zsh
+    /// mangles the same input, so the check above does detect the defect.
+    @Test func theEchoCheckDetectsASingleByteLocale() async throws {
+        let recorder = Recorder()
+        var environment = try finderLikeEnvironment()
+        environment["LC_ALL"] = "C"
+        let session = try startZsh(recorder, environment: environment)
+        #expect(await waitForPrompt(recorder), "\(recorder.text)")
+        session.send(ArraySlice(Self.typed.utf8))
+        try await Task.sleep(for: .seconds(1))
+        #expect(!recorder.output.isEmpty)
+        #expect(!recorder.text.contains(Self.typed), "\(recorder.text)")
+        session.terminate()
     }
 
     @Test func environmentDropsAppOnlyVariables() {
         let environment = LocalShellSession.environment(
-            from: ["HOME": "/Users/x", "DYLD_LIBRARY_PATH": "/x", "LANG": "de_DE.UTF-8"])
+            from: ["HOME": "/Users/x", "DYLD_LIBRARY_PATH": "/x", "LANG": "de_DE.UTF-8"],
+            locale: Locale(identifier: "en_TR"))
         #expect(environment.contains("HOME=/Users/x"))
         #expect(environment.contains("LANG=de_DE.UTF-8"))
         #expect(environment.contains("TERM=xterm-256color"))

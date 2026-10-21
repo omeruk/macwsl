@@ -19,13 +19,23 @@ public final class LocalShellSession: TerminalSession {
     private var size = TerminalSize.default
     private var tracker = WorkingDirectoryTracker()
     private let startDirectory: String
+    private let baseEnvironment: [String: String]
+    private let locale: Locale
 
     /// - Parameters:
     ///   - shell: The shell's path, such as `/bin/zsh`. It runs as a login shell.
     ///   - startDirectory: Where the shell starts. Defaults to the home directory.
-    public init(shell: String, startDirectory: String = NSHomeDirectory()) {
+    ///   - baseEnvironment: The environment the shell's is derived from: the app's own.
+    ///   - locale: The user's locale, for choosing `LANG` when the environment has no valid one.
+    public init(
+        shell: String, startDirectory: String = NSHomeDirectory(),
+        baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        locale: Locale = .current
+    ) {
         self.shell = shell
         self.startDirectory = startDirectory
+        self.baseEnvironment = baseEnvironment
+        self.locale = locale
     }
 
     public var displayName: String {
@@ -46,7 +56,8 @@ public final class LocalShellSession: TerminalSession {
         self.process = process
         // A leading dash in argv[0] makes the shell a login shell, as Terminal.app starts it.
         process.startProcess(
-            executable: shell, args: [], environment: Self.environment(),
+            executable: shell, args: [],
+            environment: Self.environment(from: baseEnvironment, locale: locale),
             execName: "-" + displayName, currentDirectory: startDirectory)
         guard process.running else {
             self.process = nil
@@ -148,11 +159,8 @@ public final class LocalShellSession: TerminalSession {
     }()
 
     /// The environment for the shell: the app's own, without variables that only make sense
-    /// for the app process, plus the terminal's identity.
-    static func environment(
-        from base: [String: String] = ProcessInfo.processInfo.environment,
-        locale: Locale = .current
-    ) -> [String] {
+    /// for the app process, plus the terminal's identity and a UTF-8 locale (`ShellLocale`).
+    static func environment(from base: [String: String], locale: Locale) -> [String] {
         let dropped = ["DYLD_", "__XPC_", "XPC_", "OS_ACTIVITY_", "__CF", "NSZombie"]
         var environment = base.filter { key, _ in
             !dropped.contains { key.hasPrefix($0) }
@@ -163,19 +171,8 @@ public final class LocalShellSession: TerminalSession {
         if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
             environment["TERM_PROGRAM_VERSION"] = version
         }
-        if environment["LANG"] == nil {
-            environment["LANG"] = Self.lang(for: locale)
-        }
+        environment = ShellLocale.environment(environment, locale: locale)
         return environment.map { "\($0)=\($1)" }.sorted()
-    }
-
-    /// `LANG` for a locale, such as `tr_TR.UTF-8`, falling back to `en_US.UTF-8` for locales
-    /// that have no region.
-    static func lang(for locale: Locale) -> String {
-        guard let language = locale.language.languageCode?.identifier,
-            let region = locale.region?.identifier, region.count == 2
-        else { return "en_US.UTF-8" }
-        return "\(language)_\(region).UTF-8"
     }
 
     /// The text before the first NUL of a C string buffer.
