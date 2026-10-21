@@ -161,6 +161,38 @@ public final class GuestProcess: @unchecked Sendable {
         // What it sent before is still read; what is queued for it is dropped.
         var agentStoppedReading = false
         while true {
+            // First the frames already buffered: the reply to `exec` may have arrived in the
+            // same read as the process's first output.
+            while let frame = try connection.nextFrame() {
+                switch frame.type {
+                case .stdout:
+                    frame.payload.withUnsafeBytes { output(.stdout, $0) }
+                case .stderr:
+                    frame.payload.withUnsafeBytes { output(.stderr, $0) }
+                case .control:
+                    let message: ControlMessage
+                    do throws(FrameError) {
+                        message = try frame.controlMessage()
+                    } catch {
+                        throw .frame(error)
+                    }
+                    switch message {
+                    case .exited(let status):
+                        return status
+                    case .error(let error):
+                        throw .remote(error)
+                    default:
+                        throw .unexpectedMessage(
+                            "unexpected \(message.name) message during an exec session")
+                    }
+                case .version, .stdin:
+                    throw .frame(.unexpectedType(frame.type.rawValue, expected: "output"))
+                }
+            }
+            if connection.isAtEndOfInput {
+                throw .closed
+            }
+
             moveQueuedFrames(to: connection)
             if agentStoppedReading {
                 connection.discardPendingOutput()
@@ -196,35 +228,6 @@ public final class GuestProcess: @unchecked Sendable {
             }
             if requests[0].returned(POLLIN | POLLHUP | POLLERR) {
                 try connection.receive()
-            }
-            while let frame = try connection.nextFrame() {
-                switch frame.type {
-                case .stdout:
-                    frame.payload.withUnsafeBytes { output(.stdout, $0) }
-                case .stderr:
-                    frame.payload.withUnsafeBytes { output(.stderr, $0) }
-                case .control:
-                    let message: ControlMessage
-                    do throws(FrameError) {
-                        message = try frame.controlMessage()
-                    } catch {
-                        throw .frame(error)
-                    }
-                    switch message {
-                    case .exited(let status):
-                        return status
-                    case .error(let error):
-                        throw .remote(error)
-                    default:
-                        throw .unexpectedMessage(
-                            "unexpected \(message.name) message during an exec session")
-                    }
-                case .version, .stdin:
-                    throw .frame(.unexpectedType(frame.type.rawValue, expected: "output"))
-                }
-            }
-            if connection.isAtEndOfInput {
-                throw .closed
             }
         }
     }
