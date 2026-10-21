@@ -1,5 +1,5 @@
 #!/bin/bash
-# Configures and builds the MacWSL guest kernel. Runs inside the builder container; start it
+# Configures and builds the maw guest kernel. Runs inside the builder container; start it
 # through Guest/build.sh.
 #
 # Usage: build-kernel.sh <source-tarball> <work-dir>
@@ -20,7 +20,7 @@ tarball=$1
 work_dir=$2
 kernel_dir=$(cd "$(dirname "$0")" && pwd)
 guest_dir=$(dirname "$kernel_dir")
-fragment=$kernel_dir/macwsl.config
+fragment=$kernel_dir/maw.config
 
 src=$work_dir/linux
 rm -rf "$src"

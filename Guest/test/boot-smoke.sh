@@ -2,14 +2,14 @@
 # Boots the guest kernel and initramfs under QEMU and checks that /init runs. Each boot must
 # print the banner line and power off on its own within 120 seconds:
 #
-# 1. With macwsl.test=poweroff, "macwsl-initramfs: poweroff" must appear.
+# 1. With maw.test=poweroff, "maw-initramfs: poweroff" must appear.
 # 2. If the initramfs contains the guest agent (manifest.json names its sha256), a second boot
-#    with macwsl.test=agent runs the agent's self-test, and "macwsl-agent self-test: ok" must
+#    with maw.test=agent runs the agent's self-test, and "maw-agent self-test: ok" must
 #    appear. QEMU has no vsock here, so the self-test covers everything but the transport.
 #
 # On failure, prints the full console log of the failing boot.
 #
-# QEMU is only a test harness. MacWSL itself boots these files with Virtualization.framework
+# QEMU is only a test harness. maw itself boots these files with Virtualization.framework
 # (phase 03), and the settings below mirror that machine where QEMU allows it.
 #
 # Usage: Guest/test/boot-smoke.sh [--require-agent] [<dir>]   (default: Guest/out)
@@ -100,7 +100,7 @@ boot() {
     # The console may end lines with CR LF.
     local console banner found
     console=$(tr -d '\r' < "$log")
-    banner=$(printf '%s\n' "$console" | grep -E "^macwsl-initramfs [^ ]+ kernel=$release\$" || true)
+    banner=$(printf '%s\n' "$console" | grep -E "^maw-initramfs [^ ]+ kernel=$release\$" || true)
     found=$(printf '%s\n' "$console" | grep -Fx "$expected" || true)
 
     local problems=()
@@ -109,7 +109,7 @@ boot() {
     elif [ "$status" -ne 0 ]; then
         problems+=("QEMU exited with status $status.")
     fi
-    [ -n "$banner" ] || problems+=("The banner 'macwsl-initramfs <version> kernel=$release' did not appear.")
+    [ -n "$banner" ] || problems+=("The banner 'maw-initramfs <version> kernel=$release' did not appear.")
     [ -n "$found" ] || problems+=("'$expected' did not appear.")
 
     if [ "${#problems[@]}" -ne 0 ]; then
@@ -126,9 +126,9 @@ boot() {
     echo "boot-smoke: $name: passed; QEMU powered off after ${elapsed}s"
 }
 
-boot poweroff "macwsl.test=poweroff" "macwsl-initramfs: poweroff"
+boot poweroff "maw.test=poweroff" "maw-initramfs: poweroff"
 if [ "$has_agent" = true ]; then
-    boot agent "macwsl.test=agent" "macwsl-agent self-test: ok"
+    boot agent "maw.test=agent" "maw-agent self-test: ok"
 else
     echo "boot-smoke: the initramfs has no agent; skipping the agent self-test"
 fi

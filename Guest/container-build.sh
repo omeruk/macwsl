@@ -37,8 +37,8 @@ esac
 export SOURCE_DATE_EPOCH
 KBUILD_BUILD_TIMESTAMP=$(date --utc --date="@$SOURCE_DATE_EPOCH" '+%a %b %e %H:%M:%S UTC %Y')
 export KBUILD_BUILD_TIMESTAMP
-export KBUILD_BUILD_USER=macwsl
-export KBUILD_BUILD_HOST=macwsl
+export KBUILD_BUILD_USER=maw
+export KBUILD_BUILD_HOST=maw
 export KBUILD_BUILD_VERSION=1
 export TZ=UTC
 export LC_ALL=C.UTF-8
@@ -48,8 +48,8 @@ mkdir -p "$work"
 
 "$guest/kernel/build-kernel.sh" "$sources/$(basename "$LINUX_URL")" "$work"
 release=$(make -s -C "$work/linux" ARCH=arm64 kernelrelease)
-if [ "$release" != "$LINUX_VERSION-macwsl" ]; then
-    echo "container-build: kernel release is $release, expected $LINUX_VERSION-macwsl." >&2
+if [ "$release" != "$LINUX_VERSION-maw" ]; then
+    echo "container-build: kernel release is $release, expected $LINUX_VERSION-maw." >&2
     exit 1
 fi
 

@@ -1,15 +1,15 @@
 #!/bin/sh
 # Downloads the guest kernel and initramfs built by the Guest workflow, verifies them, and
-# installs them where macwsld looks for them.
+# installs them where mawd looks for them.
 #
 # Usage: scripts/fetch-guest.sh [<branch>]   (default: main)
 #
-# Takes the macwsl-guest artifact of the latest successful Guest workflow run on <branch>,
+# Takes the maw-guest artifact of the latest successful Guest workflow run on <branch>,
 # verifies every file against its SHA256SUMS, and installs the files into
-# ~/Library/Application Support/MacWSL/kernel/. Requires the GitHub CLI (`gh`), signed in.
+# ~/Library/Application Support/maw/kernel/. Requires the GitHub CLI (`gh`), signed in.
 #
 # Environment:
-#   MACWSL_KERNEL_DIR  install directory (default: ~/Library/Application Support/MacWSL/kernel)
+#   MAW_KERNEL_DIR  install directory (default: ~/Library/Application Support/maw/kernel)
 
 set -eu
 
@@ -18,7 +18,7 @@ if [ "$#" -gt 1 ] || [ "$branch" = -h ] || [ "$branch" = --help ]; then
     sed -n '5,13s/^# \{0,1\}//p' "$0" >&2
     exit 64
 fi
-kernel_dir=${MACWSL_KERNEL_DIR:-$HOME/Library/Application Support/MacWSL/kernel}
+kernel_dir=${MAW_KERNEL_DIR:-$HOME/Library/Application Support/maw/kernel}
 files="Image initramfs.cpio.gz kernel.config manifest.json SHA256SUMS"
 
 fail() {
@@ -44,8 +44,8 @@ echo "fetch-guest: run $run_id on '$branch', commit ${head_sha%"${head_sha#?????
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-gh run download "$run_id" --name macwsl-guest --dir "$work/download" ||
-    fail "could not download the macwsl-guest artifact of run $run_id ($run_url)."
+gh run download "$run_id" --name maw-guest --dir "$work/download" ||
+    fail "could not download the maw-guest artifact of run $run_id ($run_url)."
 
 for file in $files; do
     [ -f "$work/download/$file" ] || fail "the artifact of run $run_id has no $file."

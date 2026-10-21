@@ -1,7 +1,7 @@
 #!/bin/sh
-# Builds macwsld and ad-hoc signs it with the virtualization entitlement, which
+# Builds mawd and ad-hoc signs it with the virtualization entitlement, which
 # Virtualization.framework requires before it will create a VM. Run it again after every
-# `swift build` that relinks macwsld, since relinking drops the signature.
+# `swift build` that relinks mawd, since relinking drops the signature.
 #
 # Usage: scripts/sign-dev.sh [debug|release]
 
@@ -18,10 +18,10 @@ esac
 
 cd "$(dirname "$0")/.."
 
-entitlements="Resources/macwsld.entitlements"
+entitlements="Resources/mawd.entitlements"
 
-swift build --configuration "$configuration" --product macwsld
-binary="$(swift build --configuration "$configuration" --show-bin-path)/macwsld"
+swift build --configuration "$configuration" --product mawd
+binary="$(swift build --configuration "$configuration" --show-bin-path)/mawd"
 
 codesign --force --sign - --entitlements "$entitlements" "$binary"
 

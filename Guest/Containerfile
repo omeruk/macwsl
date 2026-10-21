@@ -1,4 +1,4 @@
-# Builder image for the MacWSL guest kernel and initramfs.
+# Builder image for the maw guest kernel and initramfs.
 #
 # The base image is pinned by digest, and apt installs from a fixed snapshot of the Debian
 # archive (snapshot.debian.org), so every build uses the same compiler and tools.

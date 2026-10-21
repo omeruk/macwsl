@@ -1,8 +1,8 @@
 # Host and guest agent protocol
 
-The host (`macwsld`, and the client library in `MacWSLProtocol`) talks to the guest agent,
-`macwsl-agent`, over vsock. This document specifies protocol version **1**. The code is in
-`Sources/MacWSLProtocol` (both sides) and `Sources/MacWSLAgentKit` (the agent).
+The host (`mawd`, and the client library in `MawProtocol`) talks to the guest agent,
+`maw-agent`, over vsock. This document specifies protocol version **1**. The code is in
+`Sources/MawProtocol` (both sides) and `Sources/MawAgentKit` (the agent).
 
 ## Transport
 
@@ -48,7 +48,7 @@ An empty data frame is valid and has no effect.
 2. Each side reads the first frame. It must be a `version` frame with a 4-byte payload.
 3. If the versions differ, the agent sends an `error` control message with code
    `versionMismatch`, `hostVersion`, and `guestVersion`, and closes the connection. The host
-   reports `MacWSLError.guestAgentVersionMismatch(host:guest:)`, whose suggested fix is to
+   reports `MawError.guestAgentVersionMismatch(host:guest:)`, whose suggested fix is to
    update the guest files with `scripts/fetch-guest.sh`.
 4. Otherwise the host sends one request: `exec`, `info`, or `shutdown`.
 
@@ -181,8 +181,8 @@ with it. In terminal mode this does not arise in practice, because typed input i
 
 ## Readiness
 
-When the agent is listening, it writes `macwsl-agent ready <version>` to the console (`hvc0`).
-Hosts do not depend on that line: `macwsld` retries the connection until the agent answers
+When the agent is listening, it writes `maw-agent ready <version>` to the console (`hvc0`).
+Hosts do not depend on that line: `mawd` retries the connection until the agent answers
 `info`, and reports `boot: agent ready after <n> ms`.
 
 ## Shutdown

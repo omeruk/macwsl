@@ -98,15 +98,15 @@ check "container installed but not running" "$container_stopped" 69 \
     "Start it with 'container system start'"
 check "both installed, neither running: reports the preferred one" "$both_stopped" 69 \
     "Apple's container CLI is installed, but its system service is not running."
-check "override selects Docker" "$both_ready" 0 docker -- MACWSL_CONTAINER_RUNTIME=docker
+check "override selects Docker" "$both_ready" 0 docker -- MAW_CONTAINER_RUNTIME=docker
 check "override rejects an unknown runtime" "$both_ready" 64 \
-    "MACWSL_CONTAINER_RUNTIME is 'podman'; use 'container' or 'docker'." \
-    -- MACWSL_CONTAINER_RUNTIME=podman
+    "MAW_CONTAINER_RUNTIME is 'podman'; use 'container' or 'docker'." \
+    -- MAW_CONTAINER_RUNTIME=podman
 check "override names a runtime that is not installed" "$container_ready" 69 \
-    "MACWSL_CONTAINER_RUNTIME is 'docker', but 'docker' is not installed." \
-    -- MACWSL_CONTAINER_RUNTIME=docker
+    "MAW_CONTAINER_RUNTIME is 'docker', but 'docker' is not installed." \
+    -- MAW_CONTAINER_RUNTIME=docker
 check "override names a runtime that is not running" "$container_stopped" 69 \
-    "Start it with 'container system start'" -- MACWSL_CONTAINER_RUNTIME=container
+    "Start it with 'container system start'" -- MAW_CONTAINER_RUNTIME=container
 
 echo
 if [ "$failures" -ne 0 ]; then

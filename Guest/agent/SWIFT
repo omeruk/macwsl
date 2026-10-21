@@ -1,4 +1,4 @@
-# The Swift toolchain and Static Linux SDK that build the guest agent (macwsl-agent), sourced
+# The Swift toolchain and Static Linux SDK that build the guest agent (maw-agent), sourced
 # by scripts/build-guest-agent.sh and the Guest workflow. The SDK must come from the same Swift
 # release as the toolchain; Xcode's toolchain cannot use it.
 #

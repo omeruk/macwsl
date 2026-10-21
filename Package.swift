@@ -5,18 +5,18 @@ import PackageDescription
 // Targets marked "macOS only" wrap their sources in `#if os(macOS)`. The manifest is evaluated
 // on the host even when cross-compiling, so `#if os(...)` here cannot exclude them; instead the
 // guest agent depends only on the portable modules, which keeps
-// `swift build --swift-sdk aarch64-swift-linux-musl --product macwsl-agent` free of macOS code.
+// `swift build --swift-sdk aarch64-swift-linux-musl --product maw-agent` free of macOS code.
 // The portable modules import FoundationEssentials where it exists, so that the agent does not
 // link ICU (see docs/decisions/0005-init-supervises-the-agent.md).
 let package = Package(
-    name: "MacWSL",
+    name: "maw",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "macwsl", targets: ["macwsl"]),
-        .executable(name: "macwsld", targets: ["macwsld"]),
-        .executable(name: "macwsl-agent", targets: ["macwsl-agent"]),
-        .library(name: "MacWSLCore", targets: ["MacWSLCore"]),
-        .library(name: "MacWSLProtocol", targets: ["MacWSLProtocol"]),
+        .executable(name: "maw", targets: ["maw"]),
+        .executable(name: "mawd", targets: ["mawd"]),
+        .executable(name: "maw-agent", targets: ["maw-agent"]),
+        .library(name: "MawCore", targets: ["MawCore"]),
+        .library(name: "MawProtocol", targets: ["MawProtocol"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.8.2"),
@@ -25,92 +25,92 @@ let package = Package(
     ],
     targets: [
         // Portable: macOS and Linux.
-        .target(name: "MacWSLCore"),
+        .target(name: "MawCore"),
         // System calls that Swift cannot make directly (docs/decisions/0006).
-        .target(name: "CMacWSLSystem"),
-        .target(name: "MacWSLProtocol", dependencies: ["MacWSLCore", "CMacWSLSystem"]),
+        .target(name: "CMawSystem"),
+        .target(name: "MawProtocol", dependencies: ["MawCore", "CMawSystem"]),
         // The guest agent's logic. Portable, so that its tests run on macOS.
         .target(
-            name: "MacWSLAgentKit",
+            name: "MawAgentKit",
             dependencies: [
-                "MacWSLCore", "MacWSLProtocol", "CMacWSLSystem",
+                "MawCore", "MawProtocol", "CMawSystem",
                 .product(name: "Logging", package: "swift-log"),
             ]
         ),
 
         // macOS only.
-        .target(name: "MacWSLVirtualization", dependencies: ["MacWSLCore", "MacWSLProtocol"]),
-        // Error reporting shared by the macwsl and macwsld command lines.
+        .target(name: "MawVirtualization", dependencies: ["MawCore", "MawProtocol"]),
+        // Error reporting shared by the maw and mawd command lines.
         .target(
-            name: "MacWSLCommandLine",
+            name: "MawCommandLine",
             dependencies: [.product(name: "ArgumentParser", package: "swift-argument-parser")]
         ),
         .target(
-            name: "MacWSLDaemonKit",
-            dependencies: ["MacWSLCore", "MacWSLProtocol", "MacWSLVirtualization"]
+            name: "MawDaemonKit",
+            dependencies: ["MawCore", "MawProtocol", "MawVirtualization"]
         ),
         .executableTarget(
-            name: "macwsl",
+            name: "maw",
             dependencies: [
-                "MacWSLCore",
-                "MacWSLCommandLine",
+                "MawCore",
+                "MawCommandLine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
         .executableTarget(
-            name: "macwsld",
+            name: "mawd",
             dependencies: [
-                "MacWSLCore",
-                "MacWSLCommandLine",
-                "MacWSLDaemonKit",
-                "MacWSLProtocol",
-                "MacWSLVirtualization",
+                "MawCore",
+                "MawCommandLine",
+                "MawDaemonKit",
+                "MawProtocol",
+                "MawVirtualization",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
 
         // Linux only (guest). Also compiles on macOS so that a plain `swift build` succeeds.
         .executableTarget(
-            name: "macwsl-agent",
+            name: "maw-agent",
             dependencies: [
-                "MacWSLAgentKit", "MacWSLCore", "MacWSLProtocol",
+                "MawAgentKit", "MawCore", "MawProtocol",
                 .product(name: "Logging", package: "swift-log"),
             ]
         ),
 
-        .testTarget(name: "MacWSLCoreTests", dependencies: ["MacWSLCore"]),
+        .testTarget(name: "MawCoreTests", dependencies: ["MawCore"]),
         .testTarget(
-            name: "MacWSLProtocolTests",
-            dependencies: ["MacWSLProtocol", "MacWSLAgentKit", "MacWSLCore", "CMacWSLSystem"]
+            name: "MawProtocolTests",
+            dependencies: ["MawProtocol", "MawAgentKit", "MawCore", "CMawSystem"]
         ),
         .testTarget(
-            name: "MacWSLAgentKitTests",
-            dependencies: ["MacWSLAgentKit", "MacWSLProtocol", "MacWSLCore", "CMacWSLSystem"]
+            name: "MawAgentKitTests",
+            dependencies: ["MawAgentKit", "MawProtocol", "MawCore", "CMawSystem"]
         ),
         .testTarget(
-            name: "MacWSLCommandLineTests",
+            name: "MawCommandLineTests",
             dependencies: [
-                "MacWSLCommandLine",
+                "MawCommandLine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
-        .testTarget(name: "MacWSLVirtualizationTests", dependencies: ["MacWSLVirtualization"]),
+        .testTarget(name: "MawVirtualizationTests", dependencies: ["MawVirtualization"]),
         .testTarget(
-            name: "macwslTests",
+            name: "mawTests",
             dependencies: [
-                "macwsl",
-                "MacWSLCore",
-                "MacWSLCommandLine",
+                "maw",
+                "MawCore",
+                "MawCommandLine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
         .testTarget(
-            name: "macwsldTests",
+            name: "mawdTests",
             dependencies: [
-                "macwsld",
-                "MacWSLCore",
-                "MacWSLProtocol",
-                "MacWSLVirtualization",
+                "mawd",
+                "MawCore",
+                "MawProtocol",
+                "MawVirtualization",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),

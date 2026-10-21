@@ -1,8 +1,8 @@
 #!/bin/sh
-# Builds the guest agent (macwsl-agent) for aarch64 Linux with the Swift Static Linux SDK:
+# Builds the guest agent (maw-agent) for aarch64 Linux with the Swift Static Linux SDK:
 # a fully static, stripped musl binary for Guest/build.sh --agent.
 #
-# Usage: scripts/build-guest-agent.sh [--output <path>]   (default: .build/guest-agent/macwsl-agent)
+# Usage: scripts/build-guest-agent.sh [--output <path>]   (default: .build/guest-agent/maw-agent)
 #
 # The toolchain and SDK are pinned in Guest/agent/SWIFT. On macOS, the script uses the
 # swift.org toolchain installed in ~/Library/Developer/Toolchains (or /Library/...) and selects
@@ -11,7 +11,7 @@
 # installs guest files that the Guest workflow built.
 #
 # Environment:
-#   MACWSL_SWIFT  the swift executable to use instead (the Guest workflow sets it on Linux)
+#   MAW_SWIFT  the swift executable to use instead (the Guest workflow sets it on Linux)
 
 set -eu
 
@@ -24,7 +24,7 @@ usage() {
     exit 64
 }
 
-output=.build/guest-agent/macwsl-agent
+output=.build/guest-agent/maw-agent
 case ${1:-} in
     '') ;;
     --output)
@@ -44,8 +44,8 @@ fail() {
 }
 
 # swift_cmd <arguments>: runs the selected swift.
-if [ -n "${MACWSL_SWIFT:-}" ]; then
-    swift_cmd() { "$MACWSL_SWIFT" "$@"; }
+if [ -n "${MAW_SWIFT:-}" ]; then
+    swift_cmd() { "$MAW_SWIFT" "$@"; }
 elif [ "$(uname -s)" = Darwin ]; then
     toolchain=
     for directory in "$HOME/Library/Developer/Toolchains" /Library/Developer/Toolchains; do
@@ -81,14 +81,14 @@ fi
 echo "build-guest-agent: $version, SDK $SWIFT_SDK_ID"
 # --strip-all at link time leaves no symbols or debug information, independent of which
 # strip tool the host has.
-build_args="--configuration release --swift-sdk $SWIFT_SDK_TRIPLE --product macwsl-agent"
+build_args="--configuration release --swift-sdk $SWIFT_SDK_TRIPLE --product maw-agent"
 # shellcheck disable=SC2086
 swift_cmd build $build_args -Xlinker --strip-all
 # shellcheck disable=SC2086
 bin_path=$(swift_cmd build $build_args --show-bin-path)
 
 mkdir -p "$(dirname "$output")"
-cp "$bin_path/macwsl-agent" "$output"
+cp "$bin_path/maw-agent" "$output"
 size=$(wc -c < "$output" | tr -d ' ')
 if command -v sha256sum > /dev/null 2>&1; then
     sha=$(sha256sum "$output" | cut -d ' ' -f 1)

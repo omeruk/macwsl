@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Builds the MacWSL guest kernel and initramfs inside a pinned Linux container.
+# Builds the maw guest kernel and initramfs inside a pinned Linux container.
 #
 # Usage:
 #   Guest/build.sh [--agent <path>]   build into Guest/out/; optionally install <path> as
-#                                     /sbin/macwsl-agent in the initramfs
+#                                     /sbin/maw-agent in the initramfs
 #   Guest/build.sh --prepare-builder  build the builder image only, if it is not present
 #   Guest/build.sh --print-runtime    print the container runtime that would be used
 #   Guest/build.sh --print-builder-image
@@ -14,9 +14,9 @@
 # sha256 sums before use.
 #
 # Environment:
-#   MACWSL_CONTAINER_RUNTIME  "container" (Apple's container CLI) or "docker". By default the
+#   MAW_CONTAINER_RUNTIME  "container" (Apple's container CLI) or "docker". By default the
 #                             first one that is installed and running is used, in that order.
-#   MACWSL_GUEST_CACHE        source cache directory (default: Guest/.cache/sources)
+#   MAW_GUEST_CACHE        source cache directory (default: Guest/.cache/sources)
 #
 # Runs with the bash 3.2 that ships with macOS.
 
@@ -25,7 +25,7 @@ set -euo pipefail
 guest_dir=$(cd "$(dirname "$0")" && pwd)
 repo_dir=$(dirname "$guest_dir")
 out_dir=$guest_dir/out
-cache_dir=${MACWSL_GUEST_CACHE:-$guest_dir/.cache/sources}
+cache_dir=${MAW_GUEST_CACHE:-$guest_dir/.cache/sources}
 
 # EX_USAGE, EX_NOINPUT, EX_UNAVAILABLE, EX_SOFTWARE from sysexits.h.
 EX_USAGE=64
@@ -73,18 +73,18 @@ runtime_not_running() {
 }
 
 detect_runtime() {
-    local requested=${MACWSL_CONTAINER_RUNTIME:-}
+    local requested=${MAW_CONTAINER_RUNTIME:-}
     if [ -n "$requested" ]; then
         case $requested in
             container | docker) ;;
             *)
                 die "$EX_USAGE" \
-                    "MACWSL_CONTAINER_RUNTIME is '$requested'; use 'container' or 'docker'."
+                    "MAW_CONTAINER_RUNTIME is '$requested'; use 'container' or 'docker'."
                 ;;
         esac
         if ! command -v "$requested" > /dev/null 2>&1; then
             die "$EX_UNAVAILABLE" \
-                "MACWSL_CONTAINER_RUNTIME is '$requested', but '$requested' is not installed."
+                "MAW_CONTAINER_RUNTIME is '$requested', but '$requested' is not installed."
         fi
         runtime_ready "$requested" || runtime_not_running "$requested"
         echo "$requested"
@@ -125,7 +125,7 @@ sha256_of() {
 builder_image() {
     local hash
     hash=$(sha256_of "$guest_dir/Containerfile")
-    echo "macwsl-guest-builder:${hash:0:16}"
+    echo "maw-guest-builder:${hash:0:16}"
 }
 
 prepare_builder() {
@@ -227,8 +227,8 @@ container_args=()
 if [ -n "$agent" ]; then
     # Pass the agent through the output directory, which is already shared with the container.
     mkdir "$out_dir/.agent"
-    cp "$agent" "$out_dir/.agent/macwsl-agent"
-    container_args=(--agent /out/.agent/macwsl-agent)
+    cp "$agent" "$out_dir/.agent/maw-agent"
+    container_args=(--agent /out/.agent/maw-agent)
 fi
 
 run_args=(

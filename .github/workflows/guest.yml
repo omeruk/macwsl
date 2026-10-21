@@ -13,11 +13,11 @@ on:
       # Everything the guest agent is built from.
       - 'Package.swift'
       - 'Package.resolved'
-      - 'Sources/CMacWSLSystem/**'
-      - 'Sources/MacWSLCore/**'
-      - 'Sources/MacWSLProtocol/**'
-      - 'Sources/MacWSLAgentKit/**'
-      - 'Sources/macwsl-agent/**'
+      - 'Sources/CMawSystem/**'
+      - 'Sources/MawCore/**'
+      - 'Sources/MawProtocol/**'
+      - 'Sources/MawAgentKit/**'
+      - 'Sources/maw-agent/**'
   pull_request:
     paths: *guest-paths
   workflow_dispatch:
@@ -103,7 +103,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/swift"
           tar --extract --gzip --strip-components=1 --directory "$RUNNER_TEMP/swift" \
             --file "$RUNNER_TEMP/swift-downloads/$(basename "$LINUX_URL")"
-          echo "MACWSL_SWIFT=$RUNNER_TEMP/swift/usr/bin/swift" >> "$GITHUB_ENV"
+          echo "MAW_SWIFT=$RUNNER_TEMP/swift/usr/bin/swift" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/swift/usr/bin/swift" --version
           "$RUNNER_TEMP/swift/usr/bin/swift" sdk install \
             "$RUNNER_TEMP/swift-downloads/$(basename "$SDK_URL")" --checksum "$SDK_SHA256"
@@ -114,16 +114,16 @@ jobs:
         id: build
         run: |
           start=$(date +%s)
-          scripts/build-guest-agent.sh --output "$RUNNER_TEMP/agent/first/macwsl-agent"
+          scripts/build-guest-agent.sh --output "$RUNNER_TEMP/agent/first/maw-agent"
           echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
           rm -rf .build
-          scripts/build-guest-agent.sh --output "$RUNNER_TEMP/agent/second/macwsl-agent"
-          file "$RUNNER_TEMP/agent/first/macwsl-agent"
-          sha256sum "$RUNNER_TEMP"/agent/*/macwsl-agent
+          scripts/build-guest-agent.sh --output "$RUNNER_TEMP/agent/second/maw-agent"
+          file "$RUNNER_TEMP/agent/first/maw-agent"
+          sha256sum "$RUNNER_TEMP"/agent/*/maw-agent
 
       - name: Summarize
         run: |
-          bytes=$(stat --format %s "$RUNNER_TEMP/agent/first/macwsl-agent")
+          bytes=$(stat --format %s "$RUNNER_TEMP/agent/first/maw-agent")
           {
             echo "### Guest agent"
             echo
@@ -134,7 +134,7 @@ jobs:
       - name: Upload the agent builds
         uses: actions/upload-artifact@v7
         with:
-          name: macwsl-agent
+          name: maw-agent
           path: ${{ runner.temp }}/agent/
           if-no-files-found: error
 
@@ -200,15 +200,15 @@ jobs:
       - name: Download the agent builds
         uses: actions/download-artifact@v8
         with:
-          name: macwsl-agent
+          name: maw-agent
           path: ${{ runner.temp }}/agent
 
       - name: Build
         id: build
         run: |
-          chmod +x "$RUNNER_TEMP"/agent/*/macwsl-agent
+          chmod +x "$RUNNER_TEMP"/agent/*/maw-agent
           start=$(date +%s)
-          Guest/build.sh --agent "$RUNNER_TEMP/agent/first/macwsl-agent"
+          Guest/build.sh --agent "$RUNNER_TEMP/agent/first/maw-agent"
           echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
 
       - name: Check kernel configuration
@@ -242,8 +242,8 @@ jobs:
         id: reproduce
         run: |
           mv Guest/out "$RUNNER_TEMP/first-build"
-          first=$RUNNER_TEMP/agent/first/macwsl-agent
-          second=$RUNNER_TEMP/agent/second/macwsl-agent
+          first=$RUNNER_TEMP/agent/first/maw-agent
+          second=$RUNNER_TEMP/agent/second/maw-agent
           if cmp --quiet "$first" "$second"; then
             echo "agent=identical" >> "$GITHUB_OUTPUT"
             echo "The two agent builds are byte-identical."
@@ -282,8 +282,8 @@ jobs:
               bytes=$(stat --format %s "Guest/out/$file")
               echo "| \`$file\` | $bytes bytes ($(numfmt --to=iec-i --suffix=B "$bytes")) |"
             done
-            bytes=$(stat --format %s "$RUNNER_TEMP/agent/first/macwsl-agent")
-            echo "| \`macwsl-agent\` (in the initramfs) | $bytes bytes ($(numfmt --to=iec-i --suffix=B "$bytes")) |"
+            bytes=$(stat --format %s "$RUNNER_TEMP/agent/first/maw-agent")
+            echo "| \`maw-agent\` (in the initramfs) | $bytes bytes ($(numfmt --to=iec-i --suffix=B "$bytes")) |"
             echo
             echo "First build: ${{ steps.build.outputs.seconds }} seconds."
             echo
@@ -303,7 +303,7 @@ jobs:
       - name: Upload guest files
         uses: actions/upload-artifact@v7
         with:
-          name: macwsl-guest
+          name: maw-guest
           path: Guest/out/
           if-no-files-found: error
 
@@ -318,7 +318,7 @@ jobs:
       - name: Download guest files
         uses: actions/download-artifact@v8
         with:
-          name: macwsl-guest
+          name: maw-guest
           path: guest
 
       - name: Create release
@@ -328,7 +328,7 @@ jobs:
           cd guest
           sha256sum --check SHA256SUMS
           {
-            echo "MacWSL guest kernel and initramfs built from ${GITHUB_SHA}."
+            echo "maw guest kernel and initramfs built from ${GITHUB_SHA}."
             echo
             echo '```'
             cat SHA256SUMS

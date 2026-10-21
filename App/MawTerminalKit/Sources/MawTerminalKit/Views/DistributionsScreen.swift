@@ -227,7 +227,7 @@ extension DistributionInfo {
     static let samples: [DistributionInfo] = [
         DistributionInfo(
             name: "ubuntu-24.04", state: .running, isDefault: true, memory: "412M", cpu: "0.4%",
-            disk: "3.1G/64G", uptime: "2h 14m", kernel: "6.18.57-macwsl",
+            disk: "3.1G/64G", uptime: "2h 14m", kernel: "6.18.57-maw",
             details: [
                 .init("default", "yes", role: .positive), .init("user", "omer"),
                 .init("ip", "192.168.64.3", role: .number),
@@ -241,8 +241,8 @@ extension DistributionInfo {
             memoryLimit: 2 << 30),
         DistributionInfo(
             name: "debian-13", state: .running, memory: "188M", cpu: "0.0%", disk: "1.4G/64G",
-            uptime: "41m", kernel: "6.18.57-macwsl"),
+            uptime: "41m", kernel: "6.18.57-maw"),
         DistributionInfo(
-            name: "alpine-3.22", state: .stopped, disk: "0.2G/16G", kernel: "6.18.57-macwsl"),
+            name: "alpine-3.22", state: .stopped, disk: "0.2G/16G", kernel: "6.18.57-maw"),
     ]
 }
