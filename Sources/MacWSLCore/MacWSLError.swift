@@ -51,8 +51,8 @@ public enum MacWSLError: Error, Equatable, Sendable {
 
     /// The console log could not be opened or written.
     case consoleLogFailed(path: String, reason: String)
-    /// An interactive session needs a terminal, but `stream` is not one.
-    case notATerminal(stream: String)
+    /// An interactive session, selected by `option`, needs a terminal, but `stream` is not one.
+    case notATerminal(option: String, stream: String)
     /// `--detach-key` could not be parsed or names a key that the session needs.
     case invalidDetachKey(String, reason: String)
 
@@ -104,8 +104,8 @@ extension MacWSLError: LocalizedError {
             "Could not create the disk image \(path): \(reason)."
         case .consoleLogFailed(let path, let reason):
             "Could not write the console log \(path): \(reason)."
-        case .notATerminal(let stream):
-            "--interactive needs a terminal, but \(stream) is not a terminal."
+        case .notATerminal(let option, let stream):
+            "\(option) needs a terminal, but \(stream) is not a terminal."
         case .invalidDetachKey(let text, let reason):
             "'\(text)' cannot be the detach key: \(reason)."
         case .guestAgentUnavailable(let reason):
@@ -151,8 +151,8 @@ extension MacWSLError: LocalizedError {
             nil
         case .consoleLogFailed:
             "Check that ~/Library/Logs/MacWSL is writable."
-        case .notATerminal:
-            "Run the command from a terminal, or omit --interactive."
+        case .notATerminal(let option, _):
+            "Run the command from a terminal, or omit \(option)."
         case .invalidDetachKey:
             "Use a control key such as ^Q or ^], or none. The ~. escape always works."
         case .guestAgentUnavailable:

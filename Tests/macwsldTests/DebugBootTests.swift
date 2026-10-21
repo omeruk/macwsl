@@ -2,6 +2,7 @@ import ArgumentParser
 import Darwin
 import Foundation
 import MacWSLCore
+import MacWSLProtocol
 import Testing
 
 @testable import macwsld
@@ -57,8 +58,55 @@ import Testing
         #expect(try parse("--interactive", "--detach-key", "^Q").detachKey?.byte == 0x11)
     }
 
-    @Test func rejectsADetachKeyWithoutInteractive() {
-        #expect(failure("--detach-key", "^Q") == "--detach-key needs --interactive.")
+    @Test func rejectsADetachKeyWithoutATerminalSession() throws {
+        #expect(failure("--detach-key", "^Q") == "--detach-key needs --interactive or --shell.")
+        #expect(try parse("--shell", "--detach-key", "^Q").detachKey?.byte == 0x11)
+    }
+
+    @Test func parsesExec() throws {
+        let command = try parse("--exec", "--", "sh", "-c", "exit 3")
+        #expect(command.mode == .exec)
+        #expect(command.command == ["sh", "-c", "exit 3"])
+        #expect(command.repeatCount == nil)
+        #expect(try parse("--exec", "--repeat", "100", "--", "true").repeatCount == 100)
+    }
+
+    @Test func parsesShell() throws {
+        let command = try parse("--shell")
+        #expect(command.mode == .shell)
+        #expect(command.kernelArguments == nil)
+    }
+
+    @Test func selectsTheAttachedModeByDefault() throws {
+        #expect(try parse().mode == .attached)
+        #expect(try parse("--interactive").mode == .interactive)
+    }
+
+    @Test func addsTheDebugShellForInteractive() throws {
+        #expect(try parse("--interactive").kernelArguments == "macwsl.debug=shell")
+        #expect(
+            try parse("--interactive", "--cmdline", "quiet").kernelArguments
+                == "quiet macwsl.debug=shell")
+        #expect(try parse("--cmdline", "quiet").kernelArguments == "quiet")
+    }
+
+    @Test func rejectsInvalidExecCombinations() {
+        #expect(
+            failure("--exec")
+                == "--exec needs a command after --, for example --exec -- uname -a.")
+        #expect(failure("--", "uname") == "A command after -- needs --exec.")
+        #expect(failure("--shell", "--", "uname") == "A command after -- needs --exec.")
+        #expect(
+            failure("--exec", "--shell", "--", "true")
+                == "--exec and --shell cannot be combined.")
+        #expect(
+            failure("--interactive", "--exec", "--", "true")
+                == "--interactive and --exec cannot be combined.")
+        #expect(
+            failure("--exec", "--timeout", "5", "--", "true")
+                == "--timeout cannot be combined with --exec.")
+        #expect(failure("--repeat", "3") == "--repeat needs --exec.")
+        #expect(failure("--exec", "--repeat", "0", "--", "true") == "--repeat must be at least 1.")
     }
 
     @Test func explainsAnInvalidDetachKey() {
@@ -98,9 +146,9 @@ import Testing
 @Suite struct DebugBootBehaviorTests {
     @Test func requiresATerminalOnStandardInput() throws {
         let pipe = Pipe()
-        #expect(throws: MacWSLError.notATerminal(stream: "standard input")) {
+        #expect(throws: MacWSLError.notATerminal(option: "--shell", stream: "standard input")) {
             try Terminal.requireTerminals(
-                input: pipe.fileHandleForReading.fileDescriptor,
+                for: "--shell", input: pipe.fileHandleForReading.fileDescriptor,
                 output: pipe.fileHandleForWriting.fileDescriptor)
         }
     }
@@ -114,13 +162,30 @@ import Testing
             close(secondary)
         }
         let pipe = Pipe()
-        #expect(throws: MacWSLError.notATerminal(stream: "standard output")) {
+        #expect(
+            throws: MacWSLError.notATerminal(option: "--interactive", stream: "standard output")
+        ) {
             try Terminal.requireTerminals(
-                input: secondary, output: pipe.fileHandleForWriting.fileDescriptor)
+                for: "--interactive", input: secondary,
+                output: pipe.fileHandleForWriting.fileDescriptor)
         }
         #expect(throws: Never.self) {
-            try Terminal.requireTerminals(input: secondary, output: secondary)
+            try Terminal.requireTerminals(for: "--shell", input: secondary, output: secondary)
         }
+    }
+
+    @Test func readsTheWindowSize() throws {
+        var primary: Int32 = -1
+        var secondary: Int32 = -1
+        var size = winsize(ws_row: 33, ws_col: 101, ws_xpixel: 0, ws_ypixel: 0)
+        try #require(openpty(&primary, &secondary, nil, nil, &size) == 0)
+        defer {
+            close(primary)
+            close(secondary)
+        }
+        #expect(Terminal.windowSize(of: secondary) == TerminalSize(rows: 33, columns: 101))
+        let pipe = Pipe()
+        #expect(Terminal.windowSize(of: pipe.fileHandleForWriting.fileDescriptor) == nil)
     }
 
     @Test(arguments: [
@@ -136,9 +201,29 @@ import Testing
 
     @Test func describesStopOutcomes() {
         #expect(
-            DebugBoot.describe(.clean(after: .milliseconds(412))) == "shutdown: clean after 412 ms")
+            DebugBoot.describe(.clean(after: .milliseconds(412), via: .agent))
+                == "shutdown: clean after 412 ms via the guest agent")
+        #expect(
+            DebugBoot.describe(.clean(after: .milliseconds(90), via: .stopRequest))
+                == "shutdown: clean after 90 ms via a stop request")
         #expect(
             DebugBoot.describe(.forced(after: .milliseconds(5_012)))
                 == "shutdown: forced after 5012 ms (the guest did not power off when asked)")
+    }
+
+    @Test func describesLatency() {
+        let durations: [Duration] = (1...100).map { .microseconds($0 * 100) }
+        #expect(
+            DebugBoot.describeLatency(durations, command: "true")
+                == "exec: 100 runs of true: median 5.05 ms, p95 9.50 ms")
+        #expect(
+            DebugBoot.describeLatency([.milliseconds(3)], command: "true")
+                == "exec: 1 run of true: median 3.00 ms, p95 3.00 ms")
+    }
+
+    @Test func passesTermAndLangToTheGuest() {
+        let environment = DebugBoot.hostEnvironment(terminal: true)
+        #expect(environment["TERM"] != nil)
+        #expect(DebugBoot.hostEnvironment(terminal: false)["TERM"] == nil)
     }
 }
