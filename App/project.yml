@@ -1,0 +1,90 @@
+# The Xcode project for maw, generated with XcodeGen (docs/decisions/0007-xcodegen.md).
+# Run `xcodegen` in this directory to create maw.xcodeproj, which is not committed.
+
+name: maw
+
+options:
+  minimumXcodeGenVersion: 2.46.0
+  deploymentTarget:
+    macOS: "14.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+
+packages:
+  # The app's logic and views (docs/decisions/0008-app-package.md).
+  MawTerminalKit:
+    path: MawTerminalKit
+
+targets:
+  maw:
+    type: application
+    platform: macOS
+    sources:
+      - path: maw
+        excludes:
+          - "Fonts/**"
+      # Copied into the bundle as a folder; MawApp.swift registers the fonts at launch.
+      - path: maw/Fonts
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: MawTerminalKit
+    info:
+      path: maw/Info.plist
+      properties:
+        CFBundleName: maw
+        CFBundleDisplayName: maw
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        CFBundleDevelopmentRegion: en
+        LSApplicationCategoryType: public.app-category.developer-tools
+        LSMinimumSystemVersion: "14.0"
+        NSHumanReadableCopyright: "IBM Plex Mono is licensed under the SIL Open Font License 1.1."
+        NSPrincipalClass: NSApplication
+        NSSupportsAutomaticTermination: false
+        NSSupportsSuddenTermination: false
+    entitlements:
+      path: maw/maw.entitlements
+    settings:
+      base:
+        PRODUCT_NAME: maw
+        PRODUCT_BUNDLE_IDENTIFIER: dev.maw.app
+        # Ad-hoc signing for local development. Release signing arrives in phase 13.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+        ENABLE_HARDENED_RUNTIME: NO
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        COMBINE_HIDPI_IMAGES: YES
+    preBuildScripts:
+      - name: Verify bundled fonts
+        script: '"${SRCROOT}/scripts/verify-fonts.sh"'
+        inputFiles:
+          - $(SRCROOT)/scripts/verify-fonts.sh
+          - $(SRCROOT)/maw/Fonts/SHA256SUMS
+          - $(SRCROOT)/maw/Fonts/IBMPlexMono-Regular.otf
+          - $(SRCROOT)/maw/Fonts/IBMPlexMono-Italic.otf
+          - $(SRCROOT)/maw/Fonts/IBMPlexMono-Bold.otf
+          - $(SRCROOT)/maw/Fonts/IBMPlexMono-BoldItalic.otf
+          - $(SRCROOT)/maw/Fonts/IBMPlexMono-SemiBold.otf
+          - $(SRCROOT)/maw/Fonts/OFL.txt
+        outputFiles:
+          - $(DERIVED_FILE_DIR)/fonts-verified
+        basedOnDependencyAnalysis: true
+
+schemes:
+  maw:
+    build:
+      targets:
+        maw: all
+    run:
+      config: Debug
+    archive:
+      config: Release

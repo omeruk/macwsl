@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  maw is not sandboxed: it starts the user's login shell, which needs the user's own
+  environment and file system. It needs no entitlements in this phase. Linux sessions will
+  reach the daemon over XPC, which also needs none.
+-->
+<plist version="1.0">
+<dict/>
+</plist>
