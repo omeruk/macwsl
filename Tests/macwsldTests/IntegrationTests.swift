@@ -192,12 +192,15 @@ struct IntegrationTests {
     }
 }
 
-/// `macwsld debug-boot` running as a subprocess, with standard output and standard error
-/// collected together and standard input at end-of-file.
+/// `macwsld debug-boot` running as a subprocess. Standard output and standard error are
+/// collected together, or separately with `separateStandardError`. Standard input is
+/// `standardInput`, or end-of-file.
 final class DebugBootProcess: @unchecked Sendable {
     struct Result {
         let status: Int32
         let output: String
+        /// Standard error, when it is collected separately; otherwise empty.
+        var standardError = ""
         /// The output's lines. The guest console ends lines with "\r\n", which Swift treats
         /// as a single Character, so lines are split on any newline character.
         var lines: [String] {
@@ -213,23 +216,48 @@ final class DebugBootProcess: @unchecked Sendable {
 
     private let process = Process()
     private let collected = OSAllocatedUnfairLock(initialState: Data())
+    private let collectedError = OSAllocatedUnfairLock(initialState: Data())
 
-    init(_ macwsld: URL, _ arguments: [String]) throws {
+    init(
+        _ macwsld: URL, _ arguments: [String], standardInput: Data? = nil,
+        separateStandardError: Bool = false, environment: [String: String]? = nil
+    ) throws {
         let pipe = Pipe()
         process.executableURL = macwsld
         process.arguments = ["debug-boot"] + arguments
+        if let environment {
+            process.environment = environment
+        }
         process.standardOutput = pipe
-        process.standardError = pipe
-        process.standardInput = FileHandle.nullDevice
         pipe.fileHandleForReading.readabilityHandler = { [collected] handle in
             let data = handle.availableData
             collected.withLock { $0.append(data) }
         }
+        if separateStandardError {
+            let errorPipe = Pipe()
+            process.standardError = errorPipe
+            errorPipe.fileHandleForReading.readabilityHandler = { [collectedError] handle in
+                let data = handle.availableData
+                collectedError.withLock { $0.append(data) }
+            }
+        } else {
+            process.standardError = pipe
+        }
+        let inputPipe = standardInput.map { _ in Pipe() }
+        process.standardInput = inputPipe ?? FileHandle.nullDevice
         try process.run()
+        if let inputPipe, let standardInput {
+            try inputPipe.fileHandleForWriting.write(contentsOf: standardInput)
+            try inputPipe.fileHandleForWriting.close()
+        }
     }
 
     var output: String {
         collected.withLock { String(decoding: $0, as: UTF8.self) }
+    }
+
+    var standardError: String {
+        collectedError.withLock { String(decoding: $0, as: UTF8.self) }
     }
 
     func signal(_ number: Int32) {
@@ -238,9 +266,17 @@ final class DebugBootProcess: @unchecked Sendable {
 
     /// Waits until a line of output satisfies `predicate`. Returns whether one did.
     func waitForLine(where predicate: (String) -> Bool, timeout: Duration) async -> Bool {
+        await waitForLine(in: \.output, where: predicate, timeout: timeout)
+    }
+
+    /// Waits until a line of `stream` (`\.output` or `\.standardError`) satisfies `predicate`.
+    func waitForLine(
+        in stream: KeyPath<DebugBootProcess, String>, where predicate: (String) -> Bool,
+        timeout: Duration
+    ) async -> Bool {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
-            if Self.lines(of: output).contains(where: predicate) {
+            if Self.lines(of: self[keyPath: stream]).contains(where: predicate) {
                 return true
             }
             if !process.isRunning {
@@ -248,7 +284,7 @@ final class DebugBootProcess: @unchecked Sendable {
             }
             try? await Task.sleep(for: .milliseconds(50))
         }
-        return Self.lines(of: output).contains(where: predicate)
+        return Self.lines(of: self[keyPath: stream]).contains(where: predicate)
     }
 
     /// Splits `text` into lines and removes ANSI escape sequences: the guest's busybox colors
@@ -272,12 +308,13 @@ final class DebugBootProcess: @unchecked Sendable {
         }
         // Collect output written just before the exit.
         try? await Task.sleep(for: .milliseconds(100))
-        return Result(status: process.terminationStatus, output: output)
+        return Result(
+            status: process.terminationStatus, output: output, standardError: standardError)
     }
 }
 
-/// `macwsld debug-boot --interactive` running on a pseudo-terminal, which the test drives like a
-/// user at a keyboard: bytes written to the primary side arrive as typed input.
+/// `macwsld debug-boot --interactive` (or `--shell`) running on a pseudo-terminal, which the test
+/// drives like a user at a keyboard: bytes written to the primary side arrive as typed input.
 final class InteractiveSession: @unchecked Sendable {
     private let process = Process()
     private let primary: Int32
@@ -286,10 +323,14 @@ final class InteractiveSession: @unchecked Sendable {
     private let collected = OSAllocatedUnfairLock(initialState: Data())
     private let initialAttributes: termios
 
-    init(_ macwsld: URL, _ arguments: [String]) throws {
+    init(
+        _ macwsld: URL, _ arguments: [String], mode: String = "--interactive",
+        rows: UInt16 = 0, columns: UInt16 = 0
+    ) throws {
         var primary: Int32 = -1
         var secondary: Int32 = -1
-        guard openpty(&primary, &secondary, nil, nil, nil) == 0 else {
+        var size = winsize(ws_row: rows, ws_col: columns, ws_xpixel: 0, ws_ypixel: 0)
+        guard openpty(&primary, &secondary, nil, nil, &size) == 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
         self.primary = primary
@@ -300,7 +341,7 @@ final class InteractiveSession: @unchecked Sendable {
 
         let terminal = FileHandle(fileDescriptor: secondary, closeOnDealloc: false)
         process.executableURL = macwsld
-        process.arguments = ["debug-boot", "--interactive"] + arguments
+        process.arguments = ["debug-boot", mode] + arguments
         process.standardInput = terminal
         process.standardOutput = terminal
         process.standardError = terminal
@@ -327,6 +368,15 @@ final class InteractiveSession: @unchecked Sendable {
     }
 
     var isRunning: Bool { process.isRunning }
+
+    /// Changes the terminal's window size and sends SIGWINCH to debug-boot, as a terminal
+    /// emulator does. The pseudo-terminal is not debug-boot's controlling terminal, so the
+    /// kernel does not send the signal itself.
+    func resize(rows: UInt16, columns: UInt16) {
+        var size = winsize(ws_row: rows, ws_col: columns, ws_xpixel: 0, ws_ypixel: 0)
+        _ = ioctl(primary, TIOCSWINSZ, &size)
+        kill(process.processIdentifier, SIGWINCH)
+    }
 
     func type(_ text: String) {
         type(Array(text.utf8))
