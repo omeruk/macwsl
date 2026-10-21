@@ -372,12 +372,23 @@ struct DebugBoot: AsyncParsableCommand {
                 }
             }
             if let process {
-                group.addTask {
+                // The group waits for every task after cancelling them, and waitForExit() does
+                // not end on cancellation. A stream does, so the exit is observed through one.
+                let (exits, continuation) = AsyncStream.makeStream(
+                    of: Result<ExitStatus, MacWSLError>.self)
+                Task {
                     do throws(MacWSLError) {
-                        return .processExited(.success(try await process.waitForExit()))
+                        continuation.yield(.success(try await process.waitForExit()))
                     } catch {
-                        return .processExited(.failure(error))
+                        continuation.yield(.failure(error))
                     }
+                    continuation.finish()
+                }
+                group.addTask {
+                    for await result in exits {
+                        return .processExited(result)
+                    }
+                    return nil
                 }
             }
             if let detach {

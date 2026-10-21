@@ -181,7 +181,8 @@ extension DebugBoot {
             }
             do throws(MacWSLError) {
                 _ = try await client.info()
-                report("boot: agent ready after \((ContinuousClock.now - started).milliseconds) ms")
+                let elapsed = (ContinuousClock.now - started).milliseconds
+                Self.writeToStandardError("boot: agent ready after \(elapsed) ms\n")
                 return nil
             } catch {
                 let state = await machine.state
