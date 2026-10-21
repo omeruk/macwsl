@@ -2,248 +2,163 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>maw main window</title>
+<title>maw v2 main window</title>
 <script src="./support.js"></script>
 </head>
 <body>
 <x-dc>
 <helmet>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap">
 <style>
-body{margin:0;background:#0E0F12}
-a{color:#7AB0F5}a:hover{color:#A9CBFA}
+body{margin:0;background:#000000}
+a{color:#4FC1FF}a:hover{color:#8AD6FF}
 button{font-family:inherit}
 </style>
 </helmet>
-<div style="width: 1280px; height: 800px; box-sizing: border-box; display: flex; flex-direction: column; background: #1B1C21; border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; overflow: hidden; font-family: Inter, system-ui, sans-serif; color: #E6E8EC">
+<div style="width: 1280px; height: 800px; box-sizing: border-box; display: flex; flex-direction: column; background: #000000; border: 1px solid #262626; border-radius: 10px; overflow: hidden; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 13px; line-height: 20px; color: #CFD5E3">
 
-  <div style="height: 46px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 12px 0 16px; background: #202127; border-bottom: 1px solid rgba(255,255,255,0.07)">
-    <div style="display: flex; gap: 8px; padding-right: 10px" aria-hidden="true">
+  <div style="height: 38px; flex-shrink: 0; display: flex; align-items: center; padding: 0 14px; background: #0A0A0A; border-bottom: 1px solid #262626">
+    <div style="display: flex; gap: 8px; width: 68px; flex-shrink: 0" aria-hidden="true">
       <div style="width: 12px; height: 12px; border-radius: 6px; background: #FF5F57"></div>
       <div style="width: 12px; height: 12px; border-radius: 6px; background: #FEBC2E"></div>
       <div style="width: 12px; height: 12px; border-radius: 6px; background: #28C840"></div>
     </div>
-    <button aria-label="Toggle sidebar" onClick="{{toggleSidebar}}" style="width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 7px; background: {{sidebarBtnBg}}; color: #B8BDC6; cursor: pointer">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2"></rect><line x1="6" y1="3" x2="6" y2="13"></line></svg>
-    </button>
-    <div style="display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; padding-left: 4px">
+    <div style="display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0">
       <sc-for list="{{tabs}}" as="tab" hint-placeholder-count="3">
-        <div style="display: flex; align-items: center; height: 32px; border-radius: 8px; background: {{tab.bg}}; padding-right: 4px">
-          <button onClick="{{tab.pick}}" style="display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 6px 0 12px; border: 0; background: transparent; color: {{tab.fg}}; font-size: 13px; font-weight: 500; cursor: pointer">
-            <span style="width: 8px; height: 8px; border-radius: 4px; background: {{tab.color}}" aria-hidden="true"></span>
-            <span>{{tab.label}}</span>
-            <span style="color: #8B93A1; font-weight: 400">{{tab.sub}}</span>
-          </button>
-          <button aria-label="Close tab" style="width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 5px; background: transparent; color: #8B93A1; cursor: pointer">
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><line x1="2" y1="2" x2="8" y2="8"></line><line x1="8" y1="2" x2="2" y2="8"></line></svg>
-          </button>
-        </div>
+        <button onClick="{{tab.pick}}" style="height: 24px; padding: 0 10px; border: 0; border-radius: 0; background: {{tab.bg}}; color: {{tab.fg}}; font-size: 13px; cursor: pointer; white-space: pre"><span style="color: {{tab.numFg}}">{{tab.num}}</span> {{tab.label}}</button>
       </sc-for>
-      <div style="display: flex; align-items: center; margin-left: 4px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08)">
-        <button aria-label="New tab with default distribution" style="width: 30px; height: 28px; display: flex; align-items: center; justify-content: center; border: 0; background: transparent; color: #B8BDC6; cursor: pointer">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><line x1="7" y1="2" x2="7" y2="12"></line><line x1="2" y1="7" x2="12" y2="7"></line></svg>
-        </button>
-        <div style="width: 1px; height: 16px; background: rgba(255,255,255,0.10)"></div>
-        <button aria-label="Choose distribution for new tab" style="width: 24px; height: 28px; display: flex; align-items: center; justify-content: center; border: 0; background: transparent; color: #B8BDC6; cursor: pointer">
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><polyline points="2,3.5 5,6.5 8,3.5"></polyline></svg>
-        </button>
-      </div>
+      <button aria-label="New tab" style="height: 24px; padding: 0 10px; border: 0; background: transparent; color: #8C8C8C; font-size: 13px; cursor: pointer">+</button>
     </div>
-    <button style="display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 10px; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; background: rgba(255,255,255,0.03); color: #9AA0AA; font-size: 12px; cursor: pointer">
-      <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="6" cy="6" r="4.25"></circle><line x1="9.2" y1="9.2" x2="12.5" y2="12.5"></line></svg>
-      <span>Commands</span>
-      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8B93A1">⌘⇧P</span>
-    </button>
+    <div style="color: #8C8C8C; white-space: pre">maw</div>
   </div>
 
-  <div style="flex: 1; min-height: 0; display: flex">
-    <sc-if value="{{sidebar}}" hint-placeholder-val="{{ true }}">
-      <div style="width: 236px; flex-shrink: 0; display: flex; flex-direction: column; padding: 14px 10px; box-sizing: border-box; background: #18191D; border-right: 1px solid rgba(255,255,255,0.07)">
-        <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: #8B93A1; padding: 0 8px 8px">DISTRIBUTIONS</div>
-        <sc-for list="{{distros}}" as="d" hint-placeholder-count="2">
-          <button onClick="{{d.pick}}" style="display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 8px; border: 0; border-radius: 8px; background: {{d.bg}}; color: #E6E8EC; text-align: left; cursor: pointer">
-            <span style="width: 28px; height: 28px; flex-shrink: 0; border-radius: 7px; background: {{d.color}}; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #FFFFFF" aria-hidden="true">{{d.initial}}</span>
-            <span style="display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1">
-              <span style="font-size: 13px; font-weight: 500">{{d.name}}</span>
-              <span style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #9AA0AA">
-                <span style="width: 6px; height: 6px; border-radius: 3px; background: {{d.dot}}" aria-hidden="true"></span>{{d.state}}
-              </span>
-            </span>
-          </button>
+  <div style="flex: 1; min-height: 0; display: flex; padding: 10px 10px 0; gap: 10px">
+    <div style="flex: 3; min-width: 0; position: relative; border: 1px solid #4A4A4A; padding: 12px 14px 10px; box-sizing: border-box">
+      <div style="position: absolute; top: -11px; left: 10px; padding: 0 6px; background: #000000; color: #CFD5E3; white-space: pre">{{leftLabel}}</div>
+      <sc-for list="{{leftLines}}" as="line" hint-placeholder-count="14">
+        <div style="height: 20px; white-space: pre; overflow: hidden"><sc-for list="{{line}}" as="seg" hint-placeholder-count="3"><span style="color: {{seg.c}}">{{seg.t}}</span></sc-for></div>
+      </sc-for>
+      <div style="height: 20px; white-space: pre"><sc-for list="{{leftPrompt}}" as="seg" hint-placeholder-count="3"><span style="color: {{seg.c}}">{{seg.t}}</span></sc-for><span style="display: inline-block; width: 8px; height: 17px; vertical-align: -3px; background: #CFD5E3"></span></div>
+    </div>
+    <sc-if value="{{showRight}}" hint-placeholder-val="{{ true }}">
+      <div style="flex: 2; min-width: 0; position: relative; border: 1px solid #262626; padding: 12px 14px 10px; box-sizing: border-box">
+        <div style="position: absolute; top: -11px; left: 10px; padding: 0 6px; background: #000000; color: #8C8C8C; white-space: pre">2 ubuntu ~/site</div>
+        <sc-for list="{{rightLines}}" as="line" hint-placeholder-count="8">
+          <div style="height: 20px; white-space: pre; overflow: hidden"><sc-for list="{{line}}" as="seg" hint-placeholder-count="3"><span style="color: {{seg.c}}">{{seg.t}}</span></sc-for></div>
         </sc-for>
-        <button style="display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 6px; padding: 9px 8px; border: 1px dashed rgba(255,255,255,0.14); border-radius: 8px; background: transparent; color: #B8BDC6; font-size: 13px; text-align: left; cursor: pointer">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><line x1="7" y1="2" x2="7" y2="12"></line><line x1="2" y1="7" x2="12" y2="7"></line></svg>
-          Install a distribution…
-        </button>
-
-        <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: #8B93A1; padding: 22px 8px 8px">THIS MAC</div>
-        <button onClick="{{pickMac}}" style="display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 8px; border: 0; border-radius: 8px; background: {{macBg}}; color: #E6E8EC; text-align: left; cursor: pointer">
-          <span style="width: 28px; height: 28px; flex-shrink: 0; border-radius: 7px; background: #3A3D45; display: flex; align-items: center; justify-content: center; color: #E6E8EC" aria-hidden="true">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3,4 6,7 3,10"></polyline><line x1="7.5" y1="10.5" x2="11" y2="10.5"></line></svg>
-          </span>
-          <span style="display: flex; flex-direction: column; gap: 2px">
-            <span style="font-size: 13px; font-weight: 500">zsh</span>
-            <span style="font-size: 11px; color: #9AA0AA">Local shell</span>
-          </span>
-        </button>
-
-        <div style="flex: 1"></div>
-        <div style="padding: 12px 8px; border-top: 1px solid rgba(255,255,255,0.07); display: flex; flex-direction: column; gap: 8px">
-          <div style="display: flex; justify-content: space-between; font-size: 11px; color: #9AA0AA"><span>Memory in use</span><span>612 MB of 16 GB</span></div>
-          <div style="height: 4px; border-radius: 2px; background: rgba(255,255,255,0.08)"><div style="width: 6%; height: 4px; border-radius: 2px; background: {{accent}}"></div></div>
-        </div>
-        <button style="display: flex; align-items: center; gap: 10px; padding: 9px 8px; border: 0; border-radius: 8px; background: transparent; color: #B8BDC6; font-size: 13px; text-align: left; cursor: pointer">
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="2.25"></circle><path d="M8 1.75v1.5M8 12.75v1.5M14.25 8h-1.5M3.25 8h-1.5M12.4 3.6l-1.06 1.06M4.66 11.34L3.6 12.4M12.4 12.4l-1.06-1.06M4.66 4.66L3.6 3.6"></path></svg>
-          Settings
-          <span style="margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8B93A1">⌘,</span>
-        </button>
       </div>
     </sc-if>
-
-    <div style="flex: 1; min-width: 0; display: flex; background: #16171C">
-      <sc-if value="{{isUbuntu}}" hint-placeholder-val="{{ true }}">
-        <div style="flex: 3; min-width: 0; padding: 14px 16px; box-sizing: border-box; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; box-shadow: inset 0 0 0 1px {{accentSoft}}">
-          <sc-for list="{{leftLines}}" as="line" hint-placeholder-count="14">
-            <div style="height: 20px; white-space: pre; overflow: hidden"><sc-for list="{{line}}" as="seg" hint-placeholder-count="3"><span style="color: {{seg.c}}">{{seg.t}}</span></sc-for></div>
-          </sc-for>
-          <div style="height: 20px; white-space: pre"><span style="color: #8BD49C">omer@ubuntu</span><span style="color: #D7DAE0">:</span><span style="color: #7AB0F5">/mnt/mac/projects/maw</span><span style="color: #D7DAE0">$ </span><span style="display: inline-block; width: 8px; height: 17px; vertical-align: -3px; background: {{accent}}"></span></div>
-        </div>
-        <div style="width: 1px; background: rgba(255,255,255,0.08)"></div>
-        <div style="flex: 2; min-width: 0; padding: 14px 16px; box-sizing: border-box; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; opacity: 0.82">
-          <sc-for list="{{rightLines}}" as="line" hint-placeholder-count="8">
-            <div style="height: 20px; white-space: pre; overflow: hidden"><sc-for list="{{line}}" as="seg" hint-placeholder-count="3"><span style="color: {{seg.c}}">{{seg.t}}</span></sc-for></div>
-          </sc-for>
-        </div>
-      </sc-if>
-      <sc-if value="{{isSingle}}" hint-placeholder-val="{{ false }}">
-        <div style="flex: 1; min-width: 0; padding: 14px 16px; box-sizing: border-box; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px">
-          <sc-for list="{{singleLines}}" as="line" hint-placeholder-count="8">
-            <div style="height: 20px; white-space: pre; overflow: hidden"><sc-for list="{{line}}" as="seg" hint-placeholder-count="3"><span style="color: {{seg.c}}">{{seg.t}}</span></sc-for></div>
-          </sc-for>
-          <div style="height: 20px; white-space: pre"><sc-for list="{{singlePrompt}}" as="seg" hint-placeholder-count="3"><span style="color: {{seg.c}}">{{seg.t}}</span></sc-for><span style="display: inline-block; width: 8px; height: 17px; vertical-align: -3px; background: {{accent}}"></span></div>
-        </div>
-      </sc-if>
-    </div>
   </div>
 
-  <div style="height: 26px; flex-shrink: 0; display: flex; align-items: center; gap: 16px; padding: 0 14px; background: #202127; border-top: 1px solid rgba(255,255,255,0.07); font-size: 11px; color: #9AA0AA">
-    <span style="display: flex; align-items: center; gap: 6px"><span style="width: 6px; height: 6px; border-radius: 3px; background: {{statusDot}}" aria-hidden="true"></span>{{statusName}}</span>
-    <span>{{statusPath}}</span>
+  <div style="height: 30px; flex-shrink: 0; display: flex; align-items: center; gap: 18px; padding: 0 14px; white-space: pre">
+    <sc-for list="{{hints}}" as="h" hint-placeholder-count="5">
+      <span><span style="color: #F7CE46">{{h.k}}</span> <span style="color: #8B91A1">{{h.d}}</span></span>
+    </sc-for>
     <span style="flex: 1"></span>
-    <sc-if value="{{isUbuntu}}" hint-placeholder-val="{{ true }}">
-      <span style="padding: 2px 8px; border-radius: 10px; background: rgba(122,176,245,0.14); color: #A9CBFA">localhost:8000 → Ubuntu</span>
-    </sc-if>
-    <span>UTF-8</span>
-    <span>{{statusSize}}</span>
+    <span style="color: #8C8C8C"><span style="color: #CAE797">●</span> {{status}}</span>
   </div>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#F59E5B","options":["#F59E5B","#7AB0F5","#8BD49C","#C792EA"]},"showSidebar":{"editor":"boolean","default":true},"$preview":{"width":1280,"height":800}}'>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":800}}'>
 class Component extends DCLogic {
   constructor(props) {
     super(props);
-    this.state = { tab: 0, sidebar: null };
+    this.state = { tab: 0 };
   }
   renderVals() {
-    const accent = this.props.accent ?? '#F59E5B';
-    const sidebar = this.state.sidebar === null ? (this.props.showSidebar ?? true) : this.state.sidebar;
     const tab = this.state.tab;
-    const fg = '#D7DAE0', dim = '#8B93A1', green = '#8BD49C', blue = '#7AB0F5', red = '#F07178', yellow = '#E6C07B';
+    // Sampled from the owner's reference theme: keyword #A783F7, variable #E8557C,
+    // function #F7CE46, string #CAE797, number #E99173, operator #7AD3D5,
+    // comment #5D636F, text #CFD5E3, on #000000.
+    const fg = '#CFD5E3', dim = '#5D636F', pink = '#E8557C', peach = '#E99173', gold = '#F7CE46',
+      khaki = '#CAE797', teal = '#7AD3D5', lavender = '#A783F7';
+    const red = pink, orange = peach, yellow = khaki, green = khaki, blue = lavender, violet = gold;
+    // Pink is reserved for problems (errors, modified files); the prompt uses teal and grey.
+    const muted = '#8B91A1';
     const p = (host, path, cmd) => [
-      { t: 'omer@' + host, c: green }, { t: ':', c: fg }, { t: path, c: blue }, { t: '$ ', c: fg }, { t: cmd, c: fg }
+      { t: 'omer@' + host, c: teal }, { t: ':', c: muted }, { t: path, c: lavender }, { t: '$ ', c: muted }, { t: cmd, c: fg }
     ];
     const txt = (t, c) => [{ t: t, c: c || fg }];
-    const pick = (i) => () => this.setState({ tab: i });
-    const tabDefs = [
-      { label: 'Ubuntu', sub: '~/projects/maw', color: '#E95420' },
-      { label: 'Debian', sub: '~', color: '#D70A53' },
-      { label: 'zsh', sub: 'Mac', color: '#9AA0AA' }
+    const defs = [
+      { label: 'ubuntu', sub: '~/projects/maw' },
+      { label: 'debian', sub: '~' },
+      { label: 'zsh', sub: 'mac' }
     ];
-    const tabs = tabDefs.map((t, i) => ({
-      ...t,
-      pick: pick(i),
-      bg: i === tab ? 'rgba(255,255,255,0.09)' : 'transparent',
-      fg: i === tab ? '#F2F3F5' : '#9AA0AA'
+    const tabs = defs.map((d, i) => ({
+      num: String(i + 1),
+      label: d.label + '  ' + d.sub,
+      pick: () => this.setState({ tab: i }),
+      bg: i === tab ? '#CFD5E3' : 'transparent',
+      fg: i === tab ? '#000000' : '#A6A6A6',
+      numFg: i === tab ? '#4A4A4A' : '#777777'
     }));
-    const distros = [
-      { name: 'Ubuntu 24.04', initial: 'U', color: '#E95420', state: 'Running · 612 MB', dot: '#4ADE80', pick: pick(0), bg: tab === 0 ? 'rgba(255,255,255,0.07)' : 'transparent' },
-      { name: 'Debian 13', initial: 'D', color: '#D70A53', state: 'Running · 188 MB', dot: '#4ADE80', pick: pick(1), bg: tab === 1 ? 'rgba(255,255,255,0.07)' : 'transparent' }
-    ];
-    const path = '/mnt/mac/projects/maw';
-    const leftLines = [
-      txt('Welcome to Ubuntu 24.04.1 LTS (GNU/Linux 6.18.57-macwsl aarch64)', dim),
-      txt(' '),
-      p('ubuntu', '~', 'cd /mnt/mac/projects/maw'),
-      p('ubuntu', path, 'git status --short --branch'),
-      txt('## phase/03-first-boot...origin/phase/03-first-boot', green),
-      [{ t: ' M ', c: red }, { t: 'Sources/MacWSLVirtualization/VirtualMachine.swift', c: fg }],
-      [{ t: '?? ', c: red }, { t: 'Tests/macwsldTests/BootTests.swift', c: fg }],
-      p('ubuntu', path, 'uname -srm'),
-      txt('Linux 6.18.57-macwsl aarch64'),
-      p('ubuntu', path, 'free -h | head -2'),
-      txt('         total    used    free   available', dim),
-      txt('Mem:     3.8Gi   412Mi   3.1Gi       3.4Gi'),
-      p('ubuntu', path, 'swift build'),
-      txt('Building for debugging...', dim),
-      [{ t: 'Build complete! ', c: green }, { t: '(4.21s)', c: dim }]
-    ];
-    const rightLines = [
-      p('ubuntu', '~/site', 'python3 -m http.server 8000'),
-      txt('Serving HTTP on 0.0.0.0 port 8000 ...'),
-      [{ t: 'maw: ', c: accent }, { t: 'localhost:8000 → ubuntu:8000', c: dim }],
-      txt('127.0.0.1 "GET / HTTP/1.1" 200'),
-      txt('127.0.0.1 "GET /app.css HTTP/1.1" 200'),
-      txt('127.0.0.1 "GET /app.js HTTP/1.1" 200'),
-      txt('127.0.0.1 "GET /favicon.ico HTTP/1.1" 404', yellow)
-    ];
-    let singleLines = [], singlePrompt = [], statusName = '', statusPath = '', statusDot = '#4ADE80';
-    if (tab === 1) {
-      singleLines = [
-        txt('Linux debian 6.18.57-macwsl #1 SMP aarch64', dim),
-        txt(' '),
-        p('debian', '~', 'cat /etc/debian_version'),
-        txt('13.7'),
-        p('debian', '~', 'sudo apt update'),
-        txt('Hit:1 http://deb.debian.org/debian trixie InRelease', dim),
-        txt('All packages are up to date.')
+    let leftLines, leftPrompt, leftLabel, status;
+    if (tab === 0) {
+      const path = '~/projects/maw';
+      leftLabel = '1 ubuntu ~/projects/maw';
+      leftLines = [
+        p('ubuntu', path, 'git status -sb'),
+        [{ t: '## ', c: dim }, { t: 'phase/11a-terminal-app', c: violet }, { t: '...', c: dim }, { t: 'origin/phase/11a-terminal-app', c: red }],
+        [{ t: ' M ', c: red }, { t: 'App/MawTerminalKit/Sources/Window/TabStrip.swift', c: fg }],
+        [{ t: '?? ', c: yellow }, { t: 'App/MawTerminalKit/Sources/Window/KeyHints.swift', c: fg }],
+        p('ubuntu', path, 'uname -srm'),
+        [{ t: 'Linux ', c: fg }, { t: '6.18.57', c: orange }, { t: '-macwsl aarch64', c: fg }],
+        p('ubuntu', path, 'swift test --filter SplitTree'),
+        txt('Building for debugging...', dim),
+        [{ t: '✔ ', c: green }, { t: 'Test run with ', c: fg }, { t: '14', c: orange }, { t: ' tests in ', c: fg }, { t: '1', c: orange }, { t: ' suite passed after ', c: fg }, { t: '0.012', c: orange }, { t: ' seconds.', c: fg }],
+        p('ubuntu', path, 'ls'),
+        [{ t: 'App  Guest  Sources  Tests  docs  prompts  ', c: blue }, { t: 'Package.swift  README.md', c: fg }]
       ];
-      singlePrompt = p('debian', '~', '');
-      statusName = 'Debian 13'; statusPath = 'omer · ~';
-    } else if (tab === 2) {
-      const mac = (cmd) => [{ t: 'omer@MacBook-Pro ', c: fg }, { t: '~ ', c: blue }, { t: '% ', c: fg }, { t: cmd, c: fg }];
-      singleLines = [
+      leftPrompt = p('ubuntu', path, '');
+      status = 'ubuntu-24.04 · 412M · :8000 → localhost';
+    } else if (tab === 1) {
+      leftLabel = '1 debian ~';
+      leftLines = [
+        p('debian', '~', 'cat /etc/debian_version'),
+        txt('13.7', orange),
+        p('debian', '~', 'sudo apt update'),
+        [{ t: 'Hit:1 ', c: dim }, { t: 'http://deb.debian.org/debian', c: blue }, { t: ' trixie InRelease', c: dim }],
+        [{ t: 'All packages are up to date.', c: green }]
+      ];
+      leftPrompt = p('debian', '~', '');
+      status = 'debian-13 · 188M';
+    } else {
+      const mac = (cmd) => [{ t: 'omer@mbp ', c: teal }, { t: '~ ', c: lavender }, { t: '% ', c: muted }, { t: cmd, c: fg }];
+      leftLabel = '1 zsh ~';
+      leftLines = [
         mac('maw -l -v'),
-        txt('  NAME            STATE      MEMORY', dim),
-        [{ t: '* ', c: accent }, { t: 'Ubuntu-24.04    ', c: fg }, { t: 'Running    ', c: green }, { t: '612 MB', c: fg }],
-        [{ t: '  Debian-13       ', c: fg }, { t: 'Running    ', c: green }, { t: '188 MB', c: fg }],
+        txt('  NAME            STATE      VERSION', dim),
+        [{ t: '* ', c: yellow }, { t: 'Ubuntu-24.04    ', c: fg }, { t: 'Running    ', c: green }, { t: '2', c: orange }],
+        [{ t: '  Debian-13       ', c: fg }, { t: 'Running    ', c: green }, { t: '2', c: orange }],
         mac('maw -d Debian-13 -- uname -m'),
         txt('aarch64')
       ];
-      singlePrompt = mac('');
-      statusName = 'zsh (this Mac)'; statusPath = '~'; statusDot = '#9AA0AA';
-    } else {
-      statusName = 'Ubuntu 24.04'; statusPath = 'omer · ' + path;
+      leftPrompt = mac('');
+      status = 'zsh · this mac';
     }
+    const rightLines = [
+      p('ubuntu', '~/site', 'python3 -m http.server 8000'),
+      [{ t: 'Serving HTTP on ', c: fg }, { t: '0.0.0.0', c: orange }, { t: ' port ', c: fg }, { t: '8000', c: orange }, { t: ' ...', c: dim }],
+      [{ t: 'maw ', c: violet }, { t: 'forwarded localhost:8000 → ubuntu:8000', c: dim }],
+      [{ t: '127.0.0.1 ', c: dim }, { t: '"GET / HTTP/1.1" ', c: yellow }, { t: '200', c: green }],
+      [{ t: '127.0.0.1 ', c: dim }, { t: '"GET /app.css HTTP/1.1" ', c: yellow }, { t: '200', c: green }],
+      [{ t: '127.0.0.1 ', c: dim }, { t: '"GET /favicon.ico HTTP/1.1" ', c: yellow }, { t: '404', c: red }]
+    ];
     return {
-      accent: accent,
-      accentSoft: accent + '33',
-      sidebar: sidebar,
-      sidebarBtnBg: sidebar ? 'rgba(255,255,255,0.08)' : 'transparent',
-      toggleSidebar: () => this.setState({ sidebar: !sidebar }),
       tabs: tabs,
-      distros: distros,
-      pickMac: pick(2),
-      macBg: tab === 2 ? 'rgba(255,255,255,0.07)' : 'transparent',
-      isUbuntu: tab === 0,
-      isSingle: tab !== 0,
       leftLines: leftLines,
+      leftPrompt: leftPrompt,
+      leftLabel: leftLabel,
+      showRight: tab === 0,
       rightLines: rightLines,
-      singleLines: singleLines,
-      singlePrompt: singlePrompt,
-      statusName: statusName,
-      statusPath: statusPath,
-      statusDot: statusDot,
-      statusSize: tab === 0 ? '78×36 │ 52×36' : '130×36'
+      hints: [
+        { k: '⌘T', d: 'tab' },
+        { k: '⌘D', d: 'split' },
+        { k: '⌘⇧L', d: 'distros' },
+        { k: '⌘⇧P', d: 'commands' },
+        { k: '⌘,', d: 'settings' }
+      ],
+      status: status
     };
   }
 }
