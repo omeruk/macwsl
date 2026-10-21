@@ -2,6 +2,7 @@
     import Dispatch
     import Foundation
     import MacWSLCore
+    import MacWSLProtocol
     import Virtualization
     import os
 
@@ -27,11 +28,37 @@
         public enum StopOutcome: Sendable, Equatable {
             /// The virtual machine was not running.
             case alreadyStopped
-            /// The guest powered off after the stop request.
-            case clean(after: Duration)
+            /// The guest powered off after being asked to.
+            case clean(after: Duration, via: StopRequest)
             /// The guest did not stop in time, or could not be asked to, and was stopped forcibly.
             case forced(after: Duration)
         }
+
+        /// How the guest was asked to power off.
+        public enum StopRequest: Sendable, Equatable, CustomStringConvertible {
+            /// The guest agent's `shutdown` request.
+            case agent
+            /// Virtualization.framework's `requestStop()`, used when the agent cannot be reached.
+            case stopRequest
+            /// The guest powered off on its own while a request was outstanding.
+            case guest
+
+            public var description: String {
+                switch self {
+                case .agent: "the guest agent"
+                case .stopRequest: "a stop request"
+                case .guest: "the guest itself"
+                }
+            }
+        }
+
+        /// How long `stop(timeout:)` waits for a connection to the agent, which is normally
+        /// already listening.
+        static let agentShutdownConnectTimeout = Duration.seconds(1)
+        /// How long `stop(timeout:)` waits for the agent to acknowledge `shutdown`.
+        static let agentShutdownReplyTimeout = Duration.seconds(2)
+        /// How often `connectToAgent(timeout:)` retries while the agent is not listening yet.
+        static let agentConnectRetryInterval = Duration.milliseconds(20)
 
         /// Where the console's output goes besides the console log, and where its input comes
         /// from. With neither, the console is only logged.
@@ -149,41 +176,68 @@
 
         // MARK: Stopping
 
-        /// Stops the virtual machine. First asks the guest to power off (`requestStop()`); if it
-        /// has not stopped within `timeout`, stops it forcibly and records that in the console
-        /// log.
+        /// Stops the virtual machine, trying each of these in turn until the guest has stopped:
+        ///
+        /// 1. the guest agent's `shutdown` request, then up to `timeout` for the guest to power
+        ///    off;
+        /// 2. `requestStop()`, then up to `timeout` again;
+        /// 3. a forced stop.
+        ///
+        /// The console log records which step stopped the guest, and why earlier steps did not.
         @discardableResult
         public func stop(timeout: Duration) async throws(MacWSLError) -> StopOutcome {
-            guard let machine, state == .running || state == .starting else {
+            guard machine != nil, state == .running || state == .starting else {
                 return .alreadyStopped
             }
             let clock = ContinuousClock()
             let start = clock.now
             transition(to: .stopping)
 
+            // 1. The agent.
+            var reasons: [String] = []
+            do {
+                try await agentClient(connectTimeout: Self.agentShutdownConnectTimeout)
+                    .shutdown()
+                if await waitForStop(timeout: timeout) {
+                    return noteCleanStop(after: clock.now - start, via: .agent)
+                }
+                reasons.append(
+                    "the guest did not stop within \(timeout.milliseconds) ms of the agent's "
+                        + "acknowledgement")
+            } catch {
+                reasons.append("the agent could not be asked: \(error.description)")
+            }
+            guard let machine = self.machine else {
+                return noteCleanStop(after: clock.now - start, via: .guest)
+            }
+
+            // 2. Virtualization.framework's stop request.
             var requested = false
             if machine.canRequestStop {
                 do {
                     try machine.requestStop()
                     requested = true
                 } catch {
-                    logger.notice("\(self.name, privacy: .public): stop request failed: \(error)")
+                    reasons.append("the stop request failed: \(error.localizedDescription)")
                 }
+            } else {
+                reasons.append("the virtual machine cannot accept a stop request")
             }
-            if requested, await waitForStop(timeout: timeout) {
-                let elapsed = clock.now - start
-                console.note("shutdown: clean after \(elapsed.milliseconds) ms")
-                return .clean(after: elapsed)
+            if requested {
+                if await waitForStop(timeout: timeout) {
+                    console.note(
+                        "shutdown: the agent was not used: \(reasons.joined(separator: "; "))")
+                    return noteCleanStop(after: clock.now - start, via: .stopRequest)
+                }
+                reasons.append(
+                    "the guest did not stop within \(timeout.milliseconds) ms of the stop request")
             }
-            guard self.machine != nil else {
-                // The guest stopped on its own while the request was outstanding.
-                return .clean(after: clock.now - start)
+            guard let machine = self.machine else {
+                return noteCleanStop(after: clock.now - start, via: .guest)
             }
 
-            let why =
-                requested
-                ? "the guest did not stop within \(timeout.milliseconds) ms of the stop request"
-                : "the guest could not be asked to stop"
+            // 3. Forced.
+            let why = reasons.joined(separator: "; ")
             do {
                 try await withCheckedThrowingContinuation {
                     (continuation: CheckedContinuation<Void, any Error>) in
@@ -204,6 +258,97 @@
                 "\(self.name, privacy: .public): forced shutdown; \(why, privacy: .public)")
             didStop(.stopped)
             return .forced(after: elapsed)
+        }
+
+        private func noteCleanStop(after elapsed: Duration, via request: StopRequest)
+            -> StopOutcome
+        {
+            console.note("shutdown: clean after \(elapsed.milliseconds) ms via \(request)")
+            return .clean(after: elapsed, via: request)
+        }
+
+        // MARK: Guest agent
+
+        /// Opens a connection to the guest agent on vsock port `AgentProtocol.vsockPort`. While
+        /// the agent is not listening yet, retries every 20 ms until `timeout` has passed.
+        ///
+        /// Returns the connection as a plain descriptor, which the caller owns. It does not
+        /// depend on this instance, so that it can be handed to another process.
+        public func connectToAgent(timeout: Duration) async throws(MacWSLError)
+            -> OwnedDescriptor
+        {
+            let deadline = ContinuousClock.now + timeout
+            var lastFailure = "no attempt was made"
+            while true {
+                guard let machine, state == .running || state == .stopping,
+                    let device = machine.socketDevices.first as? VZVirtioSocketDevice
+                else {
+                    throw .guestAgentUnavailable(reason: "the virtual machine is not running")
+                }
+                switch await connect(device, port: AgentProtocol.vsockPort, until: deadline) {
+                case .success(let descriptor):
+                    return OwnedDescriptor(descriptor)
+                case .failure(let failure):
+                    lastFailure = failure.reason
+                }
+                if ContinuousClock.now >= deadline {
+                    throw .guestAgentUnavailable(
+                        reason: "no connection to vsock port \(AgentProtocol.vsockPort) within "
+                            + "\(timeout.milliseconds) ms; the last attempt failed: \(lastFailure)")
+                }
+                try? await Task.sleep(for: Self.agentConnectRetryInterval)
+            }
+        }
+
+        /// A client for the guest agent whose connections come from `connectToAgent`.
+        public nonisolated func agentClient(
+            connectTimeout: Duration, replyTimeout: Duration = .seconds(10)
+        ) -> GuestAgentClient {
+            GuestAgentClient(replyTimeout: replyTimeout) { [self] () throws(MacWSLError) in
+                try await connectToAgent(timeout: connectTimeout)
+            }
+        }
+
+        fileprivate struct ConnectFailure: Error {
+            var reason: String
+        }
+
+        /// One connection attempt. Gives up at `deadline`, because the framework's completion
+        /// handler may not run until the guest's vsock driver answers. A connection that
+        /// arrives after that is closed. Isolated, because the device may only be used on the
+        /// virtual machine's queue.
+        private func connect(
+            _ device: VZVirtioSocketDevice, port: UInt32, until deadline: ContinuousClock.Instant
+        ) async -> Result<Int32, ConnectFailure> {
+            let attempt = ConnectAttempt()
+            return await withCheckedContinuation { continuation in
+                attempt.setContinuation(continuation)
+                device.connect(toPort: port) { result in
+                    switch result {
+                    case .success(let connection):
+                        // The connection object closes its descriptor when it is closed or
+                        // released; the caller gets a duplicate of its own.
+                        let descriptor = dup(connection.fileDescriptor)
+                        let code = errno
+                        connection.close()
+                        if descriptor < 0 {
+                            attempt.resume(
+                                .failure(
+                                    ConnectFailure(reason: "dup: \(SystemError.message(for: code))")
+                                ))
+                        } else if !attempt.resume(.success(descriptor)) {
+                            close(descriptor)
+                        }
+                    case .failure(let error):
+                        attempt.resume(.failure(ConnectFailure(reason: error.localizedDescription)))
+                    }
+                }
+                Task {
+                    try? await Task.sleep(until: deadline)
+                    attempt.resume(
+                        .failure(ConnectFailure(reason: "the connection attempt timed out")))
+                }
+            }
         }
 
         /// Waits until the virtual machine has stopped and the console has passed on all output.
@@ -274,6 +419,28 @@
             return await withCheckedContinuation { continuation in
                 stopWaiters[id] = continuation
             }
+        }
+    }
+
+    /// Resumes a connection attempt's continuation once: with the connection, the failure, or
+    /// the timeout, whichever comes first.
+    private final class ConnectAttempt: Sendable {
+        private let state = OSAllocatedUnfairLock<
+            CheckedContinuation<Result<Int32, VirtualMachine.ConnectFailure>, Never>?
+        >(initialState: nil)
+
+        func setContinuation(
+            _ continuation: CheckedContinuation<Result<Int32, VirtualMachine.ConnectFailure>, Never>
+        ) {
+            state.withLock { $0 = continuation }
+        }
+
+        /// Returns false if the attempt had already been resumed.
+        @discardableResult
+        func resume(_ result: Result<Int32, VirtualMachine.ConnectFailure>) -> Bool {
+            guard let continuation = state.withLock({ $0.take() }) else { return false }
+            continuation.resume(returning: result)
+            return true
         }
     }
 
