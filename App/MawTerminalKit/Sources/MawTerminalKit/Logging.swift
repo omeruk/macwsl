@@ -1,8 +1,8 @@
 import os
 
-// The subsystem stays dev.macwsl until the project is renamed in a separate pull request.
+// The project's logging subsystem, shared with the daemon and the CLI (CLAUDE.md).
 extension Logger {
-    static let app = Logger(subsystem: "dev.macwsl", category: "terminal-app")
-    static let session = Logger(subsystem: "dev.macwsl", category: "terminal-session")
-    static let settings = Logger(subsystem: "dev.macwsl", category: "terminal-settings")
+    static let app = Logger(subsystem: "dev.maw", category: "terminal-app")
+    static let session = Logger(subsystem: "dev.maw", category: "terminal-session")
+    static let settings = Logger(subsystem: "dev.maw", category: "terminal-settings")
 }
