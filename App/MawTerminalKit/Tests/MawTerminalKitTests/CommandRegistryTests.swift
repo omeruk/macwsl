@@ -71,6 +71,7 @@ import Testing
         let hints = registry.hints(in: terminalContext)
         #expect(hints.map(\.keys) == ["⌘T", "⌘D", "⌘⇧L", "⌘⇧P", "⌘,"])
         #expect(hints.map(\.label) == ["tab", "split", "distros", "commands", "settings"])
+        #expect(hints.allSatisfy { $0.placement == .leading })
         #expect(hints.allSatisfy { $0.isEnabled })
     }
 
@@ -83,12 +84,15 @@ import Testing
         #expect(hints[0].note == "arrives in a later version")
         #expect(hints[1].label == "back")
         #expect(hints[1].isEnabled)
+        #expect(hints.map(\.placement) == [.leading, .trailing])
     }
 
     @Test func settingsHintsListTheNavigationKeys() {
         let context = CommandContext(selection: .screen(.settings), tabCount: 2)
         let hints = registry.hints(in: context)
         #expect(hints.map(\.keys) == ["↑↓", "←→", "↩", "⇥", "esc"])
+        // esc back sits at the right end on every screen tab.
+        #expect(hints.map(\.placement) == [.leading, .leading, .leading, .leading, .trailing])
         #expect(hints.allSatisfy { $0.isEnabled })
     }
 

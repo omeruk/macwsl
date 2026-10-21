@@ -1,21 +1,23 @@
 import SwiftUI
 
-/// The bar at the bottom of the window: key hints from the command registry on the left, the
-/// focused session's status on the right.
+/// The bar at the bottom of the window: key hints from the command registry on the left, then
+/// a spacer, the focused session's status, and screen-wide hints such as `esc back` at the
+/// right end.
 struct KeyHintBar: View {
     let model: WindowModel
     @Environment(\.chrome) private var chrome
 
     var body: some View {
-        let hints = model.registry.hints(in: model.context)
+        let hints = model.settings.showKeyHints ? model.registry.hints(in: model.context) : []
         HStack(spacing: 18) {
-            if model.settings.showKeyHints {
-                ForEach(hints, id: \.command) { hint in
-                    HintView(hint: hint) { model.perform(hint.command) }
-                }
+            ForEach(hints.filter { $0.placement == .leading }, id: \.command) { hint in
+                HintView(hint: hint) { model.perform(hint.command) }
             }
             Spacer(minLength: 0)
             StatusView(model: model)
+            ForEach(hints.filter { $0.placement == .trailing }, id: \.command) { hint in
+                HintView(hint: hint) { model.perform(hint.command) }
+            }
         }
         .padding(.horizontal, 14)
         .frame(height: 30)

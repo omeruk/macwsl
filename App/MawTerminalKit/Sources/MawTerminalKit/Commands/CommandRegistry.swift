@@ -199,12 +199,19 @@ public struct CommandRegistry: Hashable, Sendable {
 
     /// A hint in the key-hint bar.
     public struct Hint: Hashable, Sendable {
+        /// Where the bar places a hint. Screen-wide hints such as `esc back` sit at the right
+        /// end, after a spacer, as in `Distributions.dc.html`.
+        public enum Placement: Hashable, Sendable {
+            case leading, trailing
+        }
+
         public var command: CommandID
         public var keys: String
         public var label: String
         public var isEnabled: Bool
         /// A short explanation shown after a disabled hint, such as when it will arrive.
         public var note: String?
+        public var placement: Placement
     }
 
     /// The hints for the selected tab. Terminal tabs show the main shortcuts, as in
@@ -231,7 +238,8 @@ public struct CommandRegistry: Hashable, Sendable {
             let enabled = definition.kind == .navigation || isEnabled(id, in: context)
             return Hint(
                 command: id, keys: definition.keys, label: label, isEnabled: enabled,
-                note: id == .installDistribution ? "arrives in a later version" : nil)
+                note: id == .installDistribution ? "arrives in a later version" : nil,
+                placement: definition.scope == .anyScreen ? .trailing : .leading)
         }
     }
 
