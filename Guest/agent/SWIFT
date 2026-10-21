@@ -1,0 +1,28 @@
+# The Swift toolchain and Static Linux SDK that build the guest agent (macwsl-agent), sourced
+# by scripts/build-guest-agent.sh and the Guest workflow. The SDK must come from the same Swift
+# release as the toolchain; Xcode's toolchain cannot use it.
+#
+# Each sha256 below was computed from a download whose origin was verified first:
+# - the Linux toolchain against its PGP signature (.sig next to the tarball), with the keys
+#   from https://www.swift.org/keys/all-keys.asc ("Swift 6.x Release Signing Key");
+# - the macOS package with `pkgutil --check-signature` (Developer ID Installer: Swift Open
+#   Source, notarized);
+# - the SDK against the checksum swift.org publishes in
+#   https://www.swift.org/api/v1/install/releases.json.
+SWIFT_VERSION=6.4.1
+
+# Linux toolchain, for the Guest workflow's ubuntu-24.04-arm runners.
+SWIFT_LINUX_URL=https://download.swift.org/swift-6.4.1-release/ubuntu2404-aarch64/swift-6.4.1-RELEASE/swift-6.4.1-RELEASE-ubuntu24.04-aarch64.tar.gz
+SWIFT_LINUX_SHA256=b85dd70e204bc363ce62f1e35bd1887810d0e04487d13de8fd9d042635972f45
+
+# macOS toolchain package, for local builds. Install it for the current user only (see
+# Guest/README.md); it does not change which `swift` is on PATH.
+SWIFT_MACOS_URL=https://download.swift.org/swift-6.4.1-release/xcode/swift-6.4.1-RELEASE/swift-6.4.1-RELEASE-osx.pkg
+SWIFT_MACOS_SHA256=c34e7e5fb0be4bcd61decfd40db1766434d8952d68e37aed90bcff4e8547951c
+
+# Static Linux SDK (musl, fully static binaries).
+SWIFT_SDK_URL=https://download.swift.org/swift-6.4.1-release/static-sdk/swift-6.4.1-RELEASE/swift-6.4.1-RELEASE_static-linux-0.1.0.artifactbundle.tar.gz
+SWIFT_SDK_SHA256=cef5592d7430ed3c5ae1ddda479849c6f5252bd94a5723db1559f984caf38a7c
+# The name `swift sdk list` shows once the SDK is installed.
+SWIFT_SDK_ID=swift-6.4.1-RELEASE_static-linux-0.1.0
+SWIFT_SDK_TRIPLE=aarch64-swift-linux-musl
