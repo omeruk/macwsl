@@ -24,6 +24,11 @@ final class ChildProcess {
     let pid: pid_t
     /// The pseudo-terminal's primary side, in terminal mode.
     let terminal: OwnedDescriptor?
+    /// The agent's copy of the secondary side, in terminal mode, held until the process has
+    /// exited. Darwin's primary side reports end-of-file as soon as no secondary descriptor is
+    /// open, discarding output that has not been read yet; holding one open keeps a short-lived
+    /// process's output readable. Linux keeps the output either way.
+    private var secondary: OwnedDescriptor?
     /// Where standard input is written: the pipe in pipe mode, the terminal in terminal mode.
     private(set) var input: OwnedDescriptor?
     /// Open output streams and the frame type each one becomes.
@@ -33,11 +38,13 @@ final class ChildProcess {
     private(set) var exitStatus: ExitStatus?
 
     private init(
-        pid: pid_t, terminal: OwnedDescriptor?, input: OwnedDescriptor?,
-        outputs: [(descriptor: OwnedDescriptor, type: FrameType)], exitWatch: OwnedDescriptor?
+        pid: pid_t, terminal: OwnedDescriptor?, secondary: OwnedDescriptor? = nil,
+        input: OwnedDescriptor?, outputs: [(descriptor: OwnedDescriptor, type: FrameType)],
+        exitWatch: OwnedDescriptor?
     ) {
         self.pid = pid
         self.terminal = terminal
+        self.secondary = secondary
         self.input = input
         self.outputs = outputs
         self.exitWatch = exitWatch
@@ -106,13 +113,13 @@ final class ChildProcess {
             request, path: path, environment: environment,
             stdin: secondary.rawValue, stdout: secondary.rawValue, stderr: secondary.rawValue,
             controllingTerminal: true)
-        // Once the child and its descendants close the secondary side, reading the primary
-        // side reports end-of-file (EIO on Linux).
-        secondary.close()
+        // Once the process has exited and `releaseTerminal()` has closed this copy, reading
+        // the primary side reports end-of-file (EIO on Linux) when the process's descendants
+        // have closed theirs too.
         _ = macwsl_set_nonblocking(primary.rawValue)
         return ChildProcess(
-            pid: pid, terminal: primary, input: primary, outputs: [(primary, .stdout)],
-            exitWatch: openExitWatch(pid))
+            pid: pid, terminal: primary, secondary: secondary, input: primary,
+            outputs: [(primary, .stdout)], exitWatch: openExitWatch(pid))
     }
 
     private static func start(
@@ -205,8 +212,10 @@ final class ChildProcess {
     // MARK: Running
 
     /// Delivers a signal: in terminal mode to the terminal's foreground process group, in pipe
-    /// mode to the process group.
+    /// mode to the process group. Nothing is sent once the process has been reaped, because its
+    /// process ID may then belong to another process.
     func send(_ signal: Int32) {
+        guard exitStatus == nil else { return }
         if let terminal {
             let group = tcgetpgrp(terminal.rawValue)
             if group > 0 && kill(-group, signal) == 0 {
@@ -230,6 +239,12 @@ final class ChildProcess {
         guard let terminal else { return 0x04 }
         let character = macwsl_terminal_eof_character(terminal.rawValue)
         return character > 0 ? UInt8(truncatingIfNeeded: character) : 0x04
+    }
+
+    /// Closes the agent's copy of the terminal's secondary side, after the process has exited.
+    func releaseTerminal() {
+        secondary?.close()
+        secondary = nil
     }
 
     func closeInput() {

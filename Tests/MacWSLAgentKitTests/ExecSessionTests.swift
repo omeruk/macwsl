@@ -207,7 +207,8 @@ import Testing
     }
 
     @Test func passesTheSelfTest() async {
-        #expect(await SelfTest.run() == [])
+        let failures = await SelfTest.run()
+        #expect(failures.isEmpty, "\(failures)")
     }
 }
 

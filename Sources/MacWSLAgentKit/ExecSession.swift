@@ -76,6 +76,9 @@ final class ExecSession {
             if let status = child.exitStatus {
                 let now = ContinuousClock.now
                 let exitedAt = self.exitedAt ?? now
+                if self.exitedAt == nil {
+                    child.releaseTerminal()
+                }
                 self.exitedAt = exitedAt
                 if child.outputs.isEmpty || now >= exitedAt + Self.drainGrace {
                     if hostLeftAt == nil {
