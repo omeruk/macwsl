@@ -1,0 +1,42 @@
+#!/bin/sh
+# /sbin/macwsl-shutdown: the inittab shutdown action. busybox init runs it when it receives
+# SIGUSR2 (power off), before its own shutdown sequence.
+#
+# 1. Sends SIGTERM to every process except init and this script.
+# 2. Waits until they have exited, for at most 1 second, then sends SIGKILL to the rest.
+# 3. Syncs, unmounts what can be unmounted, and powers off immediately.
+#
+# busybox init's own sequence also sends SIGTERM and SIGKILL, but sleeps for one second after
+# each step, regardless of whether anything is left to wait for. Powering off here keeps a
+# clean shutdown well under the two seconds the host allows for it.
+
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+# Whether any process other than init and this script is left. Kernel threads have no
+# executable, so readlink fails for them.
+others_running() {
+    for dir in /proc/[0-9]*; do
+        pid=${dir#/proc/}
+        [ "$pid" = 1 ] && continue
+        [ "$pid" = "$$" ] && continue
+        readlink "$dir/exe" > /dev/null 2>&1 && return 0
+    done
+    return 1
+}
+
+echo "macwsl-shutdown: stopping processes"
+kill -TERM -1 2> /dev/null
+tries=0
+while others_running && [ "$tries" -lt 20 ]; do
+    usleep 50000
+    tries=$((tries + 1))
+done
+if others_running; then
+    echo "macwsl-shutdown: sending SIGKILL to the remaining processes"
+    kill -KILL -1 2> /dev/null
+fi
+
+sync
+umount -a -r 2> /dev/null
+echo "macwsl-shutdown: powering off"
+poweroff -f

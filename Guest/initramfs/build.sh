@@ -12,7 +12,8 @@
 #   --gen-init-cpio  the kernel's usr/gen_init_cpio, built for this machine
 #   --version        version string for the /init banner
 #   --output         path of the initramfs.cpio.gz to write
-#   --agent          optional binary to install as /sbin/macwsl-agent (phase 04)
+#   --agent          the guest agent, installed as /sbin/macwsl-agent; without it, /init has
+#                    nothing to supervise and only the macwsl.test hooks are useful
 #
 # SOURCE_DATE_EPOCH must be set. It is the modification time of every archive entry.
 
@@ -24,7 +25,7 @@ guest_dir=$(dirname "$initramfs_dir")
 . "$initramfs_dir/SOURCES"
 
 usage() {
-    sed -n '6,18s/^# \{0,1\}//p' "$0" >&2
+    sed -n '6,19s/^# \{0,1\}//p' "$0" >&2
     exit 64
 }
 
@@ -127,6 +128,7 @@ if [ -n "$agent" ]; then
 fi
 
 install -m 0755 "$initramfs_dir/init" "$root/init"
+install -m 0755 "$initramfs_dir/macwsl-shutdown" "$root/sbin/macwsl-shutdown"
 printf '%s\n' "$version" > "$root/etc/macwsl-initramfs-version"
 printf 'root:x:0:0:root:/root:/bin/sh\n' > "$root/etc/passwd"
 printf 'root:x:0:\n' > "$root/etc/group"
