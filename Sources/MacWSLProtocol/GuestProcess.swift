@@ -157,9 +157,21 @@ public final class GuestProcess: @unchecked Sendable {
         throws(ConnectionError) -> ExitStatus
     {
         var drain = [UInt8](repeating: 0, count: 64)
+        // Set when the agent has closed its side, typically right after sending `exited`.
+        // What it sent before is still read; what is queued for it is dropped.
+        var agentStoppedReading = false
         while true {
             moveQueuedFrames(to: connection)
-            try connection.flush()
+            if agentStoppedReading {
+                connection.discardPendingOutput()
+            } else {
+                do {
+                    try connection.flush()
+                } catch .closed {
+                    agentStoppedReading = true
+                    connection.discardPendingOutput()
+                }
+            }
 
             var events: Int32 = 0
             if connection.canReceive {

@@ -164,9 +164,14 @@ public final class FrameConnection: @unchecked Sendable {
                 try wait(for: POLLOUT, until: deadline, expecting: "the connection to accept data")
             }
         } catch .closed {
-            outbox.removeAll()
-            outboxStart = 0
+            discardPendingOutput()
         }
+    }
+
+    /// Drops queued output, for a peer that has stopped reading.
+    public func discardPendingOutput() {
+        outbox.removeAll()
+        outboxStart = 0
     }
 
     /// Waits for the next frame. Throws `closed` at end-of-file.
