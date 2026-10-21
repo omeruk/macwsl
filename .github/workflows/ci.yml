@@ -39,3 +39,53 @@ jobs:
 
       - name: Sign macwsld
         run: ./scripts/sign-dev.sh
+
+  app:
+    name: Terminal app
+    # Same runner as the build job. The app package needs the Metal Toolchain for SwiftTerm's
+    # shader, so it is installed in this job only (docs/decisions/0008-app-package.md).
+    runs-on: macos-26
+    steps:
+      - name: Show toolchain versions
+        run: |
+          swift --version
+          xcodebuild -version
+          swift format --version
+
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Install the Metal Toolchain
+        run: |
+          xcodebuild -downloadComponent MetalToolchain
+          xcodebuild -showComponent MetalToolchain
+          xcrun metal --version
+
+      - name: Build MawTerminalKit
+        working-directory: App/MawTerminalKit
+        run: swift build -Xswiftc -warnings-as-errors
+
+      - name: Test MawTerminalKit
+        working-directory: App/MawTerminalKit
+        run: swift test -Xswiftc -warnings-as-errors
+
+      - name: Lint MawTerminalKit
+        working-directory: App/MawTerminalKit
+        run: swift format lint --strict --recursive Sources Tests Package.swift
+
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+          xcodegen --version
+
+      - name: Generate the Xcode project
+        working-directory: App
+        run: xcodegen
+
+      # SwiftTerm runs a build-tool plugin. Xcode asks once to trust it; in CI the validation
+      # is skipped instead.
+      - name: Build the app
+        working-directory: App
+        run: |
+          xcodebuild build -project maw.xcodeproj -scheme maw -configuration Debug \
+            -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO

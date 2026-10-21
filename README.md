@@ -100,6 +100,20 @@ shut down, for example `shutdown: clean after 56 ms via the guest agent`. Run
 `--memory`, and `--disk`. If the terminal is ever left in raw mode, for example after
 `kill -9`, `stty sane` restores it.
 
+## Running the terminal app
+
+The terminal app, maw, lives in `App/`. Its code is the `App/MawTerminalKit` package; the
+Xcode project is generated from `App/project.yml` with XcodeGen.
+
+1. `xcodebuild -downloadComponent MetalToolchain` (once; SwiftTerm compiles a Metal shader)
+2. `brew install xcodegen`
+3. `cd App && xcodegen`
+4. Open `maw.xcodeproj` and run the `maw` scheme. On the first build, Xcode asks you to trust
+   SwiftTerm's `SwiftTermBuildInfoPlugin`; choose Trust & Enable.
+
+Run `xcodegen` again after pulling a change to `project.yml`. The package's tests run without
+Xcode's project: `swift test --package-path App/MawTerminalKit`.
+
 ## Documentation
 
 - [`CLAUDE.md`](CLAUDE.md): architecture, repository layout and conventions

@@ -26,6 +26,9 @@ build/
 .idea/
 *.swp
 
+# Terminal app: the Xcode project is generated from App/project.yml (docs/decisions/0007)
+App/maw.xcodeproj/
+
 # Guest build (Guest/build.sh)
 Guest/out/
 Guest/.cache/
