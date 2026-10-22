@@ -67,12 +67,13 @@ struct SessionRunner {
     }
 
     /// A terminal: raw mode, window size changes, and the terminal restored on every path.
-    /// Ctrl-C is a byte for the guest. SIGTERM, SIGHUP, and SIGQUIT sent to maw end the
-    /// session; the guest agent then hangs up the guest's terminal, as sshd does.
+    /// Ctrl-C is a byte for the guest. SIGINT, SIGTERM, SIGHUP, and SIGQUIT sent to maw from
+    /// elsewhere end the session, after which the terminal is restored; the guest agent then
+    /// hangs up the guest's terminal, as sshd does.
     private func runOnTerminal(
         _ request: ExecRequest, session: DaemonSession, events: EventRelay
     ) async throws -> Ending {
-        let signals = SignalMonitor([SIGTERM, SIGHUP, SIGQUIT])
+        let signals = SignalMonitor(SignalMonitor.orderlySignals)
         let resizes = SignalMonitor([SIGWINCH])
         let rawMode = try RawMode(for: "a shell")
         defer { rawMode.restore() }
