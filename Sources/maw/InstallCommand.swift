@@ -44,7 +44,9 @@ struct InstallCommand {
         let (user, password): (UserName, Secret)
         if let given = options.user {
             user = try UserName(given, reservedNames: entry.reservedNames)
-            password = try Self.readPasswordLine()
+            // On a terminal, the password is asked for without echo, never read as typed text.
+            password =
+                isatty(STDIN_FILENO) == 1 ? try Self.askForPassword() : try Self.readPasswordLine()
         } else if interactive {
             (user, password) = try Self.askForAccount(reservedNames: entry.reservedNames)
         } else {
@@ -212,6 +214,11 @@ struct InstallCommand {
                 print(error.errorDescription ?? "", error.recoverySuggestion ?? "")
             }
         }
+        return (user!, try askForPassword())
+    }
+
+    /// Asks for the password twice, without echoing it, until both entries match.
+    static func askForPassword() throws -> Secret {
         while true {
             let first = try readSecret(prompt: "New password: ")
             if first.value.isEmpty {
@@ -220,7 +227,7 @@ struct InstallCommand {
             }
             let second = try readSecret(prompt: "Retype the new password: ")
             if first == second {
-                return (user!, first)
+                return first
             }
             print("The passwords do not match. Try again.")
         }
