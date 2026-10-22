@@ -4,6 +4,7 @@ import Foundation
 import MawCommandLine
 import MawCore
 import MawProtocol
+import MawTerminalIO
 import MawVirtualization
 
 /// `mawd debug-boot`: boots the guest kernel and initramfs for development.

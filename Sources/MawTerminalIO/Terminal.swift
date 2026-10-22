@@ -3,12 +3,12 @@ import Dispatch
 import MawCore
 import MawProtocol
 
-/// Terminal handling for `debug-boot --interactive`.
-enum Terminal {
+/// Terminal handling shared by `maw` and `mawd debug-boot`.
+public enum Terminal {
     /// Throws unless both descriptors refer to terminals. Called before anything else in an
     /// interactive session, so that nothing touches termios or starts a VM without a terminal.
     /// `option` names the option that needs the terminal.
-    static func requireTerminals(
+    public static func requireTerminals(
         for option: String, input: Int32 = STDIN_FILENO, output: Int32 = STDOUT_FILENO
     ) throws(MawError) {
         guard isatty(input) == 1 else {
@@ -20,7 +20,7 @@ enum Terminal {
     }
 
     /// The terminal's window size, or `nil` if `descriptor` is not a terminal or reports none.
-    static func windowSize(of descriptor: Int32 = STDOUT_FILENO) -> TerminalSize? {
+    public static func windowSize(of descriptor: Int32 = STDOUT_FILENO) -> TerminalSize? {
         var size = winsize()
         guard ioctl(descriptor, TIOCGWINSZ, &size) == 0, size.ws_row > 0, size.ws_col > 0 else {
             return nil
@@ -52,13 +52,13 @@ private func restoreSavedTerminal() {
 /// SIGINT, SIGTERM, SIGHUP, and SIGQUIT are handled by the caller as orderly shutdowns (see
 /// `SignalMonitor`). In raw mode, Ctrl-C and Ctrl-Z generate no signals; they are bytes for the
 /// guest. SIGKILL cannot be handled; after it, `stty sane` restores the terminal.
-final class RawMode {
+public final class RawMode {
     private static let crashSignals = [SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP]
     nonisolated(unsafe) private static var installedHandlers = false
 
     private let descriptor: Int32
 
-    init(for option: String, descriptor: Int32 = STDIN_FILENO) throws(MawError) {
+    public init(for option: String, descriptor: Int32 = STDIN_FILENO) throws(MawError) {
         var original = termios()
         guard tcgetattr(descriptor, &original) == 0 else {
             throw .notATerminal(option: option, stream: "standard input")
@@ -74,7 +74,7 @@ final class RawMode {
     }
 
     /// Restores the original state. Safe to call more than once.
-    func restore() {
+    public func restore() {
         guard rawModeDescriptor == descriptor else { return }
         tcsetattr(descriptor, TCSAFLUSH, &rawModeOriginal)
         rawModeDescriptor = -1
@@ -94,17 +94,17 @@ final class RawMode {
     }
 }
 
-/// Turns SIGINT, SIGTERM, SIGHUP, and SIGQUIT into an async stream, so that `debug-boot` can
-/// stop the virtual machine in an orderly way instead of dying with it. Dispatch sources are
+/// Turns SIGINT, SIGTERM, SIGHUP, and SIGQUIT into an async stream, so that a session can end
+/// in an orderly way, restoring the terminal, instead of dying. Dispatch sources are
 /// the system's way to observe signals outside a signal handler; their queue stays inside this
 /// type.
-final class SignalMonitor: Sendable {
-    static let orderlySignals = [SIGINT, SIGTERM, SIGHUP, SIGQUIT]
+public final class SignalMonitor: Sendable {
+    public static let orderlySignals = [SIGINT, SIGTERM, SIGHUP, SIGQUIT]
 
-    let signals: AsyncStream<Int32>
+    public let signals: AsyncStream<Int32>
     private let sources: [any DispatchSourceSignal]
 
-    init(_ signals: [Int32] = SignalMonitor.orderlySignals) {
+    public init(_ signals: [Int32] = SignalMonitor.orderlySignals) {
         let (stream, continuation) = AsyncStream.makeStream(of: Int32.self)
         self.signals = stream
         self.sources = signals.map { number in

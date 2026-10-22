@@ -42,6 +42,8 @@ let package = Package(
         .target(name: "MawVirtualization", dependencies: ["MawCore", "MawProtocol"]),
         // The XPC interface between mawd and its clients (docs/daemon.md).
         .target(name: "MawXPC", dependencies: ["MawCore", "MawProtocol"]),
+        // Terminal raw mode, window size, and signal routing, shared by maw and mawd.
+        .target(name: "MawTerminalIO", dependencies: ["MawCore", "MawProtocol"]),
         // Error reporting shared by the maw and mawd command lines.
         .target(
             name: "MawCommandLine",
@@ -66,6 +68,7 @@ let package = Package(
                 "MawCommandLine",
                 "MawDaemonKit",
                 "MawProtocol",
+                "MawTerminalIO",
                 "MawVirtualization",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
@@ -97,6 +100,8 @@ let package = Package(
             ]
         ),
         .testTarget(name: "MawVirtualizationTests", dependencies: ["MawVirtualization"]),
+        .testTarget(
+            name: "MawTerminalIOTests", dependencies: ["MawTerminalIO", "MawCore", "MawProtocol"]),
         .testTarget(
             name: "MawDaemonKitTests",
             dependencies: ["MawDaemonKit", "MawXPC", "MawCore", "MawProtocol", "CMawSystem"]
