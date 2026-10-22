@@ -141,6 +141,10 @@ import Testing
         #expect(
             InstallProgressText.downloaded(done, milliseconds: 69_000)
                 == "388.3 MB in 1 min 9 s (5.6 MB/s)")
+        done.resumedFromBytes = 42_800_000
+        #expect(
+            InstallProgressText.downloaded(done, milliseconds: 69_000)
+                == "388.3 MB in 1 min 9 s (5 MB/s), resumed at 42.8 MB")
     }
 
     @Test(arguments: [

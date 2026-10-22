@@ -52,7 +52,8 @@ struct InstallProgressText {
         return text
     }
 
-    /// After the download: `388.3 MB in 1 min 9 s (5.6 MB/s)`.
+    /// After the download: `388.3 MB in 1 min 9 s (5.6 MB/s)`, and `, resumed at 42.8 MB` when it
+    /// continued an interrupted download.
     static func downloaded(_ progress: DownloadProgress?, milliseconds: UInt64) -> String {
         guard let progress else { return duration(milliseconds: milliseconds) }
         let fetched =
@@ -60,6 +61,9 @@ struct InstallProgressText {
         var text = "\(size(progress.totalBytes)) in \(duration(milliseconds: milliseconds))"
         if milliseconds > 0 {
             text += " (\(size(fetched * 1000 / milliseconds))/s)"
+        }
+        if progress.resumedFromBytes > 0 {
+            text += ", resumed at \(size(progress.resumedFromBytes))"
         }
         return text
     }
