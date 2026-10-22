@@ -68,10 +68,12 @@ let package = Package(
             dependencies: [
                 "MawCore",
                 "MawCommandLine",
+                "MawClient",
                 "MawDaemonKit",
                 "MawProtocol",
                 "MawTerminalIO",
                 "MawVirtualization",
+                "MawXPC",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),

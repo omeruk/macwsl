@@ -32,8 +32,7 @@
 
         /// `2026-10-22T09:41:07.123Z mawd: <message>`.
         static func line(_ message: String) -> String {
-            let time = Date().formatted(
-                .iso8601.year().month().day().time(includingFractionalSeconds: true))
+            let time = Date().formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true))
             return "\(time) mawd: \(message)\n"
         }
     }

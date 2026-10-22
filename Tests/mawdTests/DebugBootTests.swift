@@ -138,8 +138,10 @@ import Testing
         )
     }
 
-    @Test func keepsThePlaceholderBehaviorWithoutASubcommand() throws {
-        #expect(try Mawd.parseAsRoot([]) is Mawd)
+    @Test func listsItsSubcommands() {
+        #expect(
+            Mawd.configuration.subcommands.map { $0.configuration.commandName }
+                == ["install", "uninstall", "serve", "debug-boot"])
     }
 }
 
