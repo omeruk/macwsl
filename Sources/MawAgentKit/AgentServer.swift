@@ -56,13 +56,22 @@ public final class AgentServer: @unchecked Sendable {
         self.configuration = configuration
     }
 
-    /// Accepts connections on `listener` until accepting fails for a reason other than a
-    /// transient one, then throws.
+    /// Accepts connections from the host on the vsock `listener` until accepting fails for a
+    /// reason other than a transient one, then throws.
+    ///
+    /// Only the host may connect. The agent runs commands as root, and processes inside the
+    /// guest can reach a vsock port too, through the loopback transport, so a connection from
+    /// any other context ID is closed before a byte is read (docs/security.md).
     public func acceptConnections(on listener: OwnedDescriptor) throws(SystemError) -> Never {
         while true {
-            let descriptor = maw_accept(listener.rawValue)
+            var peer: UInt32 = 0
+            let descriptor = maw_vsock_accept_host(listener.rawValue, &peer)
             if descriptor < 0 {
                 switch errno {
+                case EPERM:
+                    logger.warning(
+                        "refused a connection from vsock context \(peer), which is not the host")
+                    continue
                 case EINTR, ECONNABORTED, EAGAIN:
                     continue
                 case EMFILE, ENFILE, ENOBUFS, ENOMEM:

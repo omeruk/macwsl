@@ -379,15 +379,27 @@ int maw_vsock_listen(uint32_t port, int backlog) {
 #endif
 }
 
-int maw_accept(int fd) {
+int maw_vsock_accept_host(int fd, uint32_t *peer_cid) {
 #if defined(__linux__)
-    return accept4(fd, NULL, NULL, SOCK_CLOEXEC);
-#else
-    int connection = accept(fd, NULL, NULL);
-    if (connection >= 0) {
-        set_cloexec(connection);
-        maw_suppress_sigpipe(connection);
+    struct sockaddr_vm address;
+    socklen_t length = sizeof address;
+    memset(&address, 0, sizeof address);
+    int connection = accept4(fd, (struct sockaddr *)&address, &length, SOCK_CLOEXEC);
+    if (connection < 0) {
+        return -1;
+    }
+    *peer_cid = address.svm_cid;
+    if (address.svm_family != AF_VSOCK || address.svm_cid != VMADDR_CID_HOST) {
+        close(connection);
+        errno = EPERM;
+        return -1;
     }
     return connection;
+#else
+    (void)fd;
+    *peer_cid = 0;
+    errno = ENOSYS;
+    return -1;
 #endif
 }
+

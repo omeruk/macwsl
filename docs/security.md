@@ -36,10 +36,20 @@ code signing requirement `identifier "dev.maw.maw" or identifier "dev.maw.mawd"`
 ### The guest agent over vsock
 
 `maw-agent` listens on vsock port 19799 in every machine ([docs/protocol.md](protocol.md)). Only
-the host side of that machine's virtio socket device can connect: vsock does not leave the
-virtual machine, and the Mac opens the connection through Virtualization.framework, which only
-the process that runs the machine, `mawd`, can do. The daemon hands a connection's descriptor
-to its client after the XPC checks above.
+the host may connect:
+
+- On the Mac, vsock connections into a machine are opened through Virtualization.framework,
+  which only the process that runs the machine, `mawd`, can do. The daemon hands a
+  connection's descriptor to its client after the XPC checks above.
+- Inside the guest, the kernel is built without the vsock loopback transport
+  (`CONFIG_VSOCKETS_LOOPBACK` is not set, and `Guest/kernel/check-config.sh` requires that), so a
+  guest process cannot connect to the guest's own ports.
+- The agent independently accepts only peers whose context ID is the host's (2), and closes
+  any other connection before reading from it, logging the refusal.
+
+The phase 05 security review found that both were missing: Kconfig enables the loopback
+transport by default, and any account in a distribution could reach the agent and run commands
+as root without a password. An integration test now checks that a guest process cannot.
 
 - The agent runs as root and starts any program as any user it is asked to. It is the
   boundary's guest side, not a boundary itself.

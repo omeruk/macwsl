@@ -8,8 +8,9 @@ its locale.
 
 ## Transport
 
-- The agent listens on vsock port **19799** (`0x4D57`, "MW" in ASCII) for any context ID.
-  `AgentProtocol.vsockPort` defines it.
+- The agent listens on vsock port **19799** (`0x4D57`, "MW" in ASCII).
+  `AgentProtocol.vsockPort` defines it. It accepts connections only from the host, context ID
+  2, and closes any other before reading from it (docs/security.md).
 - Each request uses a connection of its own. An exec session holds its connection until the
   process ends. `info` and `shutdown` each use a short connection that the agent closes after
   replying.

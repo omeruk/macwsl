@@ -101,8 +101,11 @@ int maw_open_exit_watch(pid_t pid);
 /// or -1 with errno set (ENOSYS outside Linux).
 int maw_vsock_listen(uint32_t port, int backlog);
 
-/// Accepts a connection; the new descriptor is close-on-exec. Returns it, or -1 with errno set.
-int maw_accept(int fd);
+/// Accepts a vsock connection only if it comes from the host (context ID 2). A connection from
+/// any other context, such as a process inside the guest through the loopback transport, is
+/// closed: it returns -1 with errno set to EPERM and the peer's context ID in `peer_cid`.
+/// The new descriptor is close-on-exec. ENOSYS outside Linux.
+int maw_vsock_accept_host(int fd, uint32_t *peer_cid);
 
 #ifdef __cplusplus
 }

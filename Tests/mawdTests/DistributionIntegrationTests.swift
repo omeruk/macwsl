@@ -48,6 +48,32 @@ struct DistributionIntegrationTests {
         #expect(withPassword.status == 0, "\(withPassword.standardError)")
     }
 
+    /// The agent runs commands as root, so a process inside the guest must not reach it: the
+    /// kernel has no vsock loopback, and the agent refuses peers other than the host.
+    @Test func keepsTheAgentOutOfReachOfGuestProcesses() async throws {
+        let probe = """
+            import json, socket, struct
+            def frame(kind, payload): return struct.pack(">IB", len(payload), kind) + payload
+            s = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+            s.settimeout(3)
+            try:
+                s.connect((1, 0x4D57))
+                s.sendall(frame(1, struct.pack(">I", 2)))
+                request = {"exec": {"program": {"argv": ["id", "-u"]}, "user": "root"}}
+                s.sendall(frame(2, json.dumps(request).encode()))
+                print("received", s.recv(4096))
+            except OSError as error:
+                print("refused", error)
+            """
+        let result = try await maw.session(
+            ["-e", "python3", "-I", "-"], standardInput: Data(probe.utf8))
+        #expect(result.status == 0, "\(result.standardError)")
+        #expect(!result.output.contains("started"), "\(result.output)")
+        #expect(
+            result.output.hasPrefix("refused") || result.output.hasPrefix("received b''"),
+            "\(result.output)")
+    }
+
     @Test func reportsAUserThatDoesNotExist() async throws {
         let result = try await maw.session(["-u", "nobody-here", "-e", "true"])
         #expect(result.status == 1)
