@@ -24,8 +24,10 @@
         private let canRunVirtualMachines: Bool
         private let log: DaemonLog
         /// Every connection's running installation, so that the daemon can cancel them all when
-        /// it stops.
-        private let installations = OSAllocatedUnfairLock(initialState: [UUID: Task<Void, Never>]())
+        /// it stops. An installation that finishes before it is registered is remembered in
+        /// `finished` until then.
+        private let installations = OSAllocatedUnfairLock(
+            initialState: (running: [UUID: Task<Void, Never>](), finished: Set<UUID>()))
 
         public init(
             clock: C, registry: MachineRegistry<C>, lifetime: DaemonLifetime<C>,
@@ -62,7 +64,7 @@
             var greeted = false
             var leases: [Lease] = []
             // This connection's installation; at most one at a time.
-            var installation: Task<Void, Never>?
+            var installation: (id: UUID, task: Task<Void, Never>)?
 
             for await event in peer.events {
                 guard case .message(let message) = event else {
@@ -108,7 +110,7 @@
                         guard let installer else {
                             throw .notImplemented(feature: "--install", phase: "05")
                         }
-                        if let installation, !installation.isCancelled {
+                        if let installation, isRunning(installation.id) {
                             throw .daemonProtocolError(
                                 reason: "this connection is already installing a distribution")
                         }
@@ -116,11 +118,11 @@
                             request, with: installer, replyingTo: message, on: peer)
                         continue
                     case .cancelInstall:
-                        let wasRunning = installation != nil
-                        if let running = installation {
+                        let wasRunning = installation.map { isRunning($0.id) } ?? false
+                        if let installation, wasRunning {
                             log.notice("process \(processID) cancelled its installation")
-                            running.cancel()
-                            await running.value
+                            installation.task.cancel()
+                            await installation.task.value
                         }
                         installation = nil
                         reply = .installCancelled(wasRunning: wasRunning)
@@ -132,12 +134,12 @@
                 descriptor?.close()
             }
 
-            if let installation {
+            if let installation, isRunning(installation.id) {
                 // The client went away: the installation stops and removes its traces.
                 log.notice(
                     "process \(processID) closed its connection; cancelling its installation")
-                installation.cancel()
-                await installation.value
+                installation.task.cancel()
+                await installation.task.value
             }
             for lease in leases {
                 await registry.release(lease)
@@ -166,10 +168,16 @@
         private func startInstallation(
             _ install: InstallRequest, with installer: Installer, replyingTo request: XPCObject,
             on peer: XPCConnection
-        ) -> Task<Void, Never> {
+        ) -> (id: UUID, task: Task<Void, Never>) {
             let id = UUID()
             let task = Task {
-                defer { _ = installations.withLock { $0.removeValue(forKey: id) } }
+                defer {
+                    installations.withLock {
+                        if $0.running.removeValue(forKey: id) == nil {
+                            $0.finished.insert(id)
+                        }
+                    }
+                }
                 let reply: DaemonReply
                 do throws(MawError) {
                     let summary = try await installer.install(install) { progress in
@@ -185,13 +193,22 @@
                 }
                 self.send(reply, to: request, on: peer, descriptor: nil)
             }
-            installations.withLock { $0[id] = task }
-            return task
+            installations.withLock {
+                if $0.finished.remove(id) == nil {
+                    $0.running[id] = task
+                }
+            }
+            return (id, task)
+        }
+
+        /// Whether the installation `id` has not finished yet.
+        private func isRunning(_ id: UUID) -> Bool {
+            installations.withLock { $0.running[id] != nil }
         }
 
         /// Cancels every installation and waits until each has removed its traces.
         public func cancelInstallations() async {
-            let running = installations.withLock { Array($0.values) }
+            let running = installations.withLock { Array($0.running.values) }
             for task in running {
                 task.cancel()
             }
