@@ -122,7 +122,9 @@ tar -xf "$sources/$(basename "$LIBARCHIVE_URL")" -C "$work/libarchive" --strip-c
         --without-zstd --without-lzma --without-lzo2 --without-cng --without-openssl \
         --without-xml2 --without-expat --without-mbedtls --without-nettle \
         > configure.log 2>&1 || { cat configure.log; exit 1; }
-    make -j"$jobs" bsdtar > /dev/null
+    # libtool reads -static as "prefer static libtool libraries"; -all-static links the
+    # executable fully static.
+    make -j"$jobs" LDFLAGS="-all-static" bsdtar > /dev/null
 )
 require_static "$work/libarchive/bsdtar"
 
