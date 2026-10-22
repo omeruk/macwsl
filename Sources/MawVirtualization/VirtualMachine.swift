@@ -260,6 +260,21 @@
             return .forced(after: elapsed)
         }
 
+        /// Stops the virtual machine at once, without asking the guest, for a machine whose
+        /// work is being thrown away, such as a cancelled installation's. Does nothing if it
+        /// is not running.
+        public func forceStop(reason: String) async {
+            guard let machine, state == .running || state == .stopping else { return }
+            let stopped: Bool = await withCheckedContinuation { continuation in
+                machine.stop { error in
+                    continuation.resume(returning: error == nil)
+                }
+            }
+            guard stopped, self.machine != nil else { return }
+            console.note("shutdown: forced at once because \(reason)")
+            didStop(.stopped)
+        }
+
         private func noteCleanStop(after elapsed: Duration, via request: StopRequest)
             -> StopOutcome
         {
