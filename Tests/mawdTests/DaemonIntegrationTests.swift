@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import Testing
@@ -61,6 +62,30 @@ struct DaemonIntegrationTests {
         let result = try await run(["-e", "cat"], standardInput: Data("hello\n".utf8))
         #expect(result.status == 0)
         #expect(result.output == "hello\n")
+    }
+
+    /// 256 MiB into a reader slower than the connection, so that vsock's flow control throttles
+    /// the client and then grants it credit in large steps. `GuestProcessTests` covers the
+    /// stall this guards against deterministically; this test covers the real transport.
+    @Test func streamsLargeInputIntoASlowReader() async throws {
+        // busybox sha256sum, built without hardware acceleration, reads slower than vsock
+        // delivers.
+        var state: UInt64 = 0x9E37_79B9_7F4A_7C15
+        var bytes = Data(count: 256 << 20)
+        bytes.withUnsafeMutableBytes { buffer in
+            let words = buffer.bindMemory(to: UInt64.self)
+            for index in words.indices {
+                state ^= state << 13
+                state ^= state >> 7
+                state ^= state << 17
+                words[index] = state
+            }
+        }
+        let expected = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let result = try await start(["-e", "sha256sum"], standardInput: bytes)
+            .waitForExit(timeout: .seconds(120))
+        #expect(result.status == 0, "\(result.standardError)")
+        #expect(result.output.hasPrefix(expected), "\(result.output)")
     }
 
     @Test func keepsStandardOutputAndErrorSeparate() async throws {
