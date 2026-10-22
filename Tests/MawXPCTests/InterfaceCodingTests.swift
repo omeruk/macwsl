@@ -12,8 +12,16 @@ import XPC
         .hello(clientVersion: "0.1.0"),
         .openSession(.initramfs),
         .openSession(.distribution(try! DistroName("Ubuntu-24.04"))),
+        .openSession(nil),
         .status,
         .shutdown,
+        .install(
+            InstallRequest(
+                distribution: "Ubuntu", name: try! DistroName("Work"), user: "ayse",
+                password: Secret("correct horse"), locale: "tr_TR.UTF-8")),
+        .install(
+            InstallRequest(distribution: nil, user: "ayse", password: Secret("x"), locale: nil)),
+        .cancelInstall,
     ]
 
     static let replies: [DaemonReply] = [
@@ -31,6 +39,11 @@ import XPC
                         uptimeMilliseconds: nil, cpuCount: 2, memoryBytes: 1 << 30,
                         sessionCount: 0),
                 ])),
+        .installed(
+            InstallSummary(
+                name: try! DistroName("Ubuntu-24.04"), displayName: "Ubuntu 24.04 LTS",
+                defaultUser: "ayse", isDefault: true, milliseconds: 15_000)),
+        .installCancelled(wasRunning: true),
         .shutdownComplete(ShutdownSummary(stoppedMachines: [.initramfs], endedSessions: 2)),
         .failure(.virtualizationEntitlementMissing),
         .failure(.distributionNotInstalled(try! DistroName("Ubuntu"))),
@@ -38,8 +51,31 @@ import XPC
 
     static let events: [DaemonEvent] = [
         .sessionEnded(
-            SessionEnded(sessionID: 7, machine: .initramfs, reason: "maw --shutdown was run"))
+            SessionEnded(sessionID: 7, machine: .initramfs, reason: "maw --shutdown was run")),
+        .installProgress(.started(.extract)),
+        .installProgress(.finished(.extract, milliseconds: 5_512)),
+        .installProgress(
+            .download(
+                DownloadProgress(
+                    receivedBytes: 1_000, totalBytes: 388_300_496, bytesPerSecond: 5_000_000,
+                    resumedFromBytes: 0))),
     ]
+
+    @Test func neverDescribesAPassword() throws {
+        let request = DaemonRequest.install(
+            InstallRequest(
+                distribution: nil, user: "ayse", password: Secret("hunter2-secret"), locale: nil))
+        for text in [
+            String(describing: request), String(reflecting: request), "\(request)",
+            String(describing: Mirror(reflecting: request).children.map(\.value)),
+        ] {
+            #expect(!text.contains("hunter2-secret"), "\(text)")
+        }
+        // The encoded message carries it, for the daemon only.
+        let message = try InterfaceCoding.encode(request)
+        #expect(
+            try InterfaceCoding.decode(DaemonRequest.self, from: message, as: .daemon) == request)
+    }
 
     @Test(arguments: requests)
     func roundTripsARequest(_ request: DaemonRequest) throws {
@@ -63,28 +99,35 @@ import XPC
     @Test func carriesTheVersionOutsideTheBody() throws {
         let message = try InterfaceCoding.encode(DaemonRequest.status)
         #expect(InterfaceCoding.version(of: message) == DaemonInterface.version)
-        #expect(xpc_dictionary_get_uint64(message.raw, "interfaceVersion") == 1)
+        #expect(
+            xpc_dictionary_get_uint64(message.raw, "interfaceVersion")
+                == UInt64(DaemonInterface.version))
     }
 
     @Test func reportsANewerDaemonToTheClient() throws {
-        let message = try InterfaceCoding.encode(DaemonReply.welcome(Self.info), version: 2)
-        #expect(throws: MawError.daemonVersionMismatch(client: 1, daemon: 2)) {
+        let current = DaemonInterface.version
+        let message = try InterfaceCoding.encode(
+            DaemonReply.welcome(Self.info), version: current + 1)
+        #expect(throws: MawError.daemonVersionMismatch(client: current, daemon: current + 1)) {
             try InterfaceCoding.decode(DaemonReply.self, from: message, as: .client)
         }
     }
 
     @Test func reportsANewerClientToTheDaemon() throws {
+        let current = DaemonInterface.version
         let message = try InterfaceCoding.encode(
-            DaemonRequest.hello(clientVersion: "9.9.9"), version: 2)
-        #expect(throws: MawError.daemonVersionMismatch(client: 2, daemon: 1)) {
+            DaemonRequest.hello(clientVersion: "9.9.9"), version: current + 1)
+        #expect(throws: MawError.daemonVersionMismatch(client: current + 1, daemon: current)) {
             try InterfaceCoding.decode(DaemonRequest.self, from: message, as: .daemon)
         }
     }
 
     @Test func checksTheVersionBeforeTheBody() throws {
         // A body from another version may not decode at all; the version must win.
-        let message = try InterfaceCoding.encode(["unknownRequest": [String: String]()], version: 3)
-        #expect(throws: MawError.daemonVersionMismatch(client: 1, daemon: 3)) {
+        let current = DaemonInterface.version
+        let message = try InterfaceCoding.encode(
+            ["unknownRequest": [String: String]()], version: current + 2)
+        #expect(throws: MawError.daemonVersionMismatch(client: current, daemon: current + 2)) {
             try InterfaceCoding.decode(DaemonReply.self, from: message, as: .client)
         }
     }

@@ -1,0 +1,310 @@
+#if os(macOS)
+    import Foundation
+    import MawCore
+    import MawVirtualization
+    import MawXPC
+
+    /// Downloads distribution images and verifies them. `ImageCache` is the real one.
+    public protocol ImageSource: Sendable {
+        /// The bytes of `image` already on disk, complete or partial, for the free-space check.
+        func downloadedBytes(of image: CatalogImage) -> UInt64
+        /// Whether the whole file is in the cache. It is verified again before every use.
+        func isComplete(_ image: CatalogImage) -> Bool
+        /// Downloads what is missing of `image`, resuming an interrupted download.
+        func download(
+            _ image: CatalogImage, progress: @escaping @Sendable (DownloadProgress) -> Void
+        ) async throws(MawError)
+        /// Checks the cached file's size and SHA-256 and returns it. A file that fails is
+        /// removed, so that the next attempt downloads it again.
+        func verify(_ image: CatalogImage) async throws(MawError) -> URL
+    }
+
+    /// What provisioning writes into a new distribution.
+    public struct GuestConfiguration: Sendable {
+        public var hostname: String
+        public var user: UserName
+        public var password: Secret
+        /// The Mac's language and region, generated in the guest if it supports it.
+        public var locale: String?
+
+        public init(hostname: String, user: UserName, password: Secret, locale: String?) {
+            self.hostname = hostname
+            self.user = user
+            self.password = password
+            self.locale = locale
+        }
+    }
+
+    /// The machine that provisions a new distribution's disk: the initramfs with the disk
+    /// attached. `VirtualProvisioningMachine` is the real one.
+    public protocol ProvisioningMachine: Sendable {
+        func boot(disk: URL) async throws(MawError)
+        func format() async throws(MawError)
+        func extract(image: URL, format: CatalogImage.Format) async throws(MawError)
+        func configure(_ configuration: GuestConfiguration) async throws(MawError)
+        /// Writes everything to the disk, unmounts it, and powers the machine off.
+        func finish() async throws(MawError)
+        /// Stops the machine at once. Used on failure and cancellation.
+        func discard() async
+    }
+
+    public typealias ProvisioningMachineFactory =
+        @Sendable () throws(MawError) -> any ProvisioningMachine
+
+    /// The free space on the volume that holds a URL, and the volume's name.
+    public typealias FreeSpaceProbe =
+        @Sendable (URL) -> (available: UInt64, volume: String)?
+
+    /// Installs distributions from the catalog (docs/distributions.md).
+    ///
+    /// The steps run in order: check, download (unless cached), verify, prepare the disk,
+    /// format, extract, configure, finish, register, start. Until the registration, everything
+    /// lives in a staging directory; on failure or cancellation the provisioning machine is
+    /// stopped and the directory removed, so that nothing is left but a partial download, which
+    /// the next attempt resumes.
+    public actor Installer {
+        /// The virtual size of a new distribution's disk.
+        public static let diskSize = ByteSize.gibibytes(256)
+
+        private let catalog: DistroCatalog
+        private let store: DistributionStore
+        private let images: any ImageSource
+        private let makeMachine: ProvisioningMachineFactory
+        private let freeSpace: FreeSpaceProbe
+        private let startMachine: @Sendable (MachineID) async throws(MawError) -> Void
+        private let makeMACAddress: @Sendable () -> String
+        private let log: DaemonLog
+        /// Installations in progress, with their staging directories.
+        private var active: [DistroName: URL] = [:]
+
+        public init(
+            catalog: DistroCatalog = .builtIn, store: DistributionStore, images: any ImageSource,
+            makeMachine: @escaping ProvisioningMachineFactory,
+            freeSpace: @escaping FreeSpaceProbe,
+            startMachine: @escaping @Sendable (MachineID) async throws(MawError) -> Void,
+            makeMACAddress: @escaping @Sendable () -> String,
+            log: DaemonLog = DaemonLog()
+        ) {
+            self.catalog = catalog
+            self.store = store
+            self.images = images
+            self.makeMachine = makeMachine
+            self.freeSpace = freeSpace
+            self.startMachine = startMachine
+            self.makeMACAddress = makeMACAddress
+            self.log = log
+        }
+
+        /// Staging directories of installations in progress, which must survive
+        /// `DistributionStore.removeStagingLeftovers`.
+        public var activeStagingDirectories: Set<URL> {
+            Set(active.values.map(\.standardizedFileURL))
+        }
+
+        /// Installs a distribution. Cancelling the calling task cancels the installation and
+        /// removes its traces before this throws `installationCancelled`.
+        public func install(
+            _ request: InstallRequest, progress: @escaping @Sendable (InstallProgress) -> Void
+        ) async throws(MawError) -> InstallSummary {
+            let started = ContinuousClock.now
+            let entry: CatalogEntry
+            if let wanted = request.distribution {
+                guard let found = catalog.entry(named: wanted) else {
+                    throw .unknownDistribution(wanted)
+                }
+                entry = found
+            } else {
+                entry = catalog.recommendedEntry
+            }
+            let name = request.name ?? entry.name
+            guard !store.isInstalled(name) else {
+                throw .distributionAlreadyInstalled(name)
+            }
+            guard active[name] == nil else {
+                throw .installationInProgress(name)
+            }
+            let user = try UserName(request.user, reservedNames: entry.reservedNames)
+            try Self.checkPassword(request.password)
+            try checkFreeSpace(for: entry.image)
+
+            let staging = store.paths.stagingDirectory(for: name, id: UUID().uuidString)
+            active[name] = staging
+            defer { active[name] = nil }
+            log.notice("\(name): installation started for user \(user)")
+
+            // The first installed distribution becomes the default.
+            let isDefault = store.defaultDistribution() == nil
+            do throws(MawError) {
+                let image = try await obtainImage(entry.image, progress: progress)
+                let metadata = try await provision(
+                    entry: entry, name: name, image: image, user: user, request: request,
+                    staging: staging, progress: progress)
+                try checkCancellation(name)
+                try store.commit(staging: staging, metadata: metadata)
+            } catch {
+                removeStaging(staging)
+                if Task.isCancelled {
+                    log.notice("\(name): installation cancelled; its files were removed")
+                    throw .installationCancelled(name)
+                }
+                log.error("\(name): installation failed: \(error.description)")
+                throw error
+            }
+
+            if isDefault {
+                try? store.setDefaultDistribution(name)
+            }
+            log.notice("\(name): installed")
+            // The first boot is part of the installation, so that the first session is warm.
+            // A failure here does not undo the installation; the next session reports it.
+            try? await timed(.start, progress: progress) { () throws(MawError) in
+                do throws(MawError) {
+                    try await startMachine(.distribution(name))
+                } catch {
+                    log.error("\(name): the first start failed: \(error.description)")
+                }
+            }
+            return InstallSummary(
+                name: name, displayName: entry.displayName, defaultUser: user.rawValue,
+                isDefault: isDefault,
+                milliseconds: UInt64(max(0, (ContinuousClock.now - started).milliseconds)))
+        }
+
+        // MARK: Steps
+
+        private func obtainImage(
+            _ image: CatalogImage, progress: @escaping @Sendable (InstallProgress) -> Void
+        ) async throws(MawError) -> URL {
+            if !images.isComplete(image) {
+                try await timed(.download, progress: progress) { () throws(MawError) in
+                    try await images.download(image) { progress(.download($0)) }
+                }
+            }
+            return try await timed(.verify, progress: progress) { () throws(MawError) in
+                try await images.verify(image)
+            }
+        }
+
+        private func provision(
+            entry: CatalogEntry, name: DistroName, image: URL, user: UserName,
+            request: InstallRequest, staging: URL,
+            progress: @escaping @Sendable (InstallProgress) -> Void
+        ) async throws(MawError) -> DistroMetadata {
+            let machine = try makeMachine()
+            let disk = staging.appending(path: "disk.img")
+            // A cancelled installation stops the machine at once, which ends the step that is
+            // running.
+            return try await withTaskCancellationHandler { () async throws(MawError) in
+                do throws(MawError) {
+                    try await timed(.prepare, progress: progress) { () throws(MawError) in
+                        do {
+                            try FileManager.default.createDirectory(
+                                at: staging, withIntermediateDirectories: true)
+                        } catch {
+                            throw .provisioningFailed(
+                                step: "creating the distribution's directory",
+                                reason: error.localizedDescription)
+                        }
+                        try DiskImage.createSparse(at: disk, size: Self.diskSize)
+                        try await machine.boot(disk: disk)
+                    }
+                    try checkCancellation(name)
+                    try await timed(.format, progress: progress) { () throws(MawError) in
+                        try await machine.format()
+                    }
+                    try checkCancellation(name)
+                    try await timed(.extract, progress: progress) { () throws(MawError) in
+                        try await machine.extract(image: image, format: entry.image.format)
+                    }
+                    try checkCancellation(name)
+                    try await timed(.configure, progress: progress) { () throws(MawError) in
+                        try await machine.configure(
+                            GuestConfiguration(
+                                hostname: Self.hostname(for: name), user: user,
+                                password: request.password, locale: request.locale))
+                    }
+                    try checkCancellation(name)
+                    try await timed(.finish, progress: progress) { () throws(MawError) in
+                        try await machine.finish()
+                    }
+                } catch {
+                    await machine.discard()
+                    throw error
+                }
+                return DistroMetadata(
+                    name: name, catalogEntry: entry.name, release: entry.release,
+                    imageSHA256: entry.image.sha256, createdAt: Date(),
+                    defaultUser: user.rawValue, diskSize: Self.diskSize.bytes,
+                    macAddress: makeMACAddress())
+            } onCancel: {
+                Task { await machine.discard() }
+            }
+        }
+
+        /// Runs `body` between a `started` and a `finished` event, and logs its duration.
+        private func timed<T>(
+            _ step: InstallStep, progress: @escaping @Sendable (InstallProgress) -> Void,
+            _ body: () async throws(MawError) -> T
+        ) async throws(MawError) -> T {
+            progress(.started(step))
+            let started = ContinuousClock.now
+            let result = try await body()
+            let milliseconds = UInt64(max(0, (ContinuousClock.now - started).milliseconds))
+            progress(.finished(step, milliseconds: milliseconds))
+            log.notice("installation step \(step.rawValue): \(milliseconds) ms")
+            return result
+        }
+
+        private func checkCancellation(_ name: DistroName) throws(MawError) {
+            if Task.isCancelled {
+                throw .installationCancelled(name)
+            }
+        }
+
+        private func checkFreeSpace(for image: CatalogImage) throws(MawError) {
+            let required = InstallSpace.required(
+                for: image, alreadyDownloaded: images.downloadedBytes(of: image))
+            // The cache and the distribution live on the same volume, the user's home.
+            guard let space = freeSpace(store.paths.homeDirectory) else { return }
+            try InstallSpace.check(
+                required: required, available: ByteSize(bytes: space.available),
+                volume: space.volume)
+        }
+
+        private func removeStaging(_ staging: URL) {
+            try? FileManager.default.removeItem(at: staging)
+        }
+
+        // MARK: Rules
+
+        /// Ubuntu's `chpasswd` reads `user:password` lines, so a password must be a single
+        /// line; it must not be empty, so that `sudo` asks for something.
+        static func checkPassword(_ password: Secret) throws(MawError) {
+            if password.value.isEmpty {
+                throw .invalidPassword(reason: "it is empty")
+            }
+            if password.value.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }
+            ) {
+                throw .invalidPassword(reason: "it contains a line break or a control character")
+            }
+        }
+
+        /// The guest's host name: the distribution's name in lowercase, with every character
+        /// that a host name cannot contain replaced by `-`, such as `ubuntu-24-04`.
+        static func hostname(for name: DistroName) -> String {
+            var result = ""
+            for scalar in name.rawValue.lowercased().unicodeScalars {
+                let isAllowed = ("a"..."z").contains(scalar) || ("0"..."9").contains(scalar)
+                if isAllowed {
+                    result.unicodeScalars.append(scalar)
+                } else if !result.isEmpty, !result.hasSuffix("-") {
+                    result += "-"
+                }
+            }
+            while result.hasSuffix("-") {
+                result.removeLast()
+            }
+            return result.isEmpty ? "maw" : String(result.prefix(63))
+        }
+    }
+#endif

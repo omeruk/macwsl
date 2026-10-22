@@ -37,7 +37,8 @@ struct Install: AsyncParsableCommand {
             label: settings.label, program: program.path(percentEncoded: false),
             logDirectory: settings.logDirectoryURL,
             machineIdleTimeout: settings.machineIdleTimeout,
-            daemonIdleTimeout: settings.daemonIdleTimeout)
+            daemonIdleTimeout: settings.daemonIdleTimeout,
+            imageCacheDirectory: settings.imageCacheDirectoryOverride)
         let plist = paths.launchAgentFile(label: settings.label)
 
         do {

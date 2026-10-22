@@ -125,6 +125,9 @@ struct SessionRunner {
             .machineStopped(machine: ended.machine.name, reason: ended.reason)
         case .connectionLost:
             .daemonConnectionLost(during: "the session on \(machine.name)")
+        case .installProgress:
+            // A session's connection never installs; EventRelay drops these.
+            .daemonProtocolError(reason: "installation progress arrived during a session")
         }
     }
 
@@ -212,6 +215,7 @@ final class EventRelay: Sendable {
     init(_ events: AsyncStream<DaemonClient.Event>) {
         Task { [self] in
             for await event in events {
+                if case .installProgress = event { continue }
                 settle(event)
             }
             settle(nil)

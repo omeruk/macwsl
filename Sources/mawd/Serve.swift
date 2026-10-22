@@ -6,6 +6,7 @@ import MawDaemonKit
 import MawTerminalIO
 import MawVirtualization
 import MawXPC
+import Virtualization
 
 /// `mawd serve`: the daemon. launchd runs it through the LaunchAgent that `mawd install`
 /// writes, when a client connects to its Mach service.
@@ -56,20 +57,41 @@ struct Serve: AsyncParsableCommand {
                 await lifetime.setMachinesActive(active)
             }
         }
+        let store = DistributionStore(paths: paths)
+        // Left by an installation that the daemon could not clean up, such as one interrupted
+        // by a crash or a power loss.
+        for leftover in store.removeStagingLeftovers() {
+            log.notice("removed \(leftover), left by an interrupted installation")
+        }
         let registry = MachineRegistry(
             clock: clock, idleTimeout: settings.machineIdleDuration, log: log,
             factory: VirtualMachineHandle.factory(
                 kernelDirectory: paths.kernelDirectory, logDirectory: settings.logDirectoryURL,
-                log: log, canRunVirtualMachines: canRunVirtualMachines),
+                store: store, log: log, canRunVirtualMachines: canRunVirtualMachines),
             activityChanged: { activityContinuation.yield($0) })
+        let installLog = settings.logDirectoryURL.appending(path: "install.log")
+        let installer = Installer(
+            store: store,
+            images: ImageCache(directory: settings.imageCacheDirectoryURL, log: log),
+            makeMachine: { () throws(MawError) -> any ProvisioningMachine in
+                guard canRunVirtualMachines else { throw .virtualizationEntitlementMissing }
+                return VirtualProvisioningMachine(
+                    kernelDirectory: paths.kernelDirectory, consoleLog: installLog, log: log)
+            },
+            freeSpace: FreeSpace.probe,
+            startMachine: { machine throws(MawError) in try await registry.start(machine) },
+            makeMACAddress: { VZMACAddress.randomLocallyAdministered().string },
+            log: log)
         let service = DaemonService(
             clock: clock, registry: registry, lifetime: lifetime,
-            canRunVirtualMachines: canRunVirtualMachines, log: log)
+            canRunVirtualMachines: canRunVirtualMachines, store: store, installer: installer,
+            log: log)
 
         let signals = SignalMonitor([SIGTERM, SIGINT, SIGHUP])
         Task {
             for await number in signals.signals {
                 log.notice("received signal \(number); stopping every machine")
+                await service.cancelInstallations()
                 let summary = await registry.shutdown(reason: "the maw daemon is stopping")
                 log.notice(
                     "stopped \(summary.stoppedMachines.count) machines and "
@@ -101,6 +123,9 @@ struct DaemonSettings: ParsableArguments {
     @Option(name: .customLong("daemon-idle-timeout"), help: .hidden)
     var daemonIdleTimeout: Int?
 
+    @Option(name: .customLong("image-cache-directory"), help: .hidden)
+    var imageCacheDirectory: String?
+
     func validate() throws {
         if label.isEmpty || label.contains("/") {
             throw ValidationError("--label must be a launchd label such as dev.maw.mawd.")
@@ -118,6 +143,14 @@ struct DaemonSettings: ParsableArguments {
     var logDirectoryURL: URL {
         logDirectory.map { URL(filePath: $0, directoryHint: .isDirectory) }
             ?? MawPaths().logsDirectory
+    }
+
+    var imageCacheDirectoryOverride: URL? {
+        imageCacheDirectory.map { URL(filePath: $0, directoryHint: .isDirectory) }
+    }
+
+    var imageCacheDirectoryURL: URL {
+        imageCacheDirectoryOverride ?? MawPaths().imageCacheDirectory
     }
 
     var machineIdleDuration: Duration {

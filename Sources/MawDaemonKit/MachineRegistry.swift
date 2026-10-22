@@ -120,6 +120,26 @@
             }
         }
 
+        /// Starts `machine` if it is not running, and returns once it runs. Without a session,
+        /// it stops after the idle timeout as usual. The installer uses this for a new
+        /// distribution's first boot.
+        public func start(_ machine: MachineID) async throws(MawError) {
+            while true {
+                switch slots[machine, default: Slot()].state {
+                case .stopped:
+                    try beginStart(machine)
+                case .starting(_, let task):
+                    if case .failure(let error) = await task.value {
+                        throw error
+                    }
+                case .stopping(_, let task):
+                    await task.value
+                case .running:
+                    return
+                }
+            }
+        }
+
         /// Ends a lease. Releasing the last one starts the idle timer. Releasing a lease that
         /// has already ended does nothing.
         public func release(_ lease: Lease) {
