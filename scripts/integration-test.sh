@@ -38,11 +38,13 @@ trap 'exit 130' INT TERM
 "$bin_path/mawd" install --label "$label" --log-directory "$log_directory" \
     --machine-idle-timeout "$machine_idle_timeout" > /dev/null
 
+# --no-parallel: the integration suites boot virtual machines and measure latency, and suites
+# that run at the same time would compete for the CPU and distort the measurements.
 status=0
 MAW_INTEGRATION=1 MAWD_PATH="$bin_path/mawd" MAW_PATH="$bin_path/maw" \
     MAW_DAEMON_LABEL="$label" MAW_TEST_LOG_DIRECTORY="$log_directory" \
     MAW_TEST_MACHINE_IDLE_TIMEOUT="$machine_idle_timeout" \
-    swift test --skip-build "$@" || status=$?
+    swift test --skip-build --no-parallel "$@" || status=$?
 
 if [ "$status" -ne 0 ]; then
     echo "integration-test.sh: the daemon's log follows." >&2
