@@ -217,6 +217,10 @@ import os
         await #expect(throws: MawError.installationInProgress(try DistroName("Ubuntu-24.04"))) {
             try await installer.install(request(), progress: { _ in })
         }
+        // APFS ignores case, so another spelling would end in the same directory.
+        await #expect(throws: MawError.installationInProgress(try DistroName("ubuntu-24.04"))) {
+            try await installer.install(request(name: "ubuntu-24.04"), progress: { _ in })
+        }
         first.cancel()
         _ = await first.result
     }

@@ -75,8 +75,9 @@
         private let startMachine: @Sendable (MachineID) async throws(MawError) -> Void
         private let makeMACAddress: @Sendable () -> String
         private let log: DaemonLog
-        /// Installations in progress, with their staging directories.
-        private var active: [DistroName: URL] = [:]
+        /// The names of the installations in progress, in lowercase: APFS ignores case, so
+        /// `Twin` and `twin` would end in the same directory.
+        private var active: Set<String> = []
         /// The SHA-256 of every image being downloaded.
         private var downloadingImages: Set<String> = []
 
@@ -121,7 +122,8 @@
             guard !store.isInstalled(name) else {
                 throw .distributionAlreadyInstalled(name)
             }
-            guard active[name] == nil else {
+            let key = name.rawValue.lowercased()
+            guard !active.contains(key) else {
                 throw .installationInProgress(name)
             }
             let user = try UserName(request.user, reservedNames: entry.reservedNames)
@@ -129,8 +131,8 @@
             try checkFreeSpace(for: entry.image)
 
             let staging = store.paths.stagingDirectory(for: name, id: UUID().uuidString)
-            active[name] = staging
-            defer { active[name] = nil }
+            active.insert(key)
+            defer { active.remove(key) }
             log.notice("\(name): installation started for user \(user)")
 
             // The first installed distribution becomes the default.
