@@ -40,6 +40,8 @@ let package = Package(
 
         // macOS only.
         .target(name: "MawVirtualization", dependencies: ["MawCore", "MawProtocol"]),
+        // The XPC interface between mawd and its clients (docs/daemon.md).
+        .target(name: "MawXPC", dependencies: ["MawCore", "MawProtocol"]),
         // Error reporting shared by the maw and mawd command lines.
         .target(
             name: "MawCommandLine",
@@ -95,6 +97,8 @@ let package = Package(
             ]
         ),
         .testTarget(name: "MawVirtualizationTests", dependencies: ["MawVirtualization"]),
+        .testTarget(
+            name: "MawXPCTests", dependencies: ["MawXPC", "MawCore", "MawProtocol", "CMawSystem"]),
         .testTarget(
             name: "mawTests",
             dependencies: [
