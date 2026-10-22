@@ -193,52 +193,69 @@
             let machine = try makeMachine()
             let disk = staging.appending(path: "disk.img")
             // A cancelled installation stops the machine at once, which ends the step that is
-            // running.
-            return try await withTaskCancellationHandler { () async throws(MawError) in
+            // running. The steps' errors travel out of the handler as a Result, because not every
+            // toolchain lets a typed error pass through withTaskCancellationHandler.
+            let result: Result<DistroMetadata, MawError> = await withTaskCancellationHandler {
                 do throws(MawError) {
-                    try await timed(.prepare, progress: progress) { () throws(MawError) in
-                        do {
-                            try FileManager.default.createDirectory(
-                                at: staging, withIntermediateDirectories: true)
-                        } catch {
-                            throw .provisioningFailed(
-                                step: "creating the distribution's directory",
-                                reason: error.localizedDescription)
-                        }
-                        try DiskImage.createSparse(at: disk, size: Self.diskSize)
-                        try await machine.boot(disk: disk)
-                    }
-                    try checkCancellation(name)
-                    try await timed(.format, progress: progress) { () throws(MawError) in
-                        try await machine.format()
-                    }
-                    try checkCancellation(name)
-                    try await timed(.extract, progress: progress) { () throws(MawError) in
-                        try await machine.extract(image: image, format: entry.image.format)
-                    }
-                    try checkCancellation(name)
-                    try await timed(.configure, progress: progress) { () throws(MawError) in
-                        try await machine.configure(
-                            GuestConfiguration(
-                                hostname: Self.hostname(for: name), user: user,
-                                password: request.password, locale: request.locale))
-                    }
-                    try checkCancellation(name)
-                    try await timed(.finish, progress: progress) { () throws(MawError) in
-                        try await machine.finish()
-                    }
+                    return .success(
+                        try await provisionSteps(
+                            entry: entry, name: name, image: image, user: user, request: request,
+                            staging: staging, disk: disk, machine: machine, progress: progress))
                 } catch {
-                    await machine.discard()
-                    throw error
+                    return .failure(error)
                 }
-                return DistroMetadata(
-                    name: name, catalogEntry: entry.name, release: entry.release,
-                    imageSHA256: entry.image.sha256, createdAt: Date(),
-                    defaultUser: user.rawValue, diskSize: Self.diskSize.bytes,
-                    macAddress: makeMACAddress())
             } onCancel: {
                 Task { await machine.discard() }
             }
+            return try result.get()
+        }
+
+        private func provisionSteps(
+            entry: CatalogEntry, name: DistroName, image: URL, user: UserName,
+            request: InstallRequest, staging: URL, disk: URL, machine: any ProvisioningMachine,
+            progress: @escaping @Sendable (InstallProgress) -> Void
+        ) async throws(MawError) -> DistroMetadata {
+            do throws(MawError) {
+                try await timed(.prepare, progress: progress) { () throws(MawError) in
+                    do {
+                        try FileManager.default.createDirectory(
+                            at: staging, withIntermediateDirectories: true)
+                    } catch {
+                        throw .provisioningFailed(
+                            step: "creating the distribution's directory",
+                            reason: error.localizedDescription)
+                    }
+                    try DiskImage.createSparse(at: disk, size: Self.diskSize)
+                    try await machine.boot(disk: disk)
+                }
+                try checkCancellation(name)
+                try await timed(.format, progress: progress) { () throws(MawError) in
+                    try await machine.format()
+                }
+                try checkCancellation(name)
+                try await timed(.extract, progress: progress) { () throws(MawError) in
+                    try await machine.extract(image: image, format: entry.image.format)
+                }
+                try checkCancellation(name)
+                try await timed(.configure, progress: progress) { () throws(MawError) in
+                    try await machine.configure(
+                        GuestConfiguration(
+                            hostname: Self.hostname(for: name), user: user,
+                            password: request.password, locale: request.locale))
+                }
+                try checkCancellation(name)
+                try await timed(.finish, progress: progress) { () throws(MawError) in
+                    try await machine.finish()
+                }
+            } catch {
+                await machine.discard()
+                throw error
+            }
+            return DistroMetadata(
+                name: name, catalogEntry: entry.name, release: entry.release,
+                imageSHA256: entry.image.sha256, createdAt: Date(),
+                defaultUser: user.rawValue, diskSize: Self.diskSize.bytes,
+                macAddress: makeMACAddress())
         }
 
         /// Runs `body` between a `started` and a `finished` event, and logs its duration.
