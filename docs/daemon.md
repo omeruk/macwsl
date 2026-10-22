@@ -55,7 +55,7 @@ stopped ──openSession──▶ starting ──agent answers info──▶ ru
 
 Each machine writes its console to `~/Library/Logs/maw/<machine>.log`, for example
 `Ubuntu-24.04.log`, together with the daemon's notes about it (lines starting with `[mawd]`).
-The provisioning machine of an installation writes to `install.log`.
+The provisioning machine of an installation writes to `install-<name>.log`.
 
 ## The daemon
 
@@ -121,7 +121,7 @@ there is no negotiation.
 | `status` | `status(DaemonStatus)` | The daemon's version, process ID, and uptime, whether it may run virtual machines, and each machine with its state, uptime, CPUs, memory, and session count. |
 | `shutdown` | `shutdownComplete(ShutdownSummary)` | Stops every machine and ends its sessions. Returns once they have stopped. |
 | `install(InstallRequest)` | `installed(InstallSummary)` | Installs a distribution. The reply comes when the installation has finished; meanwhile the daemon sends `installProgress` events. `InstallRequest` holds the catalog name, an optional name to install under, the user, the password as a `Secret`, and the Mac's locale. |
-| `cancelInstall` | `installCancelled(wasRunning:)` | Cancels this connection's installation, and replies once its traces are removed. The installation's own reply is then `failure(installationCancelled)`. |
+| `cancelInstall` | `installCancelled(wasRunning:)` | Cancels this connection's installation, and replies once its traces are removed; the installation's own reply is then `failure(installationCancelled)`. An installation that has already registered the distribution finishes instead, and `wasRunning` is false. |
 
 Any request can be answered with `failure(MawError)`, which carries the error unchanged; the
 client shows its message and suggested fix.
@@ -243,7 +243,7 @@ Phase 11b, which connects the terminal app to the daemon, adds the app's identif
 |------|---------|
 | `~/Library/Logs/maw/mawd.log` | The daemon's own log: start, machines starting and stopping and why, sessions opened and released, errors. launchd sends the daemon's standard output and error here. |
 | `~/Library/Logs/maw/<machine>.log` | One machine's console, with the daemon's notes, including how each shutdown went. |
-| `~/Library/Logs/maw/install.log` | The console of the last installation's provisioning machine. |
+| `~/Library/Logs/maw/install-<name>.log` | The console of the machine that provisioned `<name>`, from its last installation attempt. |
 
 The daemon also logs to the unified log, subsystem `dev.maw`, categories `daemon` and `xpc`:
 

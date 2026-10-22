@@ -53,7 +53,7 @@
                     initramfsURL: guest.initramfsURL,
                     consoleLogURL: logDirectory.appending(path: "\(machine.name).log"))
                 if case .distribution(let name) = machine {
-                    guard let metadata = try store.metadata(for: name) else {
+                    guard let metadata = try store.metadata(for: name), metadata.name == name else {
                         throw .distributionNotInstalled(name)
                     }
                     configuration = distributionConfiguration(

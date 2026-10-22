@@ -114,6 +114,9 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case diskImageCreationFailed(path: String, reason: String)
     /// Another virtual machine holds the disk image.
     case diskImageInUse(path: String)
+    /// One of maw's own files cannot be read or written, such as a distribution's
+    /// `distro.json`.
+    case fileNotAccessible(path: String, reason: String)
 
     // MARK: Console and terminal
 
@@ -229,6 +232,8 @@ extension MawError: LocalizedError {
             "Could not create the disk image \(path): \(reason)."
         case .diskImageInUse(let path):
             "The disk image \(path) is in use by another virtual machine."
+        case .fileNotAccessible(let path, let reason):
+            "maw cannot use \(path): \(reason)."
         case .consoleLogFailed(let path, let reason):
             "Could not write the console log \(path): \(reason)."
         case .notATerminal(let option, let stream):
@@ -295,7 +300,7 @@ extension MawError: LocalizedError {
         case .insufficientDiskSpace:
             "Free up space on the volume, then run maw --install again."
         case .provisioningFailed:
-            "Nothing was installed. The console log, ~/Library/Logs/maw/install.log, has "
+            "Nothing was installed. The installation's console log in ~/Library/Logs/maw has "
                 + "details."
         case .installationCancelled:
             "Nothing was installed. Run maw --install again; the download resumes where it "
@@ -334,6 +339,9 @@ extension MawError: LocalizedError {
         case .diskImageInUse:
             "A virtual machine of a daemon that stopped may still be exiting; run the command "
                 + "again in a moment. Otherwise another process runs it."
+        case .fileNotAccessible:
+            "Check the file's permissions and the free space on its volume. A damaged "
+                + "distro.json can be restored from a backup."
         case .consoleLogFailed:
             "Check that ~/Library/Logs/maw is writable."
         case .notATerminal(let option, _):

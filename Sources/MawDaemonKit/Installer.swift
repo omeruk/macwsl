@@ -48,8 +48,9 @@
         func discard() async
     }
 
+    /// Creates the provisioning machine for the distribution being installed.
     public typealias ProvisioningMachineFactory =
-        @Sendable () throws(MawError) -> any ProvisioningMachine
+        @Sendable (DistroName) throws(MawError) -> any ProvisioningMachine
 
     /// The free space on the volume that holds a URL, and the volume's name.
     public typealias FreeSpaceProbe =
@@ -76,6 +77,8 @@
         private let log: DaemonLog
         /// Installations in progress, with their staging directories.
         private var active: [DistroName: URL] = [:]
+        /// The SHA-256 of every image being downloaded.
+        private var downloadingImages: Set<String> = []
 
         public init(
             catalog: DistroCatalog = .builtIn, store: DistributionStore, images: any ImageSource,
@@ -93,12 +96,6 @@
             self.startMachine = startMachine
             self.makeMACAddress = makeMACAddress
             self.log = log
-        }
-
-        /// Staging directories of installations in progress, which must survive
-        /// `DistributionStore.removeStagingLeftovers`.
-        public var activeStagingDirectories: Set<URL> {
-            Set(active.values.map(\.standardizedFileURL))
         }
 
         /// Installs a distribution. Cancelling the calling task cancels the installation and
@@ -139,7 +136,7 @@
             // The first installed distribution becomes the default.
             let isDefault = store.defaultDistribution() == nil
             do throws(MawError) {
-                let image = try await obtainImage(entry.image, progress: progress)
+                let image = try await obtainImage(entry.image, for: name, progress: progress)
                 let metadata = try await provision(
                     entry: entry, name: name, image: image, user: user, request: request,
                     staging: staging, progress: progress)
@@ -177,9 +174,18 @@
         // MARK: Steps
 
         private func obtainImage(
-            _ image: CatalogImage, progress: @escaping @Sendable (InstallProgress) -> Void
+            _ image: CatalogImage, for name: DistroName,
+            progress: @escaping @Sendable (InstallProgress) -> Void
         ) async throws(MawError) -> URL {
+            // One download per image: a second installation of the same image waits for the
+            // first's download, which would otherwise write the same partial file.
+            while downloadingImages.contains(image.sha256) {
+                try checkCancellation(name)
+                try? await Task.sleep(for: .milliseconds(200))
+            }
             if !images.isComplete(image) {
+                downloadingImages.insert(image.sha256)
+                defer { downloadingImages.remove(image.sha256) }
                 try await timed(.download, progress: progress) { () throws(MawError) in
                     try await images.download(image) { progress(.download($0)) }
                 }
@@ -194,7 +200,7 @@
             request: InstallRequest, staging: URL,
             progress: @escaping @Sendable (InstallProgress) -> Void
         ) async throws(MawError) -> DistroMetadata {
-            let machine = try makeMachine()
+            let machine = try makeMachine(name)
             let disk = staging.appending(path: "disk.img")
             // A cancelled installation stops the machine at once, which ends the step that is
             // running. The steps' errors travel out of the handler as a Result, because not every

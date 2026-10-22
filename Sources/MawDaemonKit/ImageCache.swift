@@ -180,6 +180,9 @@
         private var resumedFrom: UInt64
         private var failure: MawError?
         private var continuation: CheckedContinuation<Void, Never>?
+        /// Set when the task completes, which can happen before `run` has stored its
+        /// continuation: a cancellation that arrives first cancels the task at once.
+        private var isComplete = false
         private var lastReport = ContinuousClock.now - .seconds(1)
         private var rateSample: (instant: ContinuousClock.Instant, bytes: UInt64)
         private var bytesPerSecond: UInt64 = 0
@@ -202,8 +205,16 @@
             task.delegate = self
             await withTaskCancellationHandler {
                 await withCheckedContinuation { continuation in
-                    lock.withLock { self.continuation = continuation }
-                    task.resume()
+                    let completed = lock.withLock { () -> Bool in
+                        if isComplete { return true }
+                        self.continuation = continuation
+                        return false
+                    }
+                    if completed {
+                        continuation.resume()
+                    } else {
+                        task.resume()
+                    }
                 }
             } onCancel: {
                 task.cancel()
@@ -357,6 +368,7 @@
                         path: partial.path(percentEncoded: false), expected: image.size,
                         actual: received)
                 }
+                isComplete = true
                 continuation?.resume()
                 continuation = nil
             }

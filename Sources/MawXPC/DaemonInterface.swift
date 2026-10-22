@@ -43,7 +43,8 @@
         /// replies when the installation has finished, failed, or been cancelled. It cancels
         /// the installation if this XPC connection closes.
         case install(InstallRequest)
-        /// Cancels this connection's installation. Replied to once its traces are removed.
+        /// Cancels this connection's installation. Replied to once its traces are removed, or once
+        /// it has finished if it had already registered the distribution.
         case cancelInstall
 
         /// How the request is named in error messages.
@@ -175,7 +176,9 @@
         case status(DaemonStatus)
         case shutdownComplete(ShutdownSummary)
         case installed(InstallSummary)
-        /// The reply to `cancelInstall`. `wasRunning` is false if nothing was being installed.
+        /// The reply to `cancelInstall`. `wasRunning` is true if an installation was stopped and
+        /// its traces removed, and false if nothing was being installed or the installation had
+        /// already registered the distribution and finished.
         case installCancelled(wasRunning: Bool)
         case failure(MawError)
     }

@@ -56,7 +56,8 @@ ends the installation, stops the provisioning machine at once, and removes the s
 directory; the daemon also removes staging directories left by a crash when it starts. The first
 installed distribution becomes the default.
 
-The provisioning machine's console goes to `~/Library/Logs/maw/install.log`.
+The provisioning machine's console goes to `~/Library/Logs/maw/install-<name>.log`. Two
+installations of the same image share one download: the second waits for the first's.
 
 ## What provisioning changes in the root file system
 
@@ -136,7 +137,7 @@ and [docs/protocol.md](protocol.md) specifies the environment a session gets.
 | `~/Library/Application Support/maw/state.json` | The default distribution. |
 | `~/Library/Caches/maw/images/<sha256>.tar.gz` | Verified images, and `.partial` downloads with their validator. |
 | `~/Library/Logs/maw/<name>.log` | Each distribution's console. |
-| `~/Library/Logs/maw/install.log` | The console of the last installation's provisioning machine. |
+| `~/Library/Logs/maw/install-<name>.log` | The console of the machine that provisioned the distribution. |
 
 ## Removing a distribution by hand
 

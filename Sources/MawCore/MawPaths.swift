@@ -65,10 +65,10 @@ public struct MawPaths: Sendable, Equatable {
         homeDirectory.appending(path: "Library/Caches/maw/images", directoryHint: .isDirectory)
     }
 
-    /// `~/Library/Logs/maw/install.log`, the console of the machine that provisions a
-    /// distribution, with the daemon's notes about the installation.
-    public var installLogFile: URL {
-        logsDirectory.appending(path: "install.log", directoryHint: .notDirectory)
+    /// `~/Library/Logs/maw/install-<name>.log`, the console of the machine that provisions the
+    /// distribution `name`, with the daemon's notes about it.
+    public func installLogFile(for name: DistroName) -> URL {
+        logsDirectory.appending(path: "install-\(name.rawValue).log", directoryHint: .notDirectory)
     }
 
     /// `~/Library/Application Support/maw/kernel`, holding the guest kernel and initramfs.

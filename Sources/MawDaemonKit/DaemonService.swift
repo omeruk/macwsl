@@ -27,7 +27,7 @@
         /// it stops. An installation that finishes before it is registered is remembered in
         /// `finished` until then.
         private let installations = OSAllocatedUnfairLock(
-            initialState: (running: [UUID: Task<Void, Never>](), finished: Set<UUID>()))
+            initialState: (running: [UUID: Task<Bool, Never>](), finished: Set<UUID>()))
 
         public init(
             clock: C, registry: MachineRegistry<C>, lifetime: DaemonLifetime<C>,
@@ -64,7 +64,7 @@
             var greeted = false
             var leases: [Lease] = []
             // This connection's installation; at most one at a time.
-            var installation: (id: UUID, task: Task<Void, Never>)?
+            var installation: (id: UUID, task: Task<Bool, Never>)?
 
             for await event in peer.events {
                 guard case .message(let message) = event else {
@@ -118,14 +118,16 @@
                             request, with: installer, replyingTo: message, on: peer)
                         continue
                     case .cancelInstall:
-                        let wasRunning = installation.map { isRunning($0.id) } ?? false
-                        if let installation, wasRunning {
+                        var wasCancelled = false
+                        if let installation, isRunning(installation.id) {
                             log.notice("process \(processID) cancelled its installation")
                             installation.task.cancel()
-                            await installation.task.value
+                            // An installation that had already registered the distribution
+                            // finishes regardless, and reports it as installed.
+                            wasCancelled = !(await installation.task.value)
                         }
                         installation = nil
-                        reply = .installCancelled(wasRunning: wasRunning)
+                        reply = .installCancelled(wasRunning: wasCancelled)
                     }
                 } catch {
                     reply = .failure(error)
@@ -139,7 +141,7 @@
                 log.notice(
                     "process \(processID) closed its connection; cancelling its installation")
                 installation.task.cancel()
-                await installation.task.value
+                _ = await installation.task.value
             }
             for lease in leases {
                 await registry.release(lease)
@@ -154,6 +156,14 @@
 
         /// The machine a session runs on: the requested one, or the default distribution's.
         func resolve(_ requested: MachineID?) throws(MawError) -> MachineID {
+            if case .distribution(let name) = requested, let store {
+                // APFS ignores case, so `-d ubuntu-24.04` finds Ubuntu-24.04's files. The machine
+                // must carry the stored spelling, or one disk would get two machines.
+                guard let metadata = try store.metadata(for: name) else {
+                    throw .distributionNotInstalled(name)
+                }
+                return .distribution(metadata.name)
+            }
             if let requested {
                 return requested
             }
@@ -168,7 +178,7 @@
         private func startInstallation(
             _ install: InstallRequest, with installer: Installer, replyingTo request: XPCObject,
             on peer: XPCConnection
-        ) -> (id: UUID, task: Task<Void, Never>) {
+        ) -> (id: UUID, task: Task<Bool, Never>) {
             let id = UUID()
             let task = Task {
                 defer {
@@ -192,6 +202,8 @@
                     reply = .failure(error)
                 }
                 self.send(reply, to: request, on: peer, descriptor: nil)
+                if case .installed = reply { return true }
+                return false
             }
             installations.withLock {
                 if $0.finished.remove(id) == nil {
@@ -213,7 +225,7 @@
                 task.cancel()
             }
             for task in running {
-                await task.value
+                _ = await task.value
             }
         }
 

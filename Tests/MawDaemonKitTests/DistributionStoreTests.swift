@@ -55,18 +55,12 @@ import Testing
         #expect(store.defaultDistribution()?.rawValue == "Alpha")
     }
 
-    @Test func removesStagingLeftoversButNotActiveOnes() throws {
+    @Test func removesStagingLeftovers() throws {
         let name = try DistroName("Ubuntu-24.04")
         let old = store.paths.stagingDirectory(for: name, id: "old")
-        let active = store.paths.stagingDirectory(for: name, id: "active")
-        for directory in [old, active] {
-            try FileManager.default.createDirectory(
-                at: directory, withIntermediateDirectories: true)
-        }
+        try FileManager.default.createDirectory(at: old, withIntermediateDirectories: true)
         try install("Debian")
-        let removed = store.removeStagingLeftovers(except: [active.standardizedFileURL])
-        #expect(removed == [old.lastPathComponent])
-        #expect(FileManager.default.fileExists(atPath: active.path(percentEncoded: false)))
+        #expect(store.removeStagingLeftovers() == [old.lastPathComponent])
         #expect(store.isInstalled(try DistroName("Debian")))
     }
 

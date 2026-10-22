@@ -27,7 +27,7 @@ import os
         let started = self.started
         return Installer(
             store: store, images: images,
-            makeMachine: { () throws(MawError) -> any ProvisioningMachine in machine },
+            makeMachine: { (_: DistroName) throws(MawError) -> any ProvisioningMachine in machine },
             freeSpace: { _ in (freeSpace, "Macintosh HD") },
             startMachine: { machine throws(MawError) in started.withLock { $0.append(machine) } },
             makeMACAddress: { "02:00:00:00:00:01" })

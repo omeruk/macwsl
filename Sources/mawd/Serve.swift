@@ -69,14 +69,16 @@ struct Serve: AsyncParsableCommand {
                 kernelDirectory: paths.kernelDirectory, logDirectory: settings.logDirectoryURL,
                 store: store, log: log, canRunVirtualMachines: canRunVirtualMachines),
             activityChanged: { activityContinuation.yield($0) })
-        let installLog = settings.logDirectoryURL.appending(path: "install.log")
         let installer = Installer(
             store: store,
             images: ImageCache(directory: settings.imageCacheDirectoryURL, log: log),
-            makeMachine: { () throws(MawError) -> any ProvisioningMachine in
+            makeMachine: { (name: DistroName) throws(MawError) -> any ProvisioningMachine in
                 guard canRunVirtualMachines else { throw .virtualizationEntitlementMissing }
                 return VirtualProvisioningMachine(
-                    kernelDirectory: paths.kernelDirectory, consoleLog: installLog, log: log)
+                    kernelDirectory: paths.kernelDirectory,
+                    consoleLog: settings.logDirectoryURL.appending(
+                        path: "install-\(name.rawValue).log"),
+                    log: log)
             },
             freeSpace: FreeSpace.probe,
             startMachine: { machine throws(MawError) in try await registry.start(machine) },

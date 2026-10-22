@@ -40,9 +40,8 @@
             do {
                 return try DistroMetadata.decode(Data(contentsOf: file))
             } catch {
-                throw .daemonProtocolError(
-                    reason: "\(file.path(percentEncoded: false)) cannot be read: "
-                        + error.localizedDescription)
+                throw .fileNotAccessible(
+                    path: file.path(percentEncoded: false), reason: error.localizedDescription)
             }
         }
 
@@ -71,8 +70,9 @@
                     at: paths.applicationSupportDirectory, withIntermediateDirectories: true)
                 try encoder.encode(state).write(to: paths.stateFile, options: .atomic)
             } catch {
-                throw .provisioningFailed(
-                    step: "recording the default distribution", reason: error.localizedDescription)
+                throw .fileNotAccessible(
+                    path: paths.stateFile.path(percentEncoded: false),
+                    reason: error.localizedDescription)
             }
         }
 
@@ -93,16 +93,13 @@
         /// Deletes staging directories that an interrupted installation left behind. Returns
         /// their names.
         @discardableResult
-        public func removeStagingLeftovers(except active: Set<URL> = []) -> [String] {
+        public func removeStagingLeftovers() -> [String] {
             let entries =
                 (try? FileManager.default.contentsOfDirectory(
                     at: paths.distrosDirectory, includingPropertiesForKeys: nil,
                     options: [])) ?? []
             var removed: [String] = []
-            for entry in entries
-            where entry.lastPathComponent.hasPrefix(MawPaths.stagingPrefix)
-                && !active.contains(entry.standardizedFileURL)
-            {
+            for entry in entries where entry.lastPathComponent.hasPrefix(MawPaths.stagingPrefix) {
                 if (try? FileManager.default.removeItem(at: entry)) != nil {
                     removed.append(entry.lastPathComponent)
                 }
