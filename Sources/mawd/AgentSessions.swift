@@ -31,7 +31,10 @@ extension DebugBoot {
         }
 
         let client = machine.agentClient(connectTimeout: .seconds(5))
-        let request = ExecRequest(argv: command, environment: Self.hostEnvironment(terminal: false))
+        // debug-boot runs in / as root, as it has since phase 04, rather than in root's home.
+        let request = ExecRequest(
+            argv: command, environment: Self.hostEnvironment(terminal: false),
+            workingDirectory: "/")
         let ending: Ending
         do throws(MawError) {
             if let repeatCount {
@@ -132,7 +135,7 @@ extension DebugBoot {
         let size = Terminal.windowSize() ?? TerminalSize(rows: 24, columns: 80)
         let request = ExecRequest(
             argv: ["/bin/sh", "-l"], environment: Self.hostEnvironment(terminal: true),
-            terminal: size)
+            workingDirectory: "/", terminal: size)
         let rawMode = try RawMode(for: "--shell")
         defer { rawMode.restore() }
 
