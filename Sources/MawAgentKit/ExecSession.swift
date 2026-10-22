@@ -38,8 +38,7 @@ final class ExecSession {
     private let child: ChildProcess
     private let logger: Logger
 
-    private var pendingInput: [UInt8] = []
-    private var pendingInputStart = 0
+    private var pendingInput = ByteBuffer()
     private var closeInputWhenWritten = false
     private var exitedAt: ContinuousClock.Instant?
     private var hostLeftAt: ContinuousClock.Instant?
@@ -52,7 +51,7 @@ final class ExecSession {
         self.logger = logger
     }
 
-    private var pendingInputCount: Int { pendingInput.count - pendingInputStart }
+    private var pendingInputCount: Int { pendingInput.count }
 
     /// Runs the session. On a protocol error, kills the process group, reaps the process, and
     /// rethrows.
@@ -212,7 +211,6 @@ final class ExecSession {
         logger.notice("exec \(child.pid): the host disconnected; sending SIGHUP")
         hostLeftAt = .now
         pendingInput.removeAll()
-        pendingInputStart = 0
         child.closeInput()
         child.send(SIGHUP)
     }
@@ -290,22 +288,18 @@ final class ExecSession {
 
     private func writeInput() {
         guard let input = child.input else { return }
-        let start = pendingInputStart
         let written = pendingInput.withUnsafeBytes { buffer in
-            write(input.rawValue, buffer.baseAddress! + start, buffer.count - start)
+            write(input.rawValue, buffer.baseAddress!, buffer.count)
         }
         if written > 0 {
-            pendingInputStart += written
+            pendingInput.consume(written)
         } else if written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR {
             // EPIPE: the process closed its standard input. EIO: the terminal is gone.
             pendingInput.removeAll()
-            pendingInputStart = 0
             child.closeInput()
             return
         }
         if pendingInputCount == 0 {
-            pendingInput.removeAll(keepingCapacity: true)
-            pendingInputStart = 0
             if closeInputWhenWritten {
                 child.closeInput()
             }

@@ -193,7 +193,7 @@ public final class GuestProcess: @unchecked Sendable {
                 throw .closed
             }
 
-            moveQueuedFrames(to: connection)
+            let framesRemain = moveQueuedFrames(to: connection)
             if agentStoppedReading {
                 connection.discardPendingOutput()
             } else {
@@ -209,7 +209,10 @@ public final class GuestProcess: @unchecked Sendable {
             if connection.canReceive {
                 events |= POLLIN
             }
-            if connection.pendingOutputCount > 0 {
+            // Frames still queued need the next iteration as well: moving stops at the
+            // connection's output limit, and when one flush then sends everything, as vsock's
+            // large credit grants allow, a writer blocked on the full queue sends no wake-up.
+            if connection.pendingOutputCount > 0 || (framesRemain && !agentStoppedReading) {
                 events |= POLLOUT
             }
             var requests = [
@@ -233,8 +236,8 @@ public final class GuestProcess: @unchecked Sendable {
     }
 
     /// Moves queued frames to the connection, up to its output limit, and wakes writers
-    /// waiting for room.
-    private func moveQueuedFrames(to connection: FrameConnection) {
+    /// waiting for room. Returns whether frames remain queued.
+    private func moveQueuedFrames(to connection: FrameConnection) -> Bool {
         lock.withLock {
             var moved = 0
             while moved < queue.count
@@ -251,6 +254,7 @@ public final class GuestProcess: @unchecked Sendable {
                 queue.removeFirst(moved)
                 lock.broadcast()
             }
+            return !queue.isEmpty
         }
     }
 }
