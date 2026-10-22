@@ -9,7 +9,7 @@ pass on a real Apple Silicon Mac.
 | 02 | Kernel and initramfs           | Reproducible build of a minimal arm64 kernel and initramfs in CI         | Done    |
 | 03 | First boot                     | `mawd` boots a VM, serial console logged, clean shutdown                 | Done    |
 | 04 | Guest agent                    | `debug-boot --exec` and `--shell` run commands in the guest over vsock; clean shutdown | Done    |
-| 04b | CLI and daemon (XPC)          | `maw -- uname -a` works through the daemon over XPC                      | Planned |
+| 04b | CLI and daemon (XPC)          | `maw -- uname -a` works through the daemon over XPC                      | Done    |
 | 05 | Distro install                 | `maw --install Ubuntu-24.04`: download, verify, provision, first user    | Planned |
 | 06 | Distro management              | list, set-default, terminate, shutdown, unregister, export, import       | Planned |
 | 07 | File sharing and paths         | `/mnt/mac` via virtiofs, cwd translation, `mawpath`                      | Planned |

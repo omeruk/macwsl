@@ -35,10 +35,14 @@ messages, and clean resource handling over feature count.
      +------------------------------+
 ```
 
-- **mawd**: per-user daemon registered with `SMAppService`. Owns VM lifecycle
-  (start, stop, idle shutdown, sleep/wake handling). Exposes an XPC Mach service. For
+- **mawd**: per-user LaunchAgent (`dev.maw.mawd`) that launchd starts on demand. Owns VM
+  lifecycle (start, stop, idle shutdown, sleep/wake handling). Exposes an XPC Mach service
+  through libxpc's C connection API (`docs/decisions/0010-xpc-c-connection-api.md`). For
   interactive sessions it connects to the guest over vsock and hands the connection's file
   descriptor to the client over XPC, so terminal bytes do not pass through the daemon.
+  Until the app bundle exists (phase 13), `mawd install` registers it with `launchctl
+  bootstrap`; phase 13 moves the registration to `SMAppService`
+  (`docs/decisions/0011-launchctl-registration.md`). `docs/daemon.md` describes it.
 - **maw**: CLI built with `swift-argument-parser`. Mirrors `wsl.exe` semantics and flags
   where they make sense on macOS (`--install`, `--list --verbose`, `-d`, `--shutdown`,
   `--terminate`, `--set-default`, `--export`, `--import`, `--unregister`, `-- <command>`).
@@ -63,7 +67,10 @@ Sources/
   MawCore/               shared models, paths, config parsing, errors (macOS + Linux)
   MawProtocol/           host <-> guest wire protocol (macOS + Linux)
   MawVirtualization/     Virtualization.framework wrappers (macOS only)
-  MawDaemonKit/          daemon logic, XPC interface (macOS only)
+  MawXPC/                daemon interface messages and the XPC wrapper (macOS only)
+  MawDaemonKit/          daemon logic: machines, leases, launchd agent (macOS only)
+  MawClient/             client side of the daemon interface, no AppKit (macOS only)
+  MawTerminalIO/         raw mode, window size, signal routing (macOS only)
   maw/                   CLI executable
   mawd/                  daemon executable
   maw-agent/             guest agent executable (Linux only)
@@ -93,7 +100,8 @@ swift build                                   # host targets
 swift test                                    # unit tests
 swift build --swift-sdk aarch64-swift-linux-musl --product maw-agent   # guest agent
 swift format lint --recursive Sources Tests   # lint
-./scripts/sign-dev.sh                         # ad-hoc sign with virtualization entitlement
+./scripts/sign-dev.sh                         # build and ad-hoc sign maw and mawd
+.build/debug/mawd install                     # register the daemon with launchd
 ```
 
 Integration tests that boot a real VM are tagged `.integration` and only run on a Mac.
