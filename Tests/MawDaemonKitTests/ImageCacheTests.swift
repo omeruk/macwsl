@@ -129,7 +129,7 @@ import os
 
     @Test func followsARedirectToHTTPS() async throws {
         StubServer.redirect = URL(string: "https://mirror.example.com/test.tar.gz")!
-        try await download(Self.image)
+        _ = try await download(Self.image)
         #expect(
             StubServer.requests.map(\.url?.host) == ["images.example.com", "mirror.example.com"])
     }
