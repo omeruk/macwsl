@@ -20,4 +20,5 @@ pass on a real Apple Silicon Mac.
 | 11b | Linux sessions in the app    | Distribution tabs and the distributions screen through the daemon; follows 05 | Planned |
 | 11 | Terminal app                   | SwiftUI + SwiftTerm app: tabs, distro profiles, themes, settings         | Planned |
 | 12 | Configuration and lifecycle    | `.mawconfig`, `maw.conf`, idle shutdown, sleep/wake clock sync           | Planned |
+| 12b | Hardening                    | Close the recorded limitations, long-running and sleep/wake soak tests, `docs/security.md` review, beta testing | Planned |
 | 13 | Packaging and release          | Signed, notarized app; Homebrew cask; auto-update                        | Planned |
