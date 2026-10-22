@@ -57,7 +57,11 @@
                 Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
 
             let argv = ([path] + arguments).map { strdup($0) } + [nil]
-            defer { argv.forEach { free($0) } }
+            defer {
+                for argument in argv {
+                    free(argument)
+                }
+            }
             var pid: pid_t = 0
             let spawned = posix_spawn(&pid, path, &actions, &attributes, argv, environ)
             close(writer)
