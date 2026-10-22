@@ -129,6 +129,14 @@ Integration tests that boot a real VM are tagged `.integration` and only run on 
   `phase/02-kernel`). Small fixes outside a phase use `fix/short-name`.
 - Keep commits small, with messages in the imperative mood.
 - When a phase is done, update `docs/ROADMAP.md` with its status in the same branch.
+- Before opening a pull request, review the complete diff against `main` for correctness
+  and for security, with the `/code-review` and `/security-review` commands where they are
+  available. Fix every confirmed finding, or record it with its reason under "Known
+  limitations and follow-up work". State in the pull request that both reviews ran and what
+  they found.
+- Keep `docs/security.md` current. A phase that adds a way into the guest or the host (a
+  file share, a network path, an interface for clients, a downloaded artifact) updates it
+  in the same branch.
 - When every acceptance criterion passes locally, push the branch and open a pull request
   into `main` with `gh pr create`. Title: `Phase NN: <name>`. Fill in the body from
   `.github/pull_request_template.md`, including the actual result of each acceptance
