@@ -49,7 +49,7 @@ let package = Package(
         ),
         .target(
             name: "MawDaemonKit",
-            dependencies: ["MawCore", "MawProtocol", "MawVirtualization"]
+            dependencies: ["MawCore", "MawProtocol", "MawVirtualization", "MawXPC"]
         ),
         .executableTarget(
             name: "maw",
@@ -97,6 +97,10 @@ let package = Package(
             ]
         ),
         .testTarget(name: "MawVirtualizationTests", dependencies: ["MawVirtualization"]),
+        .testTarget(
+            name: "MawDaemonKitTests",
+            dependencies: ["MawDaemonKit", "MawXPC", "MawCore", "MawProtocol", "CMawSystem"]
+        ),
         .testTarget(
             name: "MawXPCTests", dependencies: ["MawXPC", "MawCore", "MawProtocol", "CMawSystem"]),
         .testTarget(
