@@ -63,26 +63,6 @@
 
         public func extract(image: URL, format: CatalogImage.Format) async throws(MawError) {
             let step = "extracting the root file system"
-            let tar = Process()
-            tar.executableURL = URL(filePath: "/usr/bin/tar")
-            tar.arguments = [
-                "-c", "-f", "-", "--format", "pax", "@" + image.path(percentEncoded: false),
-            ]
-            let tarOutput = Pipe()
-            let tarErrors = Pipe()
-            tar.standardOutput = tarOutput
-            tar.standardError = tarErrors
-            tar.standardInput = FileHandle.nullDevice
-            do {
-                try tar.run()
-            } catch {
-                throw .provisioningFailed(
-                    step: step, reason: "/usr/bin/tar cannot start: \(error.localizedDescription)")
-            }
-            defer {
-                if tar.isRunning { tar.terminate() }
-            }
-
             let errors = OutputCollector()
             let process = try await client().exec(
                 ExecRequest(
@@ -91,27 +71,43 @@
                         "/mnt/root",
                     ]),
                 output: errors.handler)
-            // A thread of its own: reading the pipe and `GuestProcess.write` both block.
-            let reader = tarOutput.fileHandleForReading
-            startDetachedThread {
-                while let chunk = try? reader.read(upToCount: 1 << 20), !chunk.isEmpty {
-                    guard process.write(chunk) else { break }
+            // /usr/bin/tar re-encodes the image as an uncompressed pax archive, which keeps the
+            // extended attributes. Its output goes to bsdtar's standard input on a thread of
+            // its own, because reading the pipe and `GuestProcess.write` both block.
+            let tar = await withCheckedContinuation {
+                (
+                    continuation: CheckedContinuation<
+                        Result<StreamingProcess.Outcome, any Error>, Never
+                    >
+                ) in
+                startDetachedThread {
+                    let outcome = Result {
+                        try StreamingProcess.run(
+                            "/usr/bin/tar",
+                            [
+                                "-c", "-f", "-", "--format", "pax",
+                                "@" + image.path(percentEncoded: false),
+                            ]
+                        ) { chunk in process.write(chunk) }
+                    }
+                    process.closeInput()
+                    continuation.resume(returning: outcome)
                 }
-                process.closeInput()
             }
             let status = try await process.waitForExit()
-            tar.waitUntilExit()
             guard status == .exited(code: 0) else {
                 throw .provisioningFailed(step: step, reason: "bsdtar \(status): \(errors.tail)")
             }
-            guard tar.terminationStatus == 0 else {
-                let message = String(
-                    decoding: (try? tarErrors.fileHandleForReading.readToEnd()) ?? Data(),
-                    as: UTF8.self)
+            switch tar {
+            case .failure(let error):
+                throw .provisioningFailed(
+                    step: step, reason: "/usr/bin/tar cannot start: \(error.localizedDescription)")
+            case .success(let outcome) where outcome.status != 0:
                 throw .provisioningFailed(
                     step: step,
-                    reason: "/usr/bin/tar exited with status \(tar.terminationStatus): "
-                        + message.trimmingCharacters(in: .whitespacesAndNewlines))
+                    reason: "/usr/bin/tar exited with status \(outcome.status): \(outcome.errors)")
+            case .success:
+                break
             }
         }
 
