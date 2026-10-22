@@ -25,6 +25,39 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case distributionNotInstalled(DistroName)
     /// `--cd` names a directory that maw cannot use yet: a relative or macOS path.
     case unsupportedDirectory(String)
+    /// A session needs a distribution, and none is installed.
+    case noDistributionInstalled
+    /// `-u` names a user that does not exist in the distribution.
+    case userNotFound(String, distribution: String)
+
+    // MARK: Installation
+
+    /// `--install` names a distribution that the catalog does not have.
+    case unknownDistribution(String)
+    /// `--install` names a distribution that is already installed.
+    case distributionAlreadyInstalled(DistroName)
+    /// Another `maw --install` is installing the same distribution.
+    case installationInProgress(DistroName)
+    /// A user name failed Ubuntu's rules. `reason` explains which.
+    case invalidUserName(String, reason: String)
+    /// The password is empty, or the two entries differ, or standard input had none.
+    case invalidPassword(reason: String)
+    /// The Mac has no network connection, or the server cannot be reached.
+    case networkUnavailable(host: String, reason: String)
+    /// The download failed for another reason, such as an HTTP error.
+    case downloadFailed(url: String, reason: String)
+    /// A downloaded image is shorter or longer than the catalog says.
+    case imageSizeMismatch(path: String, expected: UInt64, actual: UInt64)
+    /// A downloaded image does not have the SHA-256 that the catalog pins.
+    case imageChecksumMismatch(path: String, expected: String, actual: String)
+    /// A downloaded image that should be in the cache is not there.
+    case imageMissing(path: String)
+    /// The Mac's volume has less free space than the installation needs.
+    case insufficientDiskSpace(required: UInt64, available: UInt64, volume: String)
+    /// A provisioning step failed. `step` names it.
+    case provisioningFailed(step: String, reason: String)
+    /// The installation was cancelled, because its client went away or the daemon stopped.
+    case installationCancelled(DistroName)
 
     // MARK: Daemon
 
@@ -113,6 +146,39 @@ extension MawError: LocalizedError {
             "No distribution named '\(name)' is installed."
         case .unsupportedDirectory(let path):
             "--cd needs an absolute Linux path, such as /root, but '\(path)' is not one."
+        case .noDistributionInstalled:
+            "No Linux distribution is installed."
+        case .userNotFound(let user, let distribution):
+            "There is no user named '\(user)' in \(distribution)."
+        case .unknownDistribution(let name):
+            "maw cannot install a distribution named '\(name)'."
+        case .distributionAlreadyInstalled(let name):
+            "\(name) is already installed."
+        case .installationInProgress(let name):
+            "\(name) is being installed by another maw --install."
+        case .invalidUserName(let name, let reason):
+            "'\(name)' cannot be the user name: \(reason)."
+        case .invalidPassword(let reason):
+            "The password cannot be used: \(reason)."
+        case .networkUnavailable(let host, let reason):
+            "Cannot reach \(host): \(reason)."
+        case .downloadFailed(let url, let reason):
+            "The download of \(url) failed: \(reason)."
+        case .imageSizeMismatch(let path, let expected, let actual):
+            "The downloaded image \(path) has \(actual) bytes, but it should have \(expected)."
+        case .imageChecksumMismatch(let path, let expected, let actual):
+            "The downloaded image \(path) is not the expected file: its SHA-256 is \(actual), "
+                + "but it should be \(expected)."
+        case .imageMissing(let path):
+            "The downloaded image \(path) is missing."
+        case .insufficientDiskSpace(let required, let available, let volume):
+            "The installation needs \(ByteSize(bytes: required).approximateDescription) of free "
+                + "space on \(volume), but only \(ByteSize(bytes: available).approximateDescription) "
+                + "is available."
+        case .provisioningFailed(let step, let reason):
+            "The installation failed while \(step): \(reason)."
+        case .installationCancelled(let name):
+            "The installation of \(name) was cancelled."
         case .daemonNotInstalled(let label):
             "The maw daemon is not installed: launchd has no LaunchAgent named \(label)."
         case .daemonUnreachable(let reason):
@@ -187,6 +253,40 @@ extension MawError: LocalizedError {
         case .unsupportedDirectory:
             "Translating relative and macOS paths arrives in phase 07. Until then, give an "
                 + "absolute path inside Linux."
+        case .noDistributionInstalled:
+            "Install Ubuntu with maw --install."
+        case .userNotFound:
+            "Check the name, or create the user in the distribution with sudo adduser."
+        case .unknownDistribution:
+            "maw --list --online shows the distributions that can be installed."
+        case .distributionAlreadyInstalled(let name):
+            "Use it with maw -d \(name). The README explains how to remove a distribution."
+        case .installationInProgress:
+            "Wait for the other installation to finish."
+        case .invalidUserName:
+            "Use 1 to \(UserName.maximumLength) lowercase letters, digits, '-' or '_', starting "
+                + "with a letter, for example 'ayse'."
+        case .invalidPassword:
+            "Type the same non-empty password twice. With --user, give it as the first line of "
+                + "standard input."
+        case .networkUnavailable:
+            "Check the Mac's internet connection and run maw --install again; the download "
+                + "resumes where it stopped."
+        case .downloadFailed:
+            "Run maw --install again; the download resumes where it stopped."
+        case .imageSizeMismatch, .imageChecksumMismatch:
+            "The file was removed. Run maw --install again to download it again; if this "
+                + "happens again, the download is being altered on its way to this Mac."
+        case .imageMissing:
+            "Run maw --install again to download it again."
+        case .insufficientDiskSpace:
+            "Free up space on the volume, then run maw --install again."
+        case .provisioningFailed:
+            "Nothing was installed. The console log, ~/Library/Logs/maw/install.log, has "
+                + "details."
+        case .installationCancelled:
+            "Nothing was installed. Run maw --install again; the download resumes where it "
+                + "stopped."
         case .daemonNotInstalled:
             "Register the daemon with mawd install."
         case .daemonUnreachable, .daemonConnectionLost, .daemonProtocolError:

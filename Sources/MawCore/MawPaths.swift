@@ -42,6 +42,35 @@ public struct MawPaths: Sendable, Equatable {
         distroDirectory(for: name).appending(path: "distro.json", directoryHint: .notDirectory)
     }
 
+    /// `~/Library/Application Support/maw/distros/.staging-<name>-<id>`, where an installation
+    /// builds a distribution before it renames the directory to `distroDirectory(for:)`.
+    /// Distribution names cannot start with `.`, so it never collides with one.
+    public func stagingDirectory(for name: DistroName, id: String) -> URL {
+        distrosDirectory.appending(
+            path: "\(Self.stagingPrefix)\(name.rawValue)-\(id)", directoryHint: .isDirectory)
+    }
+
+    /// The prefix of every staging directory's name.
+    public static let stagingPrefix = ".staging-"
+
+    /// `~/Library/Application Support/maw/state.json`, the daemon's settings, such as the
+    /// default distribution.
+    public var stateFile: URL {
+        applicationSupportDirectory.appending(path: "state.json", directoryHint: .notDirectory)
+    }
+
+    /// `~/Library/Caches/maw/images`, holding verified distribution images and partial
+    /// downloads.
+    public var imageCacheDirectory: URL {
+        homeDirectory.appending(path: "Library/Caches/maw/images", directoryHint: .isDirectory)
+    }
+
+    /// `~/Library/Logs/maw/install.log`, the console of the machine that provisions a
+    /// distribution, with the daemon's notes about the installation.
+    public var installLogFile: URL {
+        logsDirectory.appending(path: "install.log", directoryHint: .notDirectory)
+    }
+
     /// `~/Library/Application Support/maw/kernel`, holding the guest kernel and initramfs.
     public var kernelDirectory: URL {
         applicationSupportDirectory.appending(path: "kernel", directoryHint: .isDirectory)
