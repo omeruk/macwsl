@@ -124,6 +124,14 @@ import os
         }
     }
 
+    @Test func refusesTheInitramfsMachinesName() async {
+        await #expect(
+            throws: MawError.invalidDistroName("Initramfs", reason: "the name is reserved for maw")
+        ) {
+            try await installer().install(request(name: "Initramfs"), progress: { _ in })
+        }
+    }
+
     @Test func refusesAnInvalidUserOrPassword() async {
         await #expect(
             throws: MawError.invalidUserName(

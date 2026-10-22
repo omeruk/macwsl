@@ -117,6 +117,10 @@
                 entry = catalog.recommendedEntry
             }
             let name = request.name ?? entry.name
+            // The initramfs machine's name, which also names its console log.
+            guard name.rawValue.lowercased() != MachineID.initramfs.name else {
+                throw .invalidDistroName(name.rawValue, reason: "the name is reserved for maw")
+            }
             guard !store.isInstalled(name) else {
                 throw .distributionAlreadyInstalled(name)
             }
