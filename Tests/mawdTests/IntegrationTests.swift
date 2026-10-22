@@ -242,6 +242,11 @@ final class DebugBootProcess: @unchecked Sendable {
         process.standardOutput = pipe
         pipe.fileHandleForReading.readabilityHandler = { [collected] handle in
             let data = handle.availableData
+            // At end-of-file the handler would be called again at once, for ever, and spin a
+            // CPU for every finished process.
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+            }
             collected.withLock { $0.append(data) }
         }
         if separateStandardError {
@@ -249,6 +254,9 @@ final class DebugBootProcess: @unchecked Sendable {
             process.standardError = errorPipe
             errorPipe.fileHandleForReading.readabilityHandler = { [collectedError] handle in
                 let data = handle.availableData
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
+                }
                 collectedError.withLock { $0.append(data) }
             }
         } else {
@@ -375,6 +383,9 @@ final class InteractiveSession: @unchecked Sendable {
         primaryHandle = FileHandle(fileDescriptor: primary, closeOnDealloc: false)
         primaryHandle.readabilityHandler = { [collected] handle in
             let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+            }
             collected.withLock { $0.append(data) }
         }
         try process.run()
