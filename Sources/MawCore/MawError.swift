@@ -143,6 +143,13 @@ public enum MawError: Error, Equatable, Sendable, Codable {
 
 extension MawError: LocalizedError {
     public var errorDescription: String? {
+        // A reason from Foundation, such as a URLError's description, ends with a period of
+        // its own.
+        guard let message, message.hasSuffix("..") else { return message }
+        return String(message.dropLast())
+    }
+
+    private var message: String? {
         switch self {
         case .invalidDistroName(let name, let reason):
             "'\(name)' is not a valid distribution name: \(reason)."
@@ -159,7 +166,7 @@ extension MawError: LocalizedError {
         case .userNotFound(let user, let distribution):
             "There is no user named '\(user)' in \(distribution)."
         case .unknownDistribution(let name):
-            "maw cannot install a distribution named '\(name)'."
+            "There is no distribution named '\(name)' that maw can install."
         case .distributionAlreadyInstalled(let name):
             "\(name) is already installed."
         case .installationInProgress(let name):
@@ -233,7 +240,7 @@ extension MawError: LocalizedError {
         case .diskImageInUse(let path):
             "The disk image \(path) is in use by another virtual machine."
         case .fileNotAccessible(let path, let reason):
-            "maw cannot use \(path): \(reason)."
+            "The file \(path) cannot be used: \(reason)."
         case .consoleLogFailed(let path, let reason):
             "Could not write the console log \(path): \(reason)."
         case .notATerminal(let option, let stream):
@@ -279,8 +286,9 @@ extension MawError: LocalizedError {
         case .installationInProgress:
             "Wait for the other installation to finish."
         case .invalidUserName:
-            "Use 1 to \(UserName.maximumLength) lowercase letters, digits, '-' or '_', starting "
-                + "with a letter, for example 'ayse'."
+            "Choose another name: 1 to \(UserName.maximumLength) lowercase letters, digits, '-' or "
+                + "'_', starting with a letter, and not one the distribution already uses, for "
+                + "example 'ayse'."
         case .invalidPassword:
             "Type the same non-empty password twice. With --user, give it as the first line of "
                 + "standard input."

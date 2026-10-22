@@ -92,6 +92,16 @@ import Testing
                 == "The session ended because the virtual machine initramfs stopped: "
                 + "maw --shutdown was run.")
     }
+
+    @Test func endsAMessageWithOnePeriod() {
+        let error = MawError.fileNotAccessible(
+            path: "/tmp/distro.json",
+            reason: "The data couldn’t be read because it isn’t in the correct format.")
+        #expect(
+            error.errorDescription
+                == "The file /tmp/distro.json cannot be used: The data couldn’t be read because "
+                + "it isn’t in the correct format.")
+    }
 }
 
 @Suite struct MachineIDTests {
