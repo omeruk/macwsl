@@ -85,11 +85,16 @@ struct InstallCommand {
         case .signal(let number):
             view.interrupt()
             FileHandle.standardError.write(Data("Cancelling the installation...\n".utf8))
-            let confirmed = await Self.cancel(on: client)
-            let error =
-                confirmed
-                ? MawError.installationCancelled(name)
-                : MawError.daemonConnectionLost(during: "cancelling the installation")
+            let error: MawError
+            switch await Self.cancel(on: client) {
+            case .cancelled:
+                error = .installationCancelled(name)
+            case .alreadyFinished:
+                print("The installation had already finished. Run maw -d \(name) to use it.")
+                return 0
+            case .unconfirmed:
+                error = .daemonConnectionLost(during: "cancelling the installation")
+            }
             FileHandle.standardError.write(Data((Maw.failure(for: error)?.output ?? "").utf8))
             return 128 + number
         }
@@ -102,60 +107,75 @@ struct InstallCommand {
     }
 
     /// Waits for the installation to end or a signal, showing progress meanwhile.
+    ///
+    /// The three run as tasks of their own rather than in a task group, which would wait for
+    /// the installation's request to return even after a signal: that request cannot be
+    /// cancelled from here, only by `cancelInstall`, which must be sent at once.
     static func firstOutcome(
         install: @escaping @Sendable () async throws(MawError) -> InstallSummary,
         events: AsyncStream<DaemonClient.Event>, view: InstallProgressView,
         signals: AsyncStream<Int32>
     ) async -> Outcome {
-        await withTaskGroup(of: Outcome?.self) { group in
-            group.addTask {
+        let first = FirstResult<Outcome>()
+        return await withCheckedContinuation { continuation in
+            first.onResult { outcome in
+                view.stop()
+                continuation.resume(returning: outcome)
+            }
+            Task {
                 do throws(MawError) {
-                    return .installed(try await install())
+                    first.settle(.installed(try await install()))
                 } catch {
-                    return .failed(error)
+                    first.settle(.failed(error))
                 }
             }
-            group.addTask {
+            Task {
                 for await event in events {
                     switch event {
                     case .installProgress(let progress):
                         view.show(progress)
                     case .connectionLost:
-                        return .failed(.daemonConnectionLost(during: "the installation"))
+                        first.settle(.failed(.daemonConnectionLost(during: "the installation")))
                     case .sessionEnded:
                         continue
                     }
                 }
-                return nil
             }
-            group.addTask {
-                for await number in signals { return .signal(number) }
-                return nil
-            }
-            var outcome: Outcome = .failed(.daemonConnectionLost(during: "the installation"))
-            for await next in group {
-                if let next {
-                    outcome = next
-                    break
+            Task {
+                for await number in signals {
+                    first.settle(.signal(number))
+                    return
                 }
             }
-            group.cancelAll()
-            return outcome
         }
     }
 
+    enum Cancellation {
+        /// The daemon stopped the installation and removed its traces.
+        case cancelled
+        /// The installation had already finished.
+        case alreadyFinished
+        /// The daemon did not confirm within `cancelTimeout`.
+        case unconfirmed
+    }
+
     /// Asks the daemon to cancel and waits, for at most `cancelTimeout`, until it has removed
-    /// the installation's traces. Returns whether it confirmed.
-    static func cancel(on client: DaemonClient) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask { (try? await client.cancelInstall()) != nil }
-            group.addTask {
-                try? await Task.sleep(for: cancelTimeout)
-                return false
+    /// the installation's traces.
+    static func cancel(on client: DaemonClient) async -> Cancellation {
+        let first = FirstResult<Cancellation>()
+        return await withCheckedContinuation { continuation in
+            first.onResult { continuation.resume(returning: $0) }
+            Task {
+                switch try? await client.cancelInstall() {
+                case true: first.settle(.cancelled)
+                case false: first.settle(.alreadyFinished)
+                case nil: first.settle(.unconfirmed)
+                }
             }
-            let confirmed = await group.next() ?? false
-            group.cancelAll()
-            return confirmed
+            Task {
+                try? await Task.sleep(for: cancelTimeout)
+                first.settle(.unconfirmed)
+            }
         }
     }
 
@@ -234,6 +254,7 @@ final class InstallProgressView: @unchecked Sendable {
     private let lock = NSLock()
     private var current: InstallStep?
     private var lastDownload: DownloadProgress?
+    private var stopped = false
 
     init(text: InstallProgressText, isTerminal: Bool) {
         self.text = text
@@ -242,6 +263,7 @@ final class InstallProgressView: @unchecked Sendable {
 
     func show(_ progress: InstallProgress) {
         lock.withLock {
+            guard !stopped else { return }
             switch progress {
             case .started(let step):
                 current = step
@@ -266,6 +288,12 @@ final class InstallProgressView: @unchecked Sendable {
         }
     }
 
+    /// Ignores later progress: the outcome is known, and the daemon may still report steps
+    /// while it cancels.
+    func stop() {
+        lock.withLock { stopped = true }
+    }
+
     /// Ends a step's line that a failure or Ctrl-C interrupted.
     func interrupt() {
         lock.withLock {
@@ -284,5 +312,37 @@ final class InstallProgressView: @unchecked Sendable {
     private func write(_ string: String) {
         print(string, terminator: "")
         fflush(stdout)
+    }
+}
+
+/// Delivers the first of several results to one handler, once.
+final class FirstResult<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: ((Value) -> Void)?
+    private var pending: Value?
+    private var isSettled = false
+
+    func onResult(_ handler: @escaping (Value) -> Void) {
+        let value = lock.withLock { () -> Value? in
+            self.handler = handler
+            return pending
+        }
+        if let value {
+            handler(value)
+        }
+    }
+
+    func settle(_ value: Value) {
+        let handler = lock.withLock { () -> ((Value) -> Void)?? in
+            guard !isSettled else { return nil }
+            isSettled = true
+            if self.handler == nil {
+                pending = value
+            }
+            return .some(self.handler)
+        }
+        if case .some(.some(let handler)) = handler {
+            handler(value)
+        }
     }
 }
