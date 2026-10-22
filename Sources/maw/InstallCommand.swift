@@ -124,7 +124,11 @@ struct InstallCommand {
             }
             Task {
                 do throws(MawError) {
-                    first.settle(.installed(try await install()))
+                    let summary = try await install()
+                    // The reply can arrive before the last step's event, which travels as a
+                    // message of its own; give it a moment so that the step's line is complete.
+                    await view.waitUntilIdle(timeout: .milliseconds(500))
+                    first.settle(.installed(summary))
                 } catch {
                     first.settle(.failed(error))
                 }
@@ -285,6 +289,14 @@ final class InstallProgressView: @unchecked Sendable {
                 }
                 current = nil
             }
+        }
+    }
+
+    /// Returns once no step is in progress, or after `timeout`.
+    func waitUntilIdle(timeout: Duration) async {
+        let deadline = ContinuousClock.now + timeout
+        while lock.withLock({ current != nil }), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
         }
     }
 
