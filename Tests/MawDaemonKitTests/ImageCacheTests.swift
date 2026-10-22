@@ -115,6 +115,25 @@ import os
         #expect(StubServer.requests.isEmpty)
     }
 
+    @Test func refusesARedirectToPlainHTTP() async {
+        StubServer.redirect = URL(string: "http://images.example.com/test.tar.gz")!
+        await #expect(
+            throws: MawError.downloadFailed(
+                url: Self.image.url.absoluteString,
+                reason: "the server redirected to a URL without HTTPS")
+        ) {
+            try await download(Self.image)
+        }
+        #expect(StubServer.requests.count == 1)
+    }
+
+    @Test func followsARedirectToHTTPS() async throws {
+        StubServer.redirect = URL(string: "https://mirror.example.com/test.tar.gz")!
+        try await download(Self.image)
+        #expect(
+            StubServer.requests.map(\.url?.host) == ["images.example.com", "mirror.example.com"])
+    }
+
     @Test func refusesMoreBytesThanTheImageHas() async {
         StubServer.body = Self.content + Data(count: 10)
         await #expect {
@@ -174,6 +193,7 @@ final class StubServer: URLProtocol, @unchecked Sendable {
         var status = 200
         var honorsRanges = true
         var failure: URLError?
+        var redirect: URL?
     }
 
     private static let state = OSAllocatedUnfairLock(initialState: State())
@@ -196,6 +216,11 @@ final class StubServer: URLProtocol, @unchecked Sendable {
         get { state.withLock { $0.failure } }
         set { state.withLock { $0.failure = newValue } }
     }
+    /// Where the first request is redirected to, with `302 Found`.
+    static var redirect: URL? {
+        get { state.withLock { $0.redirect } }
+        set { state.withLock { $0.redirect = newValue } }
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -207,6 +232,15 @@ final class StubServer: URLProtocol, @unchecked Sendable {
         }
         if let failure = current.failure {
             client?.urlProtocol(self, didFailWithError: failure)
+            return
+        }
+        if let redirect = current.redirect, current.requests.count == 1 {
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 302, httpVersion: "HTTP/1.1",
+                headerFields: ["Location": redirect.absoluteString])!
+            client?.urlProtocol(
+                self, wasRedirectedTo: URLRequest(url: redirect), redirectResponse: response)
+            client?.urlProtocolDidFinishLoading(self)
             return
         }
         var status = current.status
