@@ -89,7 +89,7 @@ how phase 13 moves to it.
   restarts the daemon (`launchctl bootout`, then `bootstrap`), so that a rebuilt `mawd` takes
   effect.
 - `mawd uninstall` asks a running daemon to stop its machines, unloads the agent, and removes
-  the plist.
+  the plist and the lock file.
 
 ## The XPC interface
 

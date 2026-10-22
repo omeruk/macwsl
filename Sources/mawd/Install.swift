@@ -96,7 +96,8 @@ struct Uninstall: AsyncParsableCommand {
         abstract: "Stop the maw daemon and remove it from launchd.",
         discussion: """
             Stops every virtual machine cleanly, unloads the LaunchAgent with launchctl \
-            bootout, and removes its plist. The logs in ~/Library/Logs/maw are kept.
+            bootout, and removes its plist and the daemon's lock file. The logs in \
+            ~/Library/Logs/maw are kept.
             """
     )
 
@@ -126,6 +127,16 @@ struct Uninstall: AsyncParsableCommand {
                 }
             }
             try Launchctl.bootout(label)
+        }
+        // bootout can return while the daemon is still exiting; its lock is released when it
+        // has.
+        let lock = paths.daemonLockFile(label: label)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while DaemonLock.isHeld(at: lock) && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        if !DaemonLock.isHeld(at: lock) {
+            try? FileManager.default.removeItem(at: lock)
         }
         if exists {
             do {
