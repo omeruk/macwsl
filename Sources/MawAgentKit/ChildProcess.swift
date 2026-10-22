@@ -114,6 +114,16 @@ final class ChildProcess {
         }
         let primary = OwnedDescriptor(primaryDescriptor)
         let secondary = OwnedDescriptor(secondaryDescriptor)
+        if let owner = plan.terminalOwner {
+            guard fchown(secondary.rawValue, uid_t(owner.uid), gid_t(owner.gid)) == 0,
+                fchmod(secondary.rawValue, 0o620) == 0
+            else {
+                throw SpawnFailure(
+                    code: .spawnFailed,
+                    message: "cannot give the terminal to user ID \(owner.uid): "
+                        + SystemError.message(for: errno))
+            }
+        }
         let pid = try start(
             plan, path: path,
             stdin: secondary.rawValue, stdout: secondary.rawValue, stderr: secondary.rawValue,

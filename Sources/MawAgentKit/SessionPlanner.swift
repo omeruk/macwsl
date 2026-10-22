@@ -40,6 +40,14 @@ struct Credentials: Equatable, Sendable {
     var groups: [UInt32]
 }
 
+/// Who owns a session's pseudo-terminal: its user, and the `tty` group with mode 620, as
+/// `login` and `sshd` set it, so that programs that reopen the terminal, such as `screen` or
+/// GnuPG's pinentry, can.
+struct TerminalOwner: Equatable, Sendable {
+    var uid: UInt32
+    var gid: UInt32
+}
+
 /// Exactly what the agent starts for a request.
 struct SpawnPlan: Equatable, Sendable {
     /// The executable, or `nil` to search PATH for `argv[0]`.
@@ -52,6 +60,8 @@ struct SpawnPlan: Equatable, Sendable {
     /// Whether to wait, briefly, for the system bus before starting: `pam_systemd` registers
     /// the session with `systemd-logind` over it.
     var waitsForSystemBus: Bool
+    /// The pseudo-terminal's owner, when the session runs as another user than the agent's.
+    var terminalOwner: TerminalOwner? = nil
 }
 
 /// Turns an exec request into a `SpawnPlan` for the account it runs as.
@@ -97,18 +107,25 @@ enum SessionPlanner {
         let credentials =
             account.uid == system.currentUserID
             ? nil : Credentials(uid: account.uid, gid: account.gid, groups: account.groups)
+        let terminalOwner =
+            account.uid == system.currentUserID
+            ? nil
+            : TerminalOwner(
+                uid: account.uid,
+                gid: UserDatabase.groupID(named: "tty", group: system.readFile("/etc/group") ?? "")
+                    ?? 5)
 
         switch request.program {
         case .argv(let argv):
             return SpawnPlan(
                 path: nil, argv: argv, environment: environment,
                 workingDirectory: workingDirectory, credentials: credentials,
-                waitsForSystemBus: false)
+                waitsForSystemBus: false, terminalOwner: terminalOwner)
         case .shellCommand(let command):
             return SpawnPlan(
                 path: account.shell, argv: [account.shell, "-c", command],
                 environment: environment, workingDirectory: workingDirectory,
-                credentials: credentials, waitsForSystemBus: false)
+                credentials: credentials, waitsForSystemBus: false, terminalOwner: terminalOwner)
         case .loginShell:
             if request.workingDirectory == nil, system.initSystem() == .systemd,
                 let runuser = runuserPaths.first(where: system.isExecutable)
@@ -122,13 +139,14 @@ enum SessionPlanner {
                 }
                 return SpawnPlan(
                     path: runuser, argv: argv, environment: environment,
-                    workingDirectory: "/", credentials: nil, waitsForSystemBus: true)
+                    workingDirectory: "/", credentials: nil, waitsForSystemBus: true,
+                    terminalOwner: terminalOwner)
             }
             let shellName = account.shell.split(separator: "/").last.map(String.init) ?? "sh"
             return SpawnPlan(
                 path: account.shell, argv: ["-" + shellName], environment: environment,
                 workingDirectory: workingDirectory, credentials: credentials,
-                waitsForSystemBus: false)
+                waitsForSystemBus: false, terminalOwner: terminalOwner)
         }
     }
 

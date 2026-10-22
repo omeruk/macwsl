@@ -35,6 +35,17 @@ enum UserDatabase {
         return nil
     }
 
+    /// The ID of the group `name`, such as `tty`, or `nil` if it does not exist.
+    static func groupID(named name: String, group: String) -> UInt32? {
+        for line in group.split(whereSeparator: \.isNewline) {
+            let fields = line.split(separator: ":", omittingEmptySubsequences: false)
+            if fields.count >= 3, fields[0] == name, let gid = UInt32(fields[2]) {
+                return gid
+            }
+        }
+        return nil
+    }
+
     static func groups(of name: String, primary: UInt32, group: String) -> [UInt32] {
         var groups = [primary]
         for line in group.split(whereSeparator: \.isNewline) {

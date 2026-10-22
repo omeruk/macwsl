@@ -15,6 +15,7 @@ import Testing
         """
     static let group = """
         root:x:0:
+        tty:x:5:
         adm:x:4:syslog,ayse
         sudo:x:27:ayse
         users:x:100: ayse , bare
@@ -63,6 +64,16 @@ import Testing
                 "LANG": "tr_TR.UTF-8",
             ])
         #expect(!plan.waitsForSystemBus)
+    }
+
+    @Test func givesTheTerminalToTheUser() throws {
+        let plan = try SessionPlanner.plan(
+            ExecRequest(program: .loginShell), system: Self.ubuntu(initSystem: .busybox))
+        #expect(plan.terminalOwner == TerminalOwner(uid: 1000, gid: 5))
+        let root = try SessionPlanner.plan(
+            ExecRequest(program: .loginShell, user: "root"), system: Self.ubuntu())
+        // The agent is root already; the terminal stays as it is.
+        #expect(root.terminalOwner == nil)
     }
 
     @Test func runsAsRootWithoutADefaultUser() throws {
