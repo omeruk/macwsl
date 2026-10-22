@@ -1,6 +1,7 @@
 # 0005: busybox init is PID 1 and supervises the guest agent
 
-- Status: Accepted
+- Status: Superseded by [0013](0013-systemd-and-the-agent.md) for distribution machines; still in
+  force for the initramfs machine
 - Date: 2026-10-21
 
 ## Context
