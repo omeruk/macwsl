@@ -71,13 +71,26 @@ func distro(_ name: String) throws -> DistroName {
     // MARK: Install
 
     @Test func installsTheRecommendedDistribution() throws {
-        #expect(try action("--install") == .install(nil))
+        #expect(try action("--install") == .install(InstallOptions()))
     }
 
     @Test func installsANamedDistribution() throws {
-        #expect(try action("--install", "Ubuntu-24.04") == .install(distro("Ubuntu-24.04")))
-        #expect(try action("--install", "-d", "Ubuntu") == .install(distro("Ubuntu")))
-        #expect(try action("-d", "Ubuntu", "--install") == .install(distro("Ubuntu")))
+        #expect(
+            try action("--install", "Ubuntu-24.04")
+                == .install(InstallOptions(distro: distro("Ubuntu-24.04"))))
+        #expect(
+            try action("--install", "-d", "Ubuntu")
+                == .install(InstallOptions(distro: distro("Ubuntu"))))
+        #expect(
+            try action("-d", "Ubuntu", "--install")
+                == .install(InstallOptions(distro: distro("Ubuntu"))))
+    }
+
+    @Test func installsUnderAnotherNameForAGivenUser() throws {
+        #expect(
+            try action("--install", "Ubuntu", "--name", "Work", "-u", "ayse")
+                == .install(
+                    InstallOptions(distro: distro("Ubuntu"), name: distro("Work"), user: "ayse")))
     }
 
     // MARK: List

@@ -42,6 +42,9 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case invalidUserName(String, reason: String)
     /// The password is empty, or the two entries differ, or standard input had none.
     case invalidPassword(reason: String)
+    /// `--install` without `--user` must ask for the user, but standard input is not a
+    /// terminal.
+    case installNeedsTerminal
     /// The Mac has no network connection, or the server cannot be reached.
     case networkUnavailable(host: String, reason: String)
     /// The download failed for another reason, such as an HTTP error.
@@ -160,6 +163,9 @@ extension MawError: LocalizedError {
             "'\(name)' cannot be the user name: \(reason)."
         case .invalidPassword(let reason):
             "The password cannot be used: \(reason)."
+        case .installNeedsTerminal:
+            "maw --install asks for a user name and a password, but standard input is not a "
+                + "terminal."
         case .networkUnavailable(let host, let reason):
             "Cannot reach \(host): \(reason)."
         case .downloadFailed(let url, let reason):
@@ -269,6 +275,9 @@ extension MawError: LocalizedError {
         case .invalidPassword:
             "Type the same non-empty password twice. With --user, give it as the first line of "
                 + "standard input."
+        case .installNeedsTerminal:
+            "Run it in a terminal, or give the user with --user <name> and the password as the "
+                + "first line of standard input."
         case .networkUnavailable:
             "Check the Mac's internet connection and run maw --install again; the download "
                 + "resumes where it stopped."

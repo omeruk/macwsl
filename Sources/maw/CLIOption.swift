@@ -56,6 +56,7 @@ extension CLIOption {
     static let list = CLIOption(short: "l", long: "list", role: .action)
     static let verbose = CLIOption(short: "v", long: "verbose", role: .modifier)
     static let online = CLIOption(short: "o", long: "online", role: .modifier)
+    static let name = CLIOption(long: "name", role: .modifier, takesValue: true)
     static let setDefault = CLIOption(
         short: "s", long: "set-default", role: .action, takesValue: true)
     static let terminate = CLIOption(short: "t", long: "terminate", role: .action, takesValue: true)
@@ -76,7 +77,7 @@ extension CLIOption {
 
     static let all: [CLIOption] = [
         distribution, user, cd, exec,
-        install, list, verbose, online, setDefault, terminate, shutdown, export, `import`,
+        install, name, list, verbose, online, setDefault, terminate, shutdown, export, `import`,
         unregister,
         status, version, help, generateCompletionScript,
     ]

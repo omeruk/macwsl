@@ -4,7 +4,8 @@ import MawProtocol
 /// What a shell or command session runs, and where, derived from an `Action` before anything
 /// connects to the daemon.
 struct SessionPlan: Equatable, Sendable {
-    var machine: MachineID
+    /// The machine to run on; `nil` means the default distribution's.
+    var machine: MachineID?
     var program: ExecProgram
     /// The user to run as; `nil` means the distribution's default user.
     var user: String?
@@ -12,7 +13,7 @@ struct SessionPlan: Equatable, Sendable {
     var workingDirectory: String?
 
     init(
-        machine: MachineID, program: ExecProgram, user: String? = nil,
+        machine: MachineID?, program: ExecProgram, user: String? = nil,
         workingDirectory: String? = nil
     ) {
         self.machine = machine
@@ -39,7 +40,7 @@ struct SessionPlan: Equatable, Sendable {
         }
         user = session.user
         workingDirectory = try Self.workingDirectory(session.directory)
-        machine = try MachineResolver.machine(for: session.distro)
+        machine = MachineResolver.machine(for: session.distro)
     }
 
     /// `maw <command> [<argument>...]` passes its arguments to the user's shell as one command
@@ -71,16 +72,10 @@ struct SessionPlan: Equatable, Sendable {
 
 /// Chooses the machine for a session.
 enum MachineResolver {
-    /// The machine for `distro`, or for the default distribution when it is `nil`.
-    ///
-    /// PHASE 05: No distribution can be installed yet, so `-d` always fails and the default
-    /// falls back to the initramfs machine. Phase 05 resolves installed distributions here,
-    /// and replaces the fallback with a "no distribution installed" error.
-    static func machine(for distro: DistroName?) throws(MawError) -> MachineID {
-        if let distro {
-            throw .distributionNotInstalled(distro)
-        }
-        return .initramfs
+    /// The machine of `distro`, or `nil` for the default distribution's, which the daemon
+    /// resolves. The daemon also reports a distribution that is not installed, or that none is.
+    static func machine(for distro: DistroName?) -> MachineID? {
+        distro.map { .distribution($0) }
     }
 }
 

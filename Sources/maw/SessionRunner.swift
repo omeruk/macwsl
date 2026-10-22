@@ -52,7 +52,7 @@ struct SessionRunner {
         case .terminal:
             ending = try await runOnTerminal(request, session: session, events: events)
         }
-        return try await status(after: ending, events: events)
+        return try await status(after: ending, events: events, machine: session.info.machine)
     }
 
     // MARK: Modes
@@ -102,18 +102,20 @@ struct SessionRunner {
     // MARK: Ending
 
     /// The exit status for `ending`, or the error that explains it.
-    private func status(after ending: Ending, events: EventRelay) async throws -> Int32 {
+    private func status(after ending: Ending, events: EventRelay, machine: MachineID) async throws
+        -> Int32
+    {
         switch ending {
         case .exited(.success(let status)):
             return status.shellStatus
         case .exited(.failure(let error)):
             // The guest connection broke. The daemon usually knows why.
             if let event = await events.next(within: Self.endingReasonTimeout) {
-                throw Self.error(for: event, machine: plan.machine)
+                throw Self.error(for: event, machine: machine)
             }
             throw error
         case .daemon(let event):
-            throw Self.error(for: event, machine: plan.machine)
+            throw Self.error(for: event, machine: machine)
         case .signal(let number):
             return 128 + number
         }

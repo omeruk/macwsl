@@ -11,7 +11,7 @@ import Testing
     // MARK: Actions to sessions
 
     @Test func opensALoginShell() throws {
-        #expect(try plan() == SessionPlan(machine: .initramfs, program: .loginShell))
+        #expect(try plan() == SessionPlan(machine: nil, program: .loginShell))
     }
 
     @Test func runsACommandThroughTheUsersShell() throws {
@@ -46,14 +46,11 @@ import Testing
         #expect(try plan("-e", "id").user == nil)
     }
 
-    @Test func refusesADistributionThatIsNotInstalled() throws {
-        #expect(throws: MawError.distributionNotInstalled(try DistroName("Ubuntu"))) {
-            try plan("-d", "Ubuntu", "uname")
-        }
-    }
-
-    @Test func runsOnTheInitramfsMachineWithoutADistribution() throws {
-        #expect(try MachineResolver.machine(for: nil) == .initramfs)
+    @Test func runsOnTheNamedDistributionOrTheDefault() throws {
+        #expect(
+            try plan("-d", "Ubuntu", "uname").machine == .distribution(try DistroName("Ubuntu")))
+        // The daemon resolves the default distribution, and reports when none is installed.
+        #expect(try plan("uname").machine == nil)
     }
 
     // MARK: The shell command line
