@@ -82,8 +82,16 @@ struct DaemonIntegrationTests {
             }
         }
         let expected = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
-        let result = try await start(["-e", "sha256sum"], standardInput: bytes)
-            .waitForExit(timeout: .seconds(120))
+        // From a file, which maw reads itself: writing 256 MiB into a pipe here would block
+        // without a time limit if the stream stalled.
+        let input = FileManager.default.temporaryDirectory.appending(
+            path: "maw-stream-\(UUID().uuidString)")
+        try bytes.write(to: input)
+        defer { try? FileManager.default.removeItem(at: input) }
+        let result = try await DebugBootProcess(
+            executable: maw, arguments: ["-e", "sha256sum"], standardInputFile: input,
+            separateStandardError: true, environment: mawEnvironment
+        ).waitForExit(timeout: .seconds(120))
         #expect(result.status == 0, "\(result.standardError)")
         #expect(result.output.hasPrefix(expected), "\(result.output)")
     }

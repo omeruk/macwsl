@@ -131,7 +131,9 @@ import Testing
             var decoder = FrameDecoder()
             var buffer = [UInt8](repeating: 0, count: 1 << 20)
             var count = 0
-            reading: while true {
+            // Ends on its own if the client stalls, so that a failing run leaves no thread behind.
+            let deadline = ContinuousClock.now + .seconds(25)
+            reading: while ContinuousClock.now < deadline {
                 usleep(20_000)
                 while true {
                     let length = read(peer.rawValue, &buffer, buffer.count)
@@ -139,7 +141,10 @@ import Testing
                         break reading
                     }
                     if length < 0 {
-                        break
+                        if errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR {
+                            break
+                        }
+                        break reading
                     }
                     decoder.append(buffer[..<length])
                     while let frame = try? decoder.nextFrame() {

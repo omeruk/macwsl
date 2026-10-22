@@ -228,10 +228,12 @@ final class DebugBootProcess: @unchecked Sendable {
             separateStandardError: separateStandardError, environment: environment)
     }
 
-    /// Runs any executable, such as `maw`.
+    /// Runs any executable, such as `maw`. Its standard input is `standardInputFile`, or a
+    /// pipe that receives `standardInput` before this returns, or nothing.
     init(
         executable: URL, arguments: [String], standardInput: Data? = nil,
-        separateStandardError: Bool = false, environment: [String: String]? = nil
+        standardInputFile: URL? = nil, separateStandardError: Bool = false,
+        environment: [String: String]? = nil
     ) throws {
         let pipe = Pipe()
         process.executableURL = executable
@@ -255,7 +257,11 @@ final class DebugBootProcess: @unchecked Sendable {
             process.standardError = pipe
         }
         let inputPipe = standardInput.map { _ in Pipe() }
-        process.standardInput = inputPipe ?? FileHandle.nullDevice
+        if let standardInputFile {
+            process.standardInput = try FileHandle(forReadingFrom: standardInputFile)
+        } else {
+            process.standardInput = inputPipe ?? FileHandle.nullDevice
+        }
         try process.run()
         if let inputPipe, let standardInput {
             try inputPipe.fileHandleForWriting.write(contentsOf: standardInput)

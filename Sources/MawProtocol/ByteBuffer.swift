@@ -2,9 +2,10 @@
 /// pipe that accepts data in pieces.
 ///
 /// Consumed bytes are dropped once they are at least `compactionThreshold` bytes and at least
-/// half of the storage. The storage therefore stays proportional to the unconsumed bytes, even
+/// half of the storage. The bytes held therefore stay proportional to the unconsumed bytes, even
 /// when a slow reader keeps the queue from ever emptying, at the cost of one copy of the
-/// unconsumed bytes each time.
+/// unconsumed bytes each time. The allocated capacity keeps its largest size until the buffer
+/// empties; callers bound it by limiting how much they append before the reader catches up.
 public struct ByteBuffer: Sendable {
     public static let compactionThreshold = 64 << 10
 
