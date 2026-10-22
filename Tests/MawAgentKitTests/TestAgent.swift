@@ -16,10 +16,12 @@ final class TestAgent: Sendable {
     let server: AgentServer
     let powerOffRequests = Counter()
 
-    init(maximumConnections: Int = 64) {
+    init(maximumConnections: Int = 64, system: GuestSystem = .testing()) {
         let requests = powerOffRequests
         server = AgentServer(
-            configuration: AgentConfiguration(maximumConnections: maximumConnections) {
+            configuration: AgentConfiguration(
+                maximumConnections: maximumConnections, system: system
+            ) {
                 requests.increment()
             })
     }
@@ -85,4 +87,34 @@ final class Counter: @unchecked Sendable {
     }
 
     var value: Int { lock.withLock { count } }
+}
+
+extension GuestSystem {
+    /// A guest whose files are `files`, by path. By default its only account is root, which is
+    /// the user running the tests, so that sessions need no switch of identity; its home is
+    /// /tmp.
+    static func testing(
+        files: [String: String] = [:], directories: Set<String> = ["/tmp"],
+        executables: Set<String> = [], locales: [String] = ["C.utf8"],
+        initSystem: InitSystem = .busybox
+    ) -> GuestSystem {
+        let uid = getuid()
+        let gid = getgid()
+        var files = files
+        if files["/etc/passwd"] == nil {
+            files["/etc/passwd"] = "root:x:\(uid):\(gid):root:/tmp:/bin/sh\n"
+        }
+        if files["/etc/group"] == nil {
+            files["/etc/group"] = "root:x:\(gid):\n"
+        }
+        let fixedFiles = files
+        return GuestSystem(
+            readFile: { fixedFiles[$0] },
+            isDirectory: { directories.contains($0) },
+            isExecutable: { executables.contains($0) },
+            exists: { fixedFiles[$0] != nil || directories.contains($0) },
+            availableLocales: { locales },
+            initSystem: { initSystem },
+            currentUserID: UInt32(uid))
+    }
 }

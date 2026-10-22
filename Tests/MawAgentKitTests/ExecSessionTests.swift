@@ -52,19 +52,20 @@ import Testing
         #expect(output.standardOutput.split(separator: "\n").contains("usr"))
     }
 
-    @Test func appliesTheRequestEnvironmentOnTopOfTheDefaults() async throws {
+    @Test func startsFromALoginEnvironmentWithTheRequestsVariablesOnTop() async throws {
         let output = Output()
         let process = try await agent.client.exec(
-            ExecRequest(argv: ["env"], environment: ["HOME": "/home/test", "LANG": "C.UTF-8"]),
+            ExecRequest(argv: ["env"], environment: ["HOME": "/home/test", "TERM": "vt100"]),
             output: output.handler)
         #expect(try await process.waitForExit() == .exited(code: 0))
         let variables = Set(output.standardOutput.split(separator: "\n").map(String.init))
-        #expect(variables.contains("PATH=\(AgentEnvironment.defaults["PATH"]!)"))
-        #expect(variables.contains("SHELL=/bin/sh"))
-        #expect(variables.contains("HOME=/home/test"))
-        #expect(variables.contains("LANG=C.UTF-8"))
-        // Nothing from the agent's own environment leaks in.
-        #expect(variables.count == 4)
+        // The test guest's root is the account running the tests, not user ID 0, so it gets the
+        // PATH of other users.
+        #expect(
+            variables == [
+                "PATH=\(LoginDefinitions.defaultUserPath)", "SHELL=/bin/sh", "HOME=/home/test",
+                "USER=root", "LOGNAME=root", "LANG=C.UTF-8", "TERM=vt100",
+            ])
     }
 
     @Test func runsInTheRequestedWorkingDirectory() async throws {
@@ -100,7 +101,7 @@ import Testing
         await #expect(
             throws: MawError.guestCommandNotFound(
                 command: "no-such-command",
-                reason: "no-such-command: not found in PATH \(AgentEnvironment.defaults["PATH"]!)")
+                reason: "no-such-command: not found in PATH \(LoginDefinitions.defaultUserPath)")
         ) {
             _ = try await agent.client.exec(
                 ExecRequest(argv: ["no-such-command"]), output: Output().handler)
@@ -207,7 +208,7 @@ import Testing
     }
 
     @Test func passesTheSelfTest() async {
-        let failures = await SelfTest.run()
+        let failures = await SelfTest.run(system: .testing())
         #expect(failures.isEmpty, "\(failures)")
     }
 }
@@ -225,14 +226,6 @@ import Testing
         ) {
             try ChildProcess.resolve("nope", searchPath: "/bin")
         }
-    }
-
-    @Test func mergesTheEnvironment() {
-        let merged = AgentEnvironment.merged(["HOME": "/x", "TERM": "vt100"])
-        #expect(merged["HOME"] == "/x")
-        #expect(merged["TERM"] == "vt100")
-        #expect(merged["SHELL"] == "/bin/sh")
-        #expect(merged["PATH"] == "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
     }
 
     @Test func decodesWaitStatuses() {

@@ -1,8 +1,10 @@
 # Host and guest agent protocol
 
 The host (`mawd`, and the client library in `MawProtocol`) talks to the guest agent,
-`maw-agent`, over vsock. This document specifies protocol version **1**. The code is in
-`Sources/MawProtocol` (both sides) and `Sources/MawAgentKit` (the agent).
+`maw-agent`, over vsock. This document specifies protocol version **2**. The code is in
+`Sources/MawProtocol` (both sides) and `Sources/MawAgentKit` (the agent). Version 2 adds the
+user a session runs as, its program (a command, a shell command line, or a login shell), and
+its locale.
 
 ## Transport
 
@@ -71,7 +73,7 @@ names, missing required fields, and wrong types are protocol errors.
 
 | Message | Fields | Reply |
 |---------|--------|-------|
-| `exec` | `argv`: [string], required, not empty. `environment`: {string: string}, default `{}`. `workingDirectory`: string, default `"/"`. `terminal`: `{"rows": u16, "columns": u16}`, absent for pipe mode. | `started`, then the session; or `error` |
+| `exec` | `program`: one of `{"argv": [string]}`, `{"shellCommand": string}`, `{"loginShell": {}}`, required. `user`: string, default: the distribution's default user. `locale`: string, the host's preferred locale, optional. `environment`: {string: string}, default `{}`. `workingDirectory`: string, default: the user's home directory. `terminal`: `{"rows": u16, "columns": u16}`, absent for pipe mode. | `started`, then the session; or `error` |
 | `info` | none | `agentInfo` |
 | `shutdown` | none | `shutdownAcknowledged`, or `error` (`shutdownFailed`) |
 
@@ -95,7 +97,7 @@ TSTP TTIN TTOU URG XCPU XFSZ VTALRM PROF WINCH IO SYS`.
 | `exited` | `code`: i32 (0 to 255), or `signal`: i32 | The process ended. Exactly one field is present. `signal` is the Linux signal number. The last message of a session. |
 | `agentInfo` | `agentVersion`: string, `protocolVersion`: u32, `kernelRelease`: string, `uptimeMilliseconds`: u64 | Reply to `info`. |
 | `shutdownAcknowledged` | none | The agent has asked `init` to power off. The VM stops shortly after. |
-| `error` | `code`: string, `message`: string, optional `hostVersion`, `guestVersion`: u32 | A request failed, or the agent is closing the connection because of a protocol error. |
+| `error` | `code`: string, `message`: string, optional `hostVersion`, `guestVersion`: u32, optional `user`: string | A request failed, or the agent is closing the connection because of a protocol error. |
 
 Error codes:
 
@@ -108,6 +110,7 @@ Error codes:
 | `spawnFailed` | Another failure to start, such as a missing working directory. | `guestCommandNotStarted` (126) |
 | `shutdownFailed` | The agent could not signal `init`. | `guestAgentFailed` |
 | `busy` | The agent is serving its maximum of 64 connections. It sends its `version` frame and this error without acting on the request. | `guestAgentFailed` |
+| `userNotFound` | The requested user, or the default user that `/etc/maw.conf` names, is not in `/etc/passwd`. `user` names it. | `userNotFound` |
 
 ## Exec sessions
 
@@ -129,19 +132,35 @@ host                                   agent
   size. The process leads a new session whose controlling terminal it is (`setsid`,
   `TIOCSCTTY`). Standard input, output, and error are the terminal, so all output arrives in
   `stdout` frames.
-- **Program lookup**: an `argv[0]` without `/` is searched for in the session's PATH, in
-  order, as `execvp` does.
-- **Environment**: the process does not inherit the agent's environment. It gets these
-  defaults, with the request's `environment` applied on top:
+- **User**: the request's `user`, or `[user] default` in the guest's `/etc/maw.conf`, or root.
+  The agent reads the account from `/etc/passwd` and its supplementary groups from
+  `/etc/group`. Unless the account is the agent's own (root), the child process sets the
+  groups, the group ID, and the user ID, in that order, before it changes to the working
+  directory and executes the program.
+- **Program**:
+  - `argv`: run as given. An `argv[0]` without `/` is searched for in the session's PATH, in
+    order, as `execvp` does.
+  - `shellCommand`: run by the user's shell from `/etc/passwd` (`/bin/sh` if it names none),
+    as `<shell> -c <command>`.
+  - `loginShell`: the user's shell as a login shell. Under systemd, with no `workingDirectory`,
+    the agent starts it through `runuser -l <user>`, whose PAM stack includes `pam_systemd`, so
+    that `systemd-logind` registers the session and `XDG_RUNTIME_DIR` and `systemctl --user`
+    work. Right after boot it first waits up to 2 seconds for the system bus's socket. Otherwise
+    the agent starts the shell itself, with `-<shell name>` as `argv[0]`.
+- **Environment**: the process does not inherit the agent's environment. It gets a login
+  environment, as ssh builds one, with the request's `environment` applied on top:
 
-  ```
-  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-  HOME=/root
-  SHELL=/bin/sh
-  ```
+  | Variable | Value |
+  |----------|-------|
+  | `HOME`, `SHELL` | from `/etc/passwd` |
+  | `USER`, `LOGNAME` | the user's name |
+  | `PATH` | `ENV_SUPATH` for root and `ENV_PATH` for other users, from `/etc/login.defs`, as `su -l` and `runuser -l` use them |
+  | `LANG` | the request's `locale` if the guest has it (in `/usr/lib/locale`), and `C.UTF-8` otherwise |
+  | `XDG_RUNTIME_DIR` | `/run/user/<uid>`, if it exists |
 
-  `debug-boot` adds `LANG` from the host, and `TERM` in terminal mode. Commands run as root
-  until phase 05.
+  `maw` adds `TERM` from the host, or `xterm-256color` in terminal mode.
+- **Working directory**: the request's `workingDirectory`, or the user's home directory, or `/`
+  if the home directory does not exist.
 - **Signals**: the process starts with default dispositions and an empty signal mask, even
   though the agent ignores SIGPIPE.
 - **End of the session**: the agent sends `exited` once the process has been reaped and its

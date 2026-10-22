@@ -59,35 +59,115 @@ public enum ControlMessage: Equatable, Sendable {
     }
 }
 
+/// What an exec session runs.
+public enum ExecProgram: Equatable, Sendable {
+    /// A program and its arguments, run as they are. A program name without a slash is
+    /// searched for in the session's PATH.
+    case argv([String])
+    /// A command line, run by the user's shell from `/etc/passwd` as `<shell> -c <command>`.
+    case shellCommand(String)
+    /// The user's shell from `/etc/passwd`, as a login shell.
+    case loginShell
+}
+
+extension ExecProgram: CustomStringConvertible {
+    /// The command as a person would type it, for messages: `ls -l`, the shell's command line,
+    /// or `the login shell`.
+    public var description: String {
+        switch self {
+        case .argv(let argv): argv.joined(separator: " ")
+        case .shellCommand(let command): command
+        case .loginShell: "the login shell"
+        }
+    }
+}
+
+extension ExecProgram: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case argv, shellCommand, loginShell
+    }
+
+    private struct Empty: Codable {}
+
+    /// One key, as in control messages: `{"argv":[...]}`, `{"shellCommand":"..."}`, or
+    /// `{"loginShell":{}}`.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard container.allKeys.count == 1, let key = container.allKeys.first else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: container.codingPath,
+                    debugDescription: "a program has exactly one of argv, shellCommand, loginShell")
+            )
+        }
+        switch key {
+        case .argv:
+            self = .argv(try container.decode([String].self, forKey: .argv))
+        case .shellCommand:
+            self = .shellCommand(try container.decode(String.self, forKey: .shellCommand))
+        case .loginShell:
+            _ = try container.decode(Empty.self, forKey: .loginShell)
+            self = .loginShell
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .argv(let argv): try container.encode(argv, forKey: .argv)
+        case .shellCommand(let command): try container.encode(command, forKey: .shellCommand)
+        case .loginShell: try container.encode(Empty(), forKey: .loginShell)
+        }
+    }
+}
+
 /// A command to run in the guest.
 public struct ExecRequest: Codable, Equatable, Sendable {
-    /// The program and its arguments. A program name without a slash is searched for in the
-    /// session's PATH.
-    public var argv: [String]
-    /// Environment variables, applied on top of the agent's defaults (see docs/protocol.md).
+    public var program: ExecProgram
+    /// The user to run as. `nil` means the distribution's default user, `[user] default` in
+    /// `/etc/maw.conf`, or root if it names none.
+    public var user: String?
+    /// The locale the host prefers, such as `tr_TR.UTF-8`. The session's `LANG` is this locale
+    /// if the guest has it, and `C.UTF-8` otherwise.
+    public var locale: String?
+    /// Environment variables, applied on top of the session's login environment.
     public var environment: [String: String]
-    /// The working directory. `/` unless set.
-    public var workingDirectory: String
+    /// The working directory. `nil` means the user's home directory.
+    public var workingDirectory: String?
     /// The initial window size of a pseudo-terminal, or `nil` for separate pipes.
     public var terminal: TerminalSize?
 
     public init(
-        argv: [String], environment: [String: String] = [:], workingDirectory: String = "/",
+        program: ExecProgram, user: String? = nil, locale: String? = nil,
+        environment: [String: String] = [:], workingDirectory: String? = nil,
         terminal: TerminalSize? = nil
     ) {
-        self.argv = argv
+        self.program = program
+        self.user = user
+        self.locale = locale
         self.environment = environment
         self.workingDirectory = workingDirectory
         self.terminal = terminal
     }
 
+    /// Runs `argv` as root, as `mawd debug-boot` does on the initramfs machine.
+    public init(
+        argv: [String], environment: [String: String] = [:], workingDirectory: String? = nil,
+        terminal: TerminalSize? = nil
+    ) {
+        self.init(
+            program: .argv(argv), environment: environment, workingDirectory: workingDirectory,
+            terminal: terminal)
+    }
+
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        argv = try container.decode([String].self, forKey: .argv)
+        program = try container.decode(ExecProgram.self, forKey: .program)
+        user = try container.decodeIfPresent(String.self, forKey: .user)
+        locale = try container.decodeIfPresent(String.self, forKey: .locale)
         environment =
             try container.decodeIfPresent([String: String].self, forKey: .environment) ?? [:]
-        workingDirectory =
-            try container.decodeIfPresent(String.self, forKey: .workingDirectory) ?? "/"
+        workingDirectory = try container.decodeIfPresent(String.self, forKey: .workingDirectory)
         terminal = try container.decodeIfPresent(TerminalSize.self, forKey: .terminal)
     }
 }
@@ -171,20 +251,26 @@ public struct AgentError: Codable, Equatable, Sendable, CustomStringConvertible 
         case shutdownFailed
         /// The agent is serving as many connections as it allows.
         case busy
+        /// The requested user, or the default user that `/etc/maw.conf` names, does not exist.
+        case userNotFound
     }
 
     public var code: Code
     public var message: String
     public var hostVersion: UInt32?
     public var guestVersion: UInt32?
+    /// With `userNotFound`: the user that does not exist.
+    public var user: String?
 
     public init(
-        _ code: Code, _ message: String, hostVersion: UInt32? = nil, guestVersion: UInt32? = nil
+        _ code: Code, _ message: String, hostVersion: UInt32? = nil, guestVersion: UInt32? = nil,
+        user: String? = nil
     ) {
         self.code = code
         self.message = message
         self.hostVersion = hostVersion
         self.guestVersion = guestVersion
+        self.user = user
     }
 
     public var description: String { "\(code.rawValue): \(message)" }

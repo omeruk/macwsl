@@ -20,13 +20,19 @@ public struct GuestAgentClient: Sendable {
 
     private let connect: Connector
     private let replyTimeout: Duration
+    private let guestName: String
 
     /// - Parameters:
-    ///   - connect: Opens a new connection to the agent.
     ///   - replyTimeout: How long to wait for the handshake and for each reply to a request.
-    public init(replyTimeout: Duration = .seconds(10), connect: @escaping Connector) {
+    ///   - guestName: What errors call the guest, such as the distribution's name.
+    ///   - connect: Opens a new connection to the agent.
+    public init(
+        replyTimeout: Duration = .seconds(10), guestName: String = "the guest",
+        connect: @escaping Connector
+    ) {
         self.connect = connect
         self.replyTimeout = replyTimeout
+        self.guestName = guestName
     }
 
     /// Asks the agent for its version, the kernel release, and the uptime.
@@ -73,9 +79,16 @@ public struct GuestAgentClient: Sendable {
     ) async throws(MawError) -> GuestProcess {
         let descriptor = try await connect()
         let timeout = replyTimeout
-        let command = request.argv.first ?? ""
+        let command: String
+        switch request.program {
+        case .argv(let argv): command = argv.first ?? ""
+        case .shellCommand, .loginShell: command = request.program.description
+        }
+        let guestName = self.guestName
         return try await runOnDedicatedThread { () throws(MawError) -> GuestProcess in
-            let (connection, pid) = try Self.mapErrors(during: "exec", command: command) {
+            let (connection, pid) = try Self.mapErrors(
+                during: "exec", command: command, guestName: guestName
+            ) {
                 () throws(ConnectionError) -> (FrameConnection, Int32) in
                 let connection = try Self.open(descriptor, timeout: timeout)
                 connection.enqueue(.control(.exec(request)))
@@ -122,19 +135,20 @@ public struct GuestAgentClient: Sendable {
 
     /// Runs one conversation and turns its errors into `MawError`s.
     static func mapErrors<Result>(
-        during request: String, command: String = "",
+        during request: String, command: String = "", guestName: String = "the guest",
         _ body: () throws(ConnectionError) -> Result
     ) throws(MawError) -> Result {
         do {
             return try body()
         } catch {
-            throw map(error, during: request, command: command)
+            throw map(error, during: request, command: command, guestName: guestName)
         }
     }
 
-    static func map(_ error: ConnectionError, during request: String, command: String = "")
-        -> MawError
-    {
+    static func map(
+        _ error: ConnectionError, during request: String, command: String = "",
+        guestName: String = "the guest"
+    ) -> MawError {
         switch error {
         case .versionMismatch(let local, let remote):
             return .guestAgentVersionMismatch(host: local, guest: remote)
@@ -148,6 +162,8 @@ public struct GuestAgentClient: Sendable {
                 return .guestCommandNotFound(command: command, reason: agentError.message)
             case .permissionDenied, .spawnFailed:
                 return .guestCommandNotStarted(command: command, reason: agentError.message)
+            case .userNotFound:
+                return .userNotFound(agentError.user ?? "", distribution: guestName)
             case .protocolViolation, .shutdownFailed, .busy:
                 return .guestAgentFailed(reason: "\(request): \(agentError.message)")
             }

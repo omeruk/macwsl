@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -250,6 +251,17 @@ __attribute__((noreturn)) static void spawn_child(const maw_spawn_options *optio
         }
     }
 #endif
+
+    // Groups first, then the group, then the user: once the user ID is not root, the other
+    // two can no longer be changed. The working directory is entered as the new user, so
+    // that its permissions apply.
+    if (options->set_credentials) {
+        failure.stage = MAW_SPAWN_STAGE_CREDENTIALS;
+        if (setgroups(options->group_count, options->groups) < 0 || setgid(options->gid) < 0 ||
+            setuid(options->uid) < 0) {
+            goto fail;
+        }
+    }
 
     failure.stage = MAW_SPAWN_STAGE_WORKING_DIRECTORY;
     if (options->working_directory != NULL && chdir(options->working_directory) < 0) {

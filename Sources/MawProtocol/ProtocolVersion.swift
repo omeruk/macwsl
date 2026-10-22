@@ -4,7 +4,7 @@
 /// versions differ, so that a host and a guest agent from different builds never misread each
 /// other. Any change to the messages in `ControlMessage` increments the version.
 public enum ProtocolVersion {
-    public static let current: UInt32 = 1
+    public static let current: UInt32 = 2
 }
 
 /// Constants of the wire protocol.

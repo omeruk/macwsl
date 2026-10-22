@@ -64,7 +64,7 @@ extension DebugBoot {
             status = try await process.waitForExit()
             durations.append(ContinuousClock.now - start)
         }
-        report(Self.describeLatency(durations, command: request.argv.joined(separator: " ")))
+        report(Self.describeLatency(durations, command: request.program.description))
         return .processExited(.success(status))
     }
 

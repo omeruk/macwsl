@@ -21,22 +21,27 @@ import Testing
             return try? connection?.exchangeVersions(until: .now + .seconds(5))
         }
         let hostConnection = try FrameConnection(host)
-        #expect(try hostConnection.exchangeVersions(until: .now + .seconds(5)) == 1)
+        #expect(
+            try hostConnection.exchangeVersions(until: .now + .seconds(5))
+                == ProtocolVersion.current)
         #expect(await peerVersion == ProtocolVersion.current)
     }
 
     @Test func clientReportsAGuestWithAnotherVersion() async throws {
         let (host, peer) = try Self.socketPair()
         let client = GuestAgentClient { () throws(MawError) in host }
-        // A guest from a future build: it sends version 2 and closes after the mismatch.
+        // A guest from a future build: it sends the next version and closes after the mismatch.
+        let future = ProtocolVersion.current + 1
         startDetachedThread {
             guard let connection = try? FrameConnection(peer) else { return }
-            connection.enqueue(.version(2))
+            connection.enqueue(.version(future))
             try? connection.flush(until: .now + .seconds(5))
             _ = try? connection.receiveFrame(until: .now + .seconds(5))
             peer.close()
         }
-        await #expect(throws: MawError.guestAgentVersionMismatch(host: 1, guest: 2)) {
+        await #expect(
+            throws: MawError.guestAgentVersionMismatch(host: ProtocolVersion.current, guest: future)
+        ) {
             try await client.info()
         }
     }
@@ -56,9 +61,10 @@ import Testing
             ]
         }
         #expect(try reply[0].protocolVersion() == ProtocolVersion.current)
+        let current = ProtocolVersion.current
         let error = AgentError(
-            .versionMismatch, "the host speaks protocol version 9, the agent version 1",
-            hostVersion: 9, guestVersion: 1)
+            .versionMismatch, "the host speaks protocol version 9, the agent version \(current)",
+            hostVersion: 9, guestVersion: current)
         #expect(try reply[1].controlMessage() == .error(error))
         // Then the agent closes the connection.
         let end = await runOnDedicatedThread { () -> Bool in
@@ -72,7 +78,7 @@ import Testing
         #expect(end)
         #expect(
             GuestAgentClient.map(.remote(error), during: "info")
-                == .guestAgentVersionMismatch(host: 9, guest: 1))
+                == .guestAgentVersionMismatch(host: 9, guest: current))
     }
 
     @Test func clientTimesOutOnASilentPeer() async throws {

@@ -13,6 +13,8 @@ import MawProtocol
 struct SpawnFailure: Error, Equatable {
     var code: AgentError.Code
     var message: String
+    /// With `userNotFound`: the user that does not exist.
+    var user: String? = nil
 }
 
 /// A process started for an exec session, with the parent's ends of its standard streams.
@@ -52,30 +54,33 @@ final class ChildProcess {
 
     // MARK: Starting
 
-    static func spawn(_ request: ExecRequest, defaults: [String: String]) throws(SpawnFailure)
+    static func spawn(_ plan: SpawnPlan, terminal: TerminalSize?) throws(SpawnFailure)
         -> ChildProcess
     {
-        guard let command = request.argv.first, !command.isEmpty else {
+        guard let command = plan.argv.first, !command.isEmpty else {
             throw SpawnFailure(code: .spawnFailed, message: "argv is empty")
         }
-        let environment = AgentEnvironment.merged(request.environment, defaults: defaults)
-        let path = try resolve(command, searchPath: environment["PATH"] ?? "")
-
-        if let size = request.terminal {
-            return try spawnOnTerminal(
-                request, path: path, environment: environment, size: size)
+        let path: String
+        if let planned = plan.path {
+            path = planned
+        } else {
+            path = try resolve(command, searchPath: plan.environment["PATH"] ?? "")
         }
-        return try spawnWithPipes(request, path: path, environment: environment)
+
+        if let size = terminal {
+            return try spawnOnTerminal(plan, path: path, size: size)
+        }
+        return try spawnWithPipes(plan, path: path)
     }
 
-    private static func spawnWithPipes(
-        _ request: ExecRequest, path: String, environment: [String: String]
-    ) throws(SpawnFailure) -> ChildProcess {
+    private static func spawnWithPipes(_ plan: SpawnPlan, path: String) throws(SpawnFailure)
+        -> ChildProcess
+    {
         let stdinPipe = try makePipe()
         let stdoutPipe = try makePipe()
         let stderrPipe = try makePipe()
         let pid = try start(
-            request, path: path, environment: environment,
+            plan, path: path,
             stdin: stdinPipe.reader.rawValue, stdout: stdoutPipe.writer.rawValue,
             stderr: stderrPipe.writer.rawValue, controllingTerminal: false)
         // The child's ends stay open in the child only.
@@ -96,7 +101,7 @@ final class ChildProcess {
     }
 
     private static func spawnOnTerminal(
-        _ request: ExecRequest, path: String, environment: [String: String], size: TerminalSize
+        _ plan: SpawnPlan, path: String, size: TerminalSize
     ) throws(SpawnFailure) -> ChildProcess {
         var primaryDescriptor: Int32 = -1
         var secondaryDescriptor: Int32 = -1
@@ -110,7 +115,7 @@ final class ChildProcess {
         let primary = OwnedDescriptor(primaryDescriptor)
         let secondary = OwnedDescriptor(secondaryDescriptor)
         let pid = try start(
-            request, path: path, environment: environment,
+            plan, path: path,
             stdin: secondary.rawValue, stdout: secondary.rawValue, stderr: secondary.rawValue,
             controllingTerminal: true)
         // Once the process has exited and `releaseTerminal()` has closed this copy, reading
@@ -123,26 +128,34 @@ final class ChildProcess {
     }
 
     private static func start(
-        _ request: ExecRequest, path: String, environment: [String: String], stdin: Int32,
-        stdout: Int32, stderr: Int32, controllingTerminal: Bool
+        _ plan: SpawnPlan, path: String, stdin: Int32, stdout: Int32, stderr: Int32,
+        controllingTerminal: Bool
     ) throws(SpawnFailure) -> pid_t {
-        let arguments = CStringArray(request.argv)
-        let variables = CStringArray(environment.sorted { $0.key < $1.key }.map { "\($0)=\($1)" })
+        let arguments = CStringArray(plan.argv)
+        let variables = CStringArray(
+            plan.environment.sorted { $0.key < $1.key }.map { "\($0)=\($1)" })
+        let groups = (plan.credentials?.groups ?? []).map { gid_t($0) }
         var pid: pid_t = 0
         var stage = MAW_SPAWN_STAGE_FORK
         let error = path.withCString { pathPointer in
-            request.workingDirectory.withCString { directoryPointer in
-                var options = maw_spawn_options(
-                    path: pathPointer, argv: arguments.pointer, envp: variables.pointer,
-                    working_directory: directoryPointer, stdin_fd: stdin, stdout_fd: stdout,
-                    stderr_fd: stderr, controlling_terminal: controllingTerminal ? 1 : 0)
-                return maw_spawn(&options, &pid, &stage)
+            plan.workingDirectory.withCString { directoryPointer in
+                groups.withUnsafeBufferPointer { groupPointer in
+                    var options = maw_spawn_options(
+                        path: pathPointer, argv: arguments.pointer, envp: variables.pointer,
+                        working_directory: directoryPointer, stdin_fd: stdin, stdout_fd: stdout,
+                        stderr_fd: stderr, controlling_terminal: controllingTerminal ? 1 : 0,
+                        set_credentials: plan.credentials == nil ? 0 : 1,
+                        uid: uid_t(plan.credentials?.uid ?? 0),
+                        gid: gid_t(plan.credentials?.gid ?? 0),
+                        groups: groupPointer.baseAddress, group_count: groupPointer.count)
+                    return maw_spawn(&options, &pid, &stage)
+                }
             }
         }
         guard error != 0 else { return pid }
 
         let reason = SystemError.message(for: error)
-        let command = request.argv[0]
+        let command = plan.argv[0]
         switch stage {
         case MAW_SPAWN_STAGE_EXEC where error == ENOENT:
             throw SpawnFailure(code: .commandNotFound, message: "\(command): \(reason)")
@@ -153,8 +166,12 @@ final class ChildProcess {
         case MAW_SPAWN_STAGE_WORKING_DIRECTORY:
             throw SpawnFailure(
                 code: .spawnFailed,
-                message: "cannot change to the working directory \(request.workingDirectory): "
+                message: "cannot change to the working directory \(plan.workingDirectory): "
                     + reason)
+        case MAW_SPAWN_STAGE_CREDENTIALS:
+            throw SpawnFailure(
+                code: .spawnFailed,
+                message: "cannot switch to user ID \(plan.credentials?.uid ?? 0): \(reason)")
         case MAW_SPAWN_STAGE_SESSION:
             throw SpawnFailure(
                 code: .spawnFailed, message: "cannot set up the process's session: \(reason)")

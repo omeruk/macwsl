@@ -36,7 +36,10 @@ struct SessionRunner {
         let events = EventRelay(client.events)
         let session = try await client.openSession(on: plan.machine)
         let request = ExecRequest(
-            argv: plan.argv,
+            program: plan.program, user: plan.user,
+            locale: GuestLocale.preferred(
+                languageCode: Locale.current.language.languageCode?.identifier,
+                regionCode: Locale.current.region?.identifier),
             environment: mode.environment(host: ProcessInfo.processInfo.environment),
             workingDirectory: plan.workingDirectory,
             terminal: mode == .terminal

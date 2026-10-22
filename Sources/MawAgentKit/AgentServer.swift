@@ -20,18 +20,23 @@ public struct AgentConfiguration: Sendable {
     public var maximumConnections: Int
     /// How long a new connection may take to send its version and its request.
     public var requestTimeout: Duration
-    /// The environment every exec session starts from.
-    public var defaultEnvironment: [String: String]
+    /// The guest's files that sessions are planned from: accounts, `maw.conf`, locales.
+    public var system: GuestSystem
+    /// How long a login shell waits for the system bus, so that `systemd-logind` can register
+    /// it, when the machine has only just started.
+    public var systemBusTimeout: Duration
 
     public init(
         maximumConnections: Int = 64,
         requestTimeout: Duration = .seconds(10),
-        defaultEnvironment: [String: String] = AgentEnvironment.defaults,
+        system: GuestSystem = .live,
+        systemBusTimeout: Duration = .seconds(2),
         powerOff: @escaping @Sendable () throws(SystemError) -> Void
     ) {
         self.maximumConnections = maximumConnections
         self.requestTimeout = requestTimeout
-        self.defaultEnvironment = defaultEnvironment
+        self.system = system
+        self.systemBusTimeout = systemBusTimeout
         self.powerOff = powerOff
     }
 }
@@ -144,10 +149,14 @@ public final class AgentServer: @unchecked Sendable {
         case .exec(let execRequest):
             let child: ChildProcess
             do {
-                child = try ChildProcess.spawn(
-                    execRequest, defaults: configuration.defaultEnvironment)
+                let plan = try SessionPlanner.plan(execRequest, system: configuration.system)
+                if plan.waitsForSystemBus {
+                    waitForSystemBus()
+                }
+                child = try ChildProcess.spawn(plan, terminal: execRequest.terminal)
             } catch {
-                connection.enqueue(.control(.error(AgentError(error.code, error.message))))
+                connection.enqueue(
+                    .control(.error(AgentError(error.code, error.message, user: error.user))))
                 break
             }
             try ExecSession(connection: connection, child: child, logger: logger).run()
@@ -157,6 +166,21 @@ public final class AgentServer: @unchecked Sendable {
                 "expected a request (exec, info, or shutdown), received \(request.name)")
         }
         try connection.flush(until: .now + configuration.requestTimeout)
+    }
+
+    /// Waits until the system bus's socket exists, for at most `systemBusTimeout`. Right after
+    /// boot, a login shell can be requested before `dbus.socket` listens; `pam_systemd` would
+    /// then skip the session's registration. Once the socket exists, `pam_systemd` waits for
+    /// `systemd-logind` itself.
+    private func waitForSystemBus() {
+        let deadline = ContinuousClock.now + configuration.systemBusTimeout
+        while !configuration.system.exists(SessionPlanner.systemBusSocket) {
+            guard ContinuousClock.now < deadline else {
+                logger.notice("the system bus is not available; the session is not registered")
+                return
+            }
+            usleep(20_000)
+        }
     }
 
     /// Logs a failed conversation and tells the peer why, if it can still hear.

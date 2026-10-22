@@ -35,6 +35,13 @@ typedef struct maw_spawn_options {
     /// Nonzero: start a new session and make `stdin_fd`, a terminal, its controlling terminal.
     /// Zero: start a new process group, so that signals can be sent to the whole group.
     int controlling_terminal;
+    /// Nonzero: set the supplementary groups to `groups`, then the group ID to `gid`, then the
+    /// user ID to `uid`, before changing the working directory.
+    int set_credentials;
+    uid_t uid;
+    gid_t gid;
+    const gid_t *groups;
+    size_t group_count;
 } maw_spawn_options;
 
 /// The step at which a failed `maw_spawn` stopped.
@@ -44,6 +51,7 @@ typedef enum maw_spawn_stage {
     MAW_SPAWN_STAGE_DESCRIPTORS = 2,
     MAW_SPAWN_STAGE_WORKING_DIRECTORY = 3,
     MAW_SPAWN_STAGE_EXEC = 4,
+    MAW_SPAWN_STAGE_CREDENTIALS = 5,
 } maw_spawn_stage;
 
 /// Starts a child process. In the child, every signal disposition is reset to its default and

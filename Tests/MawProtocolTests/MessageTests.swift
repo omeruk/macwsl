@@ -7,9 +7,10 @@ import Testing
         .exec(ExecRequest(argv: ["ls", "/"])),
         .exec(
             ExecRequest(
-                argv: ["/bin/sh", "-l"],
-                environment: ["TERM": "xterm-256color", "LANG": "C.UTF-8"],
-                workingDirectory: "/tmp", terminal: TerminalSize(rows: 24, columns: 80))),
+                program: .loginShell, user: "ayse", locale: "tr_TR.UTF-8",
+                environment: ["TERM": "xterm-256color"], workingDirectory: "/tmp",
+                terminal: TerminalSize(rows: 24, columns: 80))),
+        .exec(ExecRequest(program: .shellCommand("uname -a | wc -c"), user: "root")),
         .info,
         .shutdown,
         .stdinEOF,
@@ -25,6 +26,7 @@ import Testing
         .shutdownAcknowledged,
         .error(AgentError(.versionMismatch, "mismatch", hostVersion: 1, guestVersion: 2)),
         .error(AgentError(.commandNotFound, "nope: not found")),
+        .error(AgentError(.userNotFound, "there is no user named 'bob'", user: "bob")),
     ]
 
     @Test(arguments: everyMessage)
@@ -66,12 +68,26 @@ import Testing
         #expect(json(.exited(.signaled(signal: 2))) == #"{"exited":{"signal":2}}"#)
         #expect(
             json(.exec(ExecRequest(argv: ["true"])))
-                == #"{"exec":{"argv":["true"],"environment":{},"workingDirectory":"/"}}"#)
+                == #"{"exec":{"environment":{},"program":{"argv":["true"]}}}"#)
+        #expect(
+            json(.exec(ExecRequest(program: .loginShell, user: "ayse", locale: "tr_TR.UTF-8")))
+                == #"{"exec":{"environment":{},"locale":"tr_TR.UTF-8","program":{"loginShell":{}},"user":"ayse"}}"#
+        )
+        #expect(
+            json(.exec(ExecRequest(program: .shellCommand("ls -l"))))
+                == #"{"exec":{"environment":{},"program":{"shellCommand":"ls -l"}}}"#)
     }
 
     @Test func fillsInExecDefaults() throws {
-        let message = try ControlMessage(json: Array(#"{"exec":{"argv":["true"]}}"#.utf8))
+        let message = try ControlMessage(
+            json: Array(#"{"exec":{"program":{"argv":["true"]}}}"#.utf8))
         #expect(message == .exec(ExecRequest(argv: ["true"])))
+        guard case .exec(let request) = message else { return }
+        #expect(request.user == nil && request.locale == nil && request.workingDirectory == nil)
+    }
+
+    @Test func speaksVersion2() {
+        #expect(ProtocolVersion.current == 2)
     }
 
     @Test(arguments: [
@@ -82,7 +98,11 @@ import Testing
         #"{"info":{},"shutdown":{}}"#,
         #"{"launch":{}}"#,
         #"{"exec":{}}"#,
-        #"{"exec":{"argv":"ls"}}"#,
+        #"{"exec":{"argv":["ls"]}}"#,
+        #"{"exec":{"program":{}}}"#,
+        #"{"exec":{"program":{"argv":"ls"}}}"#,
+        #"{"exec":{"program":{"argv":["ls"],"loginShell":{}}}}"#,
+        #"{"exec":{"program":{"run":["ls"]}}}"#,
         #"{"signal":{"name":"NOPE"}}"#,
         #"{"exited":{}}"#,
         #"{"exited":{"code":1,"signal":2}}"#,
