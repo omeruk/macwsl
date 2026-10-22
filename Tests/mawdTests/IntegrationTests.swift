@@ -218,13 +218,24 @@ final class DebugBootProcess: @unchecked Sendable {
     private let collected = OSAllocatedUnfairLock(initialState: Data())
     private let collectedError = OSAllocatedUnfairLock(initialState: Data())
 
-    init(
+    /// Runs `mawd debug-boot <arguments>`.
+    convenience init(
         _ mawd: URL, _ arguments: [String], standardInput: Data? = nil,
         separateStandardError: Bool = false, environment: [String: String]? = nil
     ) throws {
+        try self.init(
+            executable: mawd, arguments: ["debug-boot"] + arguments, standardInput: standardInput,
+            separateStandardError: separateStandardError, environment: environment)
+    }
+
+    /// Runs any executable, such as `maw`.
+    init(
+        executable: URL, arguments: [String], standardInput: Data? = nil,
+        separateStandardError: Bool = false, environment: [String: String]? = nil
+    ) throws {
         let pipe = Pipe()
-        process.executableURL = mawd
-        process.arguments = ["debug-boot"] + arguments
+        process.executableURL = executable
+        process.arguments = arguments
         if let environment {
             process.environment = environment
         }
@@ -263,6 +274,8 @@ final class DebugBootProcess: @unchecked Sendable {
     func signal(_ number: Int32) {
         kill(process.processIdentifier, number)
     }
+
+    var isRunning: Bool { process.isRunning }
 
     /// Waits until a line of output satisfies `predicate`. Returns whether one did.
     func waitForLine(where predicate: (String) -> Bool, timeout: Duration) async -> Bool {
@@ -323,8 +336,19 @@ final class InteractiveSession: @unchecked Sendable {
     private let collected = OSAllocatedUnfairLock(initialState: Data())
     private let initialAttributes: termios
 
-    init(
+    /// Runs `mawd debug-boot <mode> <arguments>`.
+    convenience init(
         _ mawd: URL, _ arguments: [String], mode: String = "--interactive",
+        rows: UInt16 = 0, columns: UInt16 = 0
+    ) throws {
+        try self.init(
+            executable: mawd, arguments: ["debug-boot", mode] + arguments, rows: rows,
+            columns: columns)
+    }
+
+    /// Runs any executable on the pseudo-terminal, such as `maw`.
+    init(
+        executable: URL, arguments: [String], environment: [String: String]? = nil,
         rows: UInt16 = 0, columns: UInt16 = 0
     ) throws {
         var primary: Int32 = -1
@@ -340,8 +364,11 @@ final class InteractiveSession: @unchecked Sendable {
         initialAttributes = attributes
 
         let terminal = FileHandle(fileDescriptor: secondary, closeOnDealloc: false)
-        process.executableURL = mawd
-        process.arguments = ["debug-boot", mode] + arguments
+        process.executableURL = executable
+        process.arguments = arguments
+        if let environment {
+            process.environment = environment
+        }
         process.standardInput = terminal
         process.standardOutput = terminal
         process.standardError = terminal
