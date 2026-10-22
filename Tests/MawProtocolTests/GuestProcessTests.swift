@@ -109,6 +109,88 @@ import Testing
         #expect(received.value == size)
     }
 
+    /// Over vsock, the guest grants send credit in large steps, so that one `send` can take the
+    /// whole outbox at once. The client must then move more queued input to the connection
+    /// instead of waiting for a wake-up that its blocked writer never sends.
+    @Test(.timeLimit(.minutes(1)))
+    func keepsSendingWhenOneSendEmptiesAFullOutbox() async throws {
+        let (host, peer) = try HandshakeTests.socketPair()
+        // Socket buffers far larger than the client's outbox limit, like vsock's credit window.
+        var bufferSize: Int32 = 1 << 20
+        let optionSize = socklen_t(MemoryLayout<Int32>.size)
+        try #require(setsockopt(host.rawValue, SOL_SOCKET, SO_SNDBUF, &bufferSize, optionSize) == 0)
+        try #require(setsockopt(peer.rawValue, SOL_SOCKET, SO_RCVBUF, &bufferSize, optionSize) == 0)
+        let received = ByteCounter()
+        startDetachedThread {
+            guard let connection = try? FrameConnection(peer) else { return }
+            _ = try? connection.exchangeVersions(until: .now + .seconds(5))
+            _ = try? connection.receiveControl(until: .now + .seconds(5), expecting: "exec")
+            connection.enqueue(.control(.started(pid: 7)))
+            try? connection.flush(until: .now + .seconds(5))
+            // Reads in bursts: pauses, then takes everything that has arrived in large reads.
+            var decoder = FrameDecoder()
+            var buffer = [UInt8](repeating: 0, count: 1 << 20)
+            var count = 0
+            reading: while true {
+                usleep(20_000)
+                while true {
+                    let length = read(peer.rawValue, &buffer, buffer.count)
+                    if length == 0 {
+                        break reading
+                    }
+                    if length < 0 {
+                        break
+                    }
+                    decoder.append(buffer[..<length])
+                    while let frame = try? decoder.nextFrame() {
+                        if frame.type == .stdin {
+                            count += frame.payload.count
+                        } else if case .stdinEOF = try? frame.controlMessage() {
+                            break reading
+                        }
+                    }
+                }
+            }
+            received.add(count)
+            connection.enqueue(.control(.exited(.exited(code: 0))))
+            try? connection.flush(until: .now + .seconds(5))
+            while (try? connection.receiveFrame(until: .now + .seconds(10))) != nil {}
+            peer.close()
+        }
+        let client = GuestAgentClient { () throws(MawError) in host }
+        let process = try await client.exec(ExecRequest(argv: ["cat"])) { _, _ in }
+        let size = 16 << 20
+        startDetachedThread {
+            let chunk = [UInt8](repeating: 0x5A, count: 32 << 10)
+            var written = 0
+            while written < size {
+                process.write(chunk)
+                written += chunk.count
+            }
+            process.closeInput()
+        }
+        // Without the fix, the client stops sending for good; a bounded wait reports that as a
+        // failure instead of hanging the test run.
+        let status = await Self.exitStatus(of: process, within: .seconds(20))
+        #expect(status == .exited(code: 0))
+        #expect(received.value == size)
+    }
+
+    /// The process's exit status, or `nil` if it has not ended within `timeout`.
+    static func exitStatus(of process: GuestProcess, within timeout: Duration) async
+        -> MawProtocol.ExitStatus?
+    {
+        let outcome = FirstOutcome<MawProtocol.ExitStatus?>()
+        return await withCheckedContinuation { continuation in
+            outcome.onResult { continuation.resume(returning: $0) }
+            Task.detached { outcome.settle(try? await process.waitForExit()) }
+            Task.detached {
+                try? await Task.sleep(for: timeout)
+                outcome.settle(nil)
+            }
+        }
+    }
+
     @Test func reportsAConnectionThatEndsBeforeTheExit() async throws {
         let client = try Self.scriptedAgent(sending: [.control(.started(pid: 7))], thenClose: true)
         let process = try await client.exec(ExecRequest(argv: ["true"])) { _, _ in }
@@ -131,6 +213,26 @@ final class Received: @unchecked Sendable {
 
     var text: String {
         lock.withLock { String(decoding: bytes, as: UTF8.self) }
+    }
+}
+
+/// Delivers the first of several results to one handler.
+final class FirstOutcome<Value: Sendable>: @unchecked Sendable {
+    private let lock = ConditionLock()
+    private var handler: ((Value) -> Void)?
+    private var settled = false
+
+    func onResult(_ handler: @escaping (Value) -> Void) {
+        lock.withLock { self.handler = handler }
+    }
+
+    func settle(_ value: Value) {
+        let handler = lock.withLock { () -> ((Value) -> Void)? in
+            guard !settled else { return nil }
+            settled = true
+            return self.handler
+        }
+        handler?(value)
     }
 }
 
