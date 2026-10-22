@@ -22,6 +22,37 @@ import Testing
         #expect((attributes[.size] as? UInt64) == ByteSize.gibibytes(4).bytes)
         // A 4 GiB image must occupy almost nothing until the guest writes to it.
         #expect(try allocatedBytes(image) < 1 << 20)
+        // Only its owner may read it.
+        #expect((attributes[.posixPermissions] as? Int) == 0o600)
+    }
+
+    @Test func seesALockThatAnotherProcessHolds() async throws {
+        let directory = try TemporaryDirectory()
+        let image = directory.file("disk.img")
+        try DiskImage.createSparse(at: image, size: .mebibytes(1))
+        #expect(!DiskImage.isLocked(image))
+
+        // Another process holds an exclusive lock, as Virtualization.framework's machine does.
+        let holder = Process()
+        holder.executableURL = URL(filePath: "/usr/bin/python3")
+        holder.arguments = [
+            "-I", "-c",
+            "import fcntl,sys,time; f=open(sys.argv[1]); fcntl.flock(f, fcntl.LOCK_EX); "
+                + "print('locked', flush=True); time.sleep(1.5)",
+            image.path(percentEncoded: false),
+        ]
+        let output = Pipe()
+        holder.standardOutput = output
+        try holder.run()
+        _ = try output.fileHandleForReading.read(upToCount: 7)
+        #expect(DiskImage.isLocked(image))
+        await #expect(throws: MawError.diskImageInUse(path: image.path(percentEncoded: false))) {
+            try await DiskImage.waitUntilUnlocked(image, timeout: .milliseconds(200))
+        }
+        // It waits until the holder exits.
+        try await DiskImage.waitUntilUnlocked(image, timeout: .seconds(10))
+        #expect(!DiskImage.isLocked(image))
+        holder.waitUntilExit()
     }
 
     @Test func refusesToOverwriteAnExistingFile() throws {

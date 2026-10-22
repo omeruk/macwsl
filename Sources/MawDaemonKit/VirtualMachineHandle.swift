@@ -13,6 +13,8 @@
         static let stopTimeout = Duration.seconds(5)
         /// How long a session's connection to a running agent may take.
         static let connectTimeout = Duration.seconds(5)
+        /// How long `start()` waits for another virtual machine to release the disk.
+        static let diskReleaseTimeout = Duration.seconds(10)
 
         public let machine: MachineID
         public let unexpectedStops: AsyncStream<String>
@@ -81,6 +83,15 @@
 
         public func start() async throws(MawError) {
             let started = ContinuousClock.now
+            // Two machines must never write one disk. Virtualization.framework refuses a
+            // locked disk with an unhelpful error, so wait for, or name, the other holder.
+            for disk in settings.disks where !disk.isReadOnly {
+                if DiskImage.isLocked(disk.url) {
+                    log.notice(
+                        "\(machine): waiting for another virtual machine to release its disk")
+                }
+                try await DiskImage.waitUntilUnlocked(disk.url, timeout: Self.diskReleaseTimeout)
+            }
             try await virtualMachine.start()
             watchForUnexpectedStops()
             try await waitForAgent()

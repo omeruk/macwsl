@@ -112,6 +112,8 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case sparseFilesUnsupported(path: String)
     /// Creating a disk image failed.
     case diskImageCreationFailed(path: String, reason: String)
+    /// Another virtual machine holds the disk image.
+    case diskImageInUse(path: String)
 
     // MARK: Console and terminal
 
@@ -225,6 +227,8 @@ extension MawError: LocalizedError {
             "The volume that contains \(path) does not support sparse files."
         case .diskImageCreationFailed(let path, let reason):
             "Could not create the disk image \(path): \(reason)."
+        case .diskImageInUse(let path):
+            "The disk image \(path) is in use by another virtual machine."
         case .consoleLogFailed(let path, let reason):
             "Could not write the console log \(path): \(reason)."
         case .notATerminal(let option, let stream):
@@ -327,6 +331,9 @@ extension MawError: LocalizedError {
             "Create the disk image on an APFS volume."
         case .diskImageCreationFailed:
             nil
+        case .diskImageInUse:
+            "A virtual machine of a daemon that stopped may still be exiting; run the command "
+                + "again in a moment. Otherwise another process runs it."
         case .consoleLogFailed:
             "Check that ~/Library/Logs/maw is writable."
         case .notATerminal(let option, _):
