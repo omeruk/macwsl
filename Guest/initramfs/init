@@ -86,6 +86,10 @@ DefaultDependencies=no
 
 [Service]
 ExecStart=/run/maw/maw-agent
+# On the console as well, as on the initramfs machine, so that the console log shows when the
+# agent became ready.
+StandardOutput=journal+console
+StandardError=journal+console
 Restart=always
 RestartSec=100ms
 # A restarted agent must not take its sessions with it.
@@ -94,6 +98,7 @@ OOMScoreAdjust=-900
 UNIT
     ln -s ../maw-agent.service /sysroot/run/systemd/system/sysinit.target.wants/maw-agent.service
 
+    echo "maw-initramfs: starting systemd at $(cut -d ' ' -f 1 /proc/uptime) s"
     for directory in dev proc sys; do
         mount --move "/$directory" "/sysroot/$directory" || fail_boot "cannot move /$directory"
     done
