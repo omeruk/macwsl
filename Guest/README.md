@@ -5,14 +5,23 @@ Every maw VM boots from two files built here:
 - `Image`: an uncompressed arm64 Linux kernel. `VZLinuxBootLoader` cannot boot a compressed
   kernel on Apple Silicon.
 - `initramfs.cpio.gz`: static busybox, static `mke2fs`/`mkfs.ext4`, `e2fsck`, and
-  `resize2fs`, the guest agent `/sbin/maw-agent`, and `/init`.
+  `resize2fs`, static `bsdtar` from libarchive, the guest agent `/sbin/maw-agent`, and
+  `/init`.
 
-`/init` mounts the pseudo-file systems, prints the banner, and runs the `maw.test=` hooks.
-It then executes busybox `init` as PID 1, which supervises the agent; with
-`maw.debug=shell` on the kernel command line, `init` also runs a shell on `hvc0`.
-[Decision record 0005](../docs/decisions/0005-init-supervises-the-agent.md) explains the
-arrangement, and [docs/protocol.md](../docs/protocol.md) specifies how the host talks to the
-agent.
+`/init` mounts the pseudo-file systems, sets the clock from `maw.clock=`, prints the banner,
+and runs the `maw.test=` hooks. Then:
+
+- With `maw.root=<device>`, it boots that distribution's disk: it checks and mounts it,
+  provides the agent as a runtime systemd unit, and switches to the distribution's systemd.
+  [Decision record 0013](../docs/decisions/0013-systemd-and-the-agent.md) describes this
+  path.
+- Otherwise, it executes busybox `init` as PID 1, which supervises the agent; with
+  `maw.debug=shell` on the kernel command line, `init` also runs a shell on `hvc0`. This is
+  the initramfs machine, which provisions distributions and serves `mawd debug-boot`.
+  [Decision record 0005](../docs/decisions/0005-init-supervises-the-agent.md) explains the
+  arrangement.
+
+[docs/protocol.md](../docs/protocol.md) specifies how the host talks to the agent.
 
 [Decision record 0003](../docs/decisions/0003-guest-kernel.md) explains why maw ships its
 own monolithic kernel with 4K pages, and why the initramfs provisions disks.
@@ -31,11 +40,11 @@ Guest/
     build-kernel.sh      allnoconfig, merge_config.sh, olddefconfig, verification, `make Image`
     check-config.sh      checks the final configuration against the required lists
   initramfs/
-    SOURCES              pinned busybox and e2fsprogs versions, URLs, and sha256 sums
+    SOURCES              pinned busybox, e2fsprogs, and libarchive versions, URLs, and sha256 sums
     busybox.config       busybox configuration overrides
     init                 /init
     maw-shutdown         the inittab shutdown action: stops processes, powers off
-    build.sh             builds busybox and e2fsprogs, packs the cpio archive
+    build.sh             builds busybox, e2fsprogs, and bsdtar, packs the cpio archive
   agent/
     SWIFT                pinned Swift toolchains and Static Linux SDK for the agent
   scripts/               helpers shared by the kernel and busybox configuration
@@ -182,7 +191,8 @@ maw tracks the newest longterm release listed at <https://www.kernel.org/release
 
 Other pins are bumped the same way:
 
-- **busybox and e2fsprogs:** update `initramfs/SOURCES`.
+- **busybox, e2fsprogs, and libarchive:** update `initramfs/SOURCES`. For libarchive, check
+  the tarball's `.asc` signature against the release key named there.
 - **moby's check-config.sh:** update `MOBY_COMMIT` and `MOBY_SHA256` in
   `kernel/check-config.sh`.
 - **Builder image:** update the image digest and the snapshot timestamp in `Containerfile`.
