@@ -52,6 +52,23 @@ public struct MawPaths: Sendable, Equatable {
         homeDirectory.appending(path: "Library/Logs/maw", directoryHint: .isDirectory)
     }
 
+    /// `~/Library/Logs/maw/mawd.log`, where launchd sends the daemon's output.
+    public var daemonLogFile: URL {
+        logsDirectory.appending(path: "mawd.log", directoryHint: .notDirectory)
+    }
+
+    /// `~/Library/LaunchAgents/<label>.plist`, the daemon's LaunchAgent.
+    public func launchAgentFile(label: String) -> URL {
+        homeDirectory.appending(
+            path: "Library/LaunchAgents/\(label).plist", directoryHint: .notDirectory)
+    }
+
+    /// `~/Library/Application Support/maw/<label>.lock`, which the running daemon holds locked,
+    /// so that clients can tell whether it runs without connecting (and so starting it).
+    public func daemonLockFile(label: String) -> URL {
+        applicationSupportDirectory.appending(path: "\(label).lock", directoryHint: .notDirectory)
+    }
+
     /// `~/.mawconfig`, the global settings file.
     public var globalConfigFile: URL {
         homeDirectory.appending(path: ".mawconfig", directoryHint: .notDirectory)

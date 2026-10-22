@@ -4,6 +4,7 @@ import Foundation
 import MawCommandLine
 import MawCore
 import MawProtocol
+import MawTerminalIO
 import MawVirtualization
 
 /// `mawd debug-boot`: boots the guest kernel and initramfs for development.
@@ -528,42 +529,5 @@ struct DebugBoot: AsyncParsableCommand {
 
     static func writeToStandardError(_ text: String) {
         FileHandle.standardError.write(Data(text.utf8))
-    }
-}
-
-/// The kernel, initramfs, and manifest in a kernel directory.
-struct GuestFiles {
-    struct Manifest: Decodable {
-        struct Kernel: Decodable {
-            var release: String
-        }
-        var guestVersion: String
-        var gitCommit: String
-        var kernel: Kernel
-    }
-
-    let kernelURL: URL
-    let initramfsURL: URL
-    let manifest: Manifest?
-
-    init(directory: URL) throws(MawError) {
-        for file in ["Image", "initramfs.cpio.gz", "manifest.json"] {
-            let path = directory.appending(path: file).path(percentEncoded: false)
-            guard FileManager.default.fileExists(atPath: path) else {
-                throw .kernelNotFound(path: path)
-            }
-        }
-        kernelURL = directory.appending(path: "Image")
-        initramfsURL = directory.appending(path: "initramfs.cpio.gz")
-        manifest = try? JSONDecoder().decode(
-            Manifest.self, from: Data(contentsOf: directory.appending(path: "manifest.json")))
-    }
-
-    var summary: String {
-        guard let manifest else {
-            return "kernel: manifest.json could not be read"
-        }
-        return "kernel \(manifest.kernel.release), guest \(manifest.guestVersion), "
-            + "commit \(manifest.gitCommit.prefix(12))"
     }
 }

@@ -40,6 +40,12 @@ let package = Package(
 
         // macOS only.
         .target(name: "MawVirtualization", dependencies: ["MawCore", "MawProtocol"]),
+        // The XPC interface between mawd and its clients (docs/daemon.md).
+        .target(name: "MawXPC", dependencies: ["MawCore", "MawProtocol"]),
+        // Terminal raw mode, window size, and signal routing, shared by maw and mawd.
+        .target(name: "MawTerminalIO", dependencies: ["MawCore", "MawProtocol"]),
+        // The client side of the daemon's interface, for maw and later the terminal app.
+        .target(name: "MawClient", dependencies: ["MawCore", "MawProtocol", "MawXPC"]),
         // Error reporting shared by the maw and mawd command lines.
         .target(
             name: "MawCommandLine",
@@ -47,13 +53,17 @@ let package = Package(
         ),
         .target(
             name: "MawDaemonKit",
-            dependencies: ["MawCore", "MawProtocol", "MawVirtualization"]
+            dependencies: ["MawCore", "MawProtocol", "MawVirtualization", "MawXPC"]
         ),
         .executableTarget(
             name: "maw",
             dependencies: [
+                "MawClient",
                 "MawCore",
                 "MawCommandLine",
+                "MawProtocol",
+                "MawTerminalIO",
+                "MawXPC",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
@@ -62,9 +72,12 @@ let package = Package(
             dependencies: [
                 "MawCore",
                 "MawCommandLine",
+                "MawClient",
                 "MawDaemonKit",
                 "MawProtocol",
+                "MawTerminalIO",
                 "MawVirtualization",
+                "MawXPC",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
@@ -96,10 +109,22 @@ let package = Package(
         ),
         .testTarget(name: "MawVirtualizationTests", dependencies: ["MawVirtualization"]),
         .testTarget(
+            name: "MawTerminalIOTests", dependencies: ["MawTerminalIO", "MawCore", "MawProtocol"]),
+        .testTarget(
+            name: "MawDaemonKitTests",
+            dependencies: [
+                "MawDaemonKit", "MawClient", "MawXPC", "MawCore", "MawProtocol", "CMawSystem",
+            ]
+        ),
+        .testTarget(
+            name: "MawXPCTests", dependencies: ["MawXPC", "MawCore", "MawProtocol", "CMawSystem"]),
+        .testTarget(
             name: "mawTests",
             dependencies: [
                 "maw",
                 "MawCore",
+                "MawProtocol",
+                "MawXPC",
                 "MawCommandLine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]

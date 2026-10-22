@@ -1,20 +1,21 @@
 import ArgumentParser
 import MawCommandLine
 import MawCore
-import os
 
-/// The maw daemon. It will own every virtual machine and serve the XPC interface; until
-/// then, running it without a subcommand logs a startup line and exits.
+/// The maw daemon, which owns every virtual machine and serves the XPC interface that `maw`
+/// uses (docs/daemon.md).
 @main
 struct Mawd: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "mawd",
         abstract: "The maw daemon, which owns the Linux virtual machines.",
         discussion: """
-            Without a subcommand, mawd runs as the daemon. The daemon is a placeholder until \
-            the XPC service is implemented: it logs a startup line and exits.
+            launchd runs "mawd serve" when maw needs the daemon. Register it once with \
+            "mawd install", after building and signing with scripts/sign-dev.sh, and remove it \
+            with "mawd uninstall".
             """,
-        subcommands: [DebugBoot.self]
+        version: MawVersion.current,
+        subcommands: [Install.self, Uninstall.self, Serve.self, DebugBoot.self]
     )
 
     static func main() async {
@@ -28,12 +29,5 @@ struct Mawd: AsyncParsableCommand {
         } catch {
             exit(reporting: error)
         }
-    }
-
-    func run() async throws {
-        Logger(subsystem: "dev.maw", category: "daemon")
-            .notice(
-                "mawd \(MawVersion.current, privacy: .public) starting (placeholder, exiting)"
-            )
     }
 }

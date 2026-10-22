@@ -32,12 +32,13 @@ directory, `~/Library/Logs/MacWSL`, can be deleted.
 swift build                                   # build the CLI, daemon and libraries
 swift test                                    # run the unit tests
 swift format lint --recursive Sources Tests   # lint
-./scripts/sign-dev.sh                         # build and ad-hoc sign mawd for VM access
+./scripts/sign-dev.sh                         # build and ad-hoc sign maw and mawd
 swift run maw --help                          # see the command surface
 ```
 
-Virtualization.framework refuses to create VMs from unsigned binaries, so run
-`scripts/sign-dev.sh` after any build that relinks `mawd`.
+Virtualization.framework refuses to create VMs from unsigned binaries, and the daemon accepts
+only a `maw` with the identifier that the script signs it with, so run `scripts/sign-dev.sh`
+after any build that relinks `maw` or `mawd`.
 
 The guest agent runs inside Linux and is built with the
 [Swift Static Linux SDK](https://www.swift.org/documentation/articles/static-linux-getting-started.html):
@@ -65,6 +66,63 @@ swift test -Xswiftc -F -Xswiftc $DEV/Frameworks \
     -Xlinker -rpath -Xlinker $DEV/Frameworks -Xlinker -rpath -Xlinker $DEV/usr/lib
 ```
 
+## Using maw
+
+`maw` runs commands in Linux through the maw daemon, `mawd`, which launchd starts when `maw`
+needs it. Until distributions can be installed (phase 05), commands run in the minimal guest
+that the initramfs provides, as root.
+
+1. Install the guest files and build. `scripts/sign-dev.sh` builds `maw` and `mawd` and signs
+   them: `mawd` needs the virtualization entitlement, and the daemon accepts only a `maw`
+   signed by the script.
+
+   ```sh
+   scripts/fetch-guest.sh
+   scripts/sign-dev.sh
+   ```
+
+2. Put the build directory on your `PATH`, for example in `~/.zshrc`:
+
+   ```sh
+   export PATH="$HOME/path/to/maw/.build/debug:$PATH"
+   ```
+
+3. Register the daemon with launchd, once. Run it again after rebuilding, so that a running
+   daemon restarts with the new build.
+
+   ```sh
+   mawd install
+   ```
+
+Then:
+
+```sh
+maw -- uname -a                 # run a command; maw exits with its status
+maw -e sh -c 'exit 3'; echo $?  # -e runs the command directly, without a shell: prints 3
+echo hello | maw -e cat         # standard input reaches the command: prints hello
+maw                             # an interactive shell on a terminal
+maw --status                    # the daemon, its virtual machines, and their sessions
+maw --shutdown                  # stop every virtual machine
+maw --version                   # the versions of maw, the daemon, and the guest files
+```
+
+The first command starts the daemon and boots the virtual machine, which took about 0.4
+seconds on the development Mac; later commands reuse it, and shells in several terminals share
+it. It stops a minute after the last session
+ends, and the daemon exits after five idle minutes. `maw <command>` passes the command to
+`/bin/sh -c`; the Mac's shell has already removed your quotes, so use `-e` when the arguments
+must arrive unchanged. A `maw` session ends when its command or shell exits.
+
+To remove the daemon, which stops its virtual machines first:
+
+```sh
+mawd uninstall
+```
+
+Logs are in `~/Library/Logs/maw`: `mawd.log` for the daemon, and `initramfs.log` for the
+virtual machine's console, including how each shutdown went. [`docs/daemon.md`](docs/daemon.md)
+describes the daemon in detail.
+
 ## Booting the guest on your Mac
 
 > **Build with `scripts/sign-dev.sh`, not `swift build`, before you boot.** Virtualization.framework
@@ -73,8 +131,8 @@ swift test -Xswiftc -F -Xswiftc $DEV/Frameworks \
 > `scripts/sign-dev.sh` builds and signs in one step. If you forget, `mawd` stops with a
 > message that names the script.
 
-Until the daemon and the CLI are connected, `mawd debug-boot` boots the guest kernel and
-initramfs directly, which is useful for development:
+`mawd debug-boot` boots the guest kernel and initramfs directly, without the daemon, and stops
+the virtual machine when the command ends. It is useful when developing the guest:
 
 ```sh
 scripts/fetch-guest.sh                                    # 1. install the CI-built guest files
@@ -133,4 +191,5 @@ Xcode's project: `swift test --package-path App/MawTerminalKit`.
 - [`CLAUDE.md`](CLAUDE.md): architecture, repository layout and conventions
 - [`docs/decisions/`](docs/decisions/): design decisions and their reasons
 - [`docs/protocol.md`](docs/protocol.md): the host and guest agent protocol
+- [`docs/daemon.md`](docs/daemon.md): the daemon, its machines, and its XPC interface
 - [`docs/ROADMAP.md`](docs/ROADMAP.md): phases and their status
