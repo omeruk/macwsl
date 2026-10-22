@@ -84,7 +84,7 @@ import Testing
         #expect(
             try await failure(["-l", "-v"])
                 == CommandFailure(
-                    output: "maw: --list --verbose is not implemented yet\n",
+                    output: "maw: --list --verbose is not implemented yet; phase 06 adds it.\n",
                     exitCode: .failure))
     }
 

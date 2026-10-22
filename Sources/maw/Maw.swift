@@ -76,7 +76,7 @@ struct Maw: AsyncParsableCommand {
 
     func run() async throws {
         let action = try resolveAction()
-        throw MawError.notImplemented(feature: action.displayName)
+        throw MawError.notImplemented(feature: action.displayName, phase: action.phase)
     }
 }
 

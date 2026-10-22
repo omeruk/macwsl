@@ -20,6 +20,15 @@ enum Action: Equatable, Sendable {
     case status
     case version
 
+    /// The roadmap phase that implements the action.
+    var phase: String {
+        switch self {
+        case .shell, .run, .exec, .shutdown, .status, .version: "04b"
+        case .install, .list(.online): "05"
+        case .list(.installed), .setDefault, .terminate, .export, .importDistro, .unregister: "06"
+        }
+    }
+
     /// How the action is named in user-facing messages.
     var displayName: String {
         switch self {

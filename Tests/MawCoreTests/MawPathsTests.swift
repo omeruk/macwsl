@@ -30,6 +30,18 @@ import Testing
                 == "/tmp/maw-tests/home/.mawconfig")
     }
 
+    @Test func placesTheDaemonsFiles() {
+        #expect(
+            paths.daemonLogFile.path(percentEncoded: false)
+                == "/tmp/maw-tests/home/Library/Logs/maw/mawd.log")
+        #expect(
+            paths.launchAgentFile(label: "dev.maw.mawd").path(percentEncoded: false)
+                == "/tmp/maw-tests/home/Library/LaunchAgents/dev.maw.mawd.plist")
+        #expect(
+            paths.daemonLockFile(label: "dev.maw.mawd").path(percentEncoded: false)
+                == "/tmp/maw-tests/home/Library/Application Support/maw/dev.maw.mawd.lock")
+    }
+
     @Test func keepsDistrosInSeparateDirectories() throws {
         let ubuntu = paths.distroDirectory(for: try DistroName("Ubuntu"))
         let debian = paths.distroDirectory(for: try DistroName("Debian"))

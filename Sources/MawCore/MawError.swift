@@ -8,13 +8,43 @@
 ///
 /// Each case carries a user-facing message (`errorDescription`) and, where one exists, a concrete
 /// next step (`recoverySuggestion`). Front ends print both; they never print a raw Swift error.
-public enum MawError: Error, Equatable, Sendable {
+///
+/// `Codable`, so that the daemon can return an error to its clients unchanged.
+public enum MawError: Error, Equatable, Sendable, Codable {
     /// A distribution name failed validation. `reason` explains which rule it broke.
     case invalidDistroName(String, reason: String)
     /// The requested feature exists in the command surface but has no implementation yet.
-    case notImplemented(feature: String)
+    /// `phase` names the roadmap phase that adds it, for example `"05"`.
+    case notImplemented(feature: String, phase: String)
     /// A size such as `--memory 4G` could not be parsed.
     case invalidSize(String, reason: String)
+
+    // MARK: Distributions and sessions
+
+    /// `-d` names a distribution that is not installed.
+    case distributionNotInstalled(DistroName)
+    /// `--cd` names a directory that maw cannot use yet: a relative or macOS path.
+    case unsupportedDirectory(String)
+
+    // MARK: Daemon
+
+    /// The LaunchAgent that runs `mawd` is not registered with launchd. `label` names it.
+    case daemonNotInstalled(label: String)
+    /// The daemon could not be reached, or it closed the connection.
+    case daemonUnreachable(reason: String)
+    /// The daemon exited, or the connection to it broke, while a request or session was active.
+    case daemonConnectionLost(during: String)
+    /// The client and the daemon speak different versions of the XPC interface.
+    case daemonVersionMismatch(client: UInt32, daemon: UInt32)
+    /// The daemon sent a message that the client cannot read, or the reverse.
+    case daemonProtocolError(reason: String)
+    /// This executable's code signature does not satisfy the daemon's peer requirement, so the
+    /// daemon would refuse its connection. `identifier` is the signature's identifier.
+    case clientSignatureRejected(identifier: String)
+    /// The virtual machine that ran the session stopped. `reason` says why.
+    case machineStopped(machine: String, reason: String)
+    /// The LaunchAgent could not be installed or removed.
+    case launchAgentFailed(reason: String)
 
     // MARK: Guest files
 
@@ -75,10 +105,31 @@ extension MawError: LocalizedError {
         switch self {
         case .invalidDistroName(let name, let reason):
             "'\(name)' is not a valid distribution name: \(reason)."
-        case .notImplemented(let feature):
-            "\(feature) is not implemented yet"
+        case .notImplemented(let feature, let phase):
+            "\(feature) is not implemented yet; phase \(phase) adds it."
         case .invalidSize(let text, let reason):
             "'\(text)' is not a valid size: \(reason)."
+        case .distributionNotInstalled(let name):
+            "No distribution named '\(name)' is installed."
+        case .unsupportedDirectory(let path):
+            "--cd needs an absolute Linux path, such as /root, but '\(path)' is not one."
+        case .daemonNotInstalled(let label):
+            "The maw daemon is not installed: launchd has no LaunchAgent named \(label)."
+        case .daemonUnreachable(let reason):
+            "The maw daemon cannot be reached: \(reason)."
+        case .daemonConnectionLost(let request):
+            "The maw daemon exited or closed the connection during \(request)."
+        case .daemonVersionMismatch(let client, let daemon):
+            "The maw daemon speaks interface version \(daemon), but this maw speaks version "
+                + "\(client)."
+        case .daemonProtocolError(let reason):
+            "A message between maw and its daemon could not be read: \(reason)."
+        case .clientSignatureRejected(let identifier):
+            "This executable is signed as '\(identifier)', which the maw daemon does not accept."
+        case .machineStopped(let machine, let reason):
+            "The session ended because the virtual machine \(machine) stopped: \(reason)."
+        case .launchAgentFailed(let reason):
+            "The maw LaunchAgent could not be changed: \(reason)."
         case .kernelNotFound(let path):
             "The guest kernel files are missing: \(path) does not exist."
         case .virtualizationEntitlementMissing:
@@ -131,10 +182,28 @@ extension MawError: LocalizedError {
             nil
         case .invalidSize:
             "Write a whole number followed by K, M, G, or T, for example 512M or 4G."
+        case .distributionNotInstalled(let name):
+            "Install it with maw --install \(name)."
+        case .unsupportedDirectory:
+            "Translating relative and macOS paths arrives in phase 07. Until then, give an "
+                + "absolute path inside Linux."
+        case .daemonNotInstalled:
+            "Register the daemon with mawd install."
+        case .daemonUnreachable, .daemonConnectionLost, .daemonProtocolError:
+            "The daemon's log, ~/Library/Logs/maw/mawd.log, may say why."
+        case .daemonVersionMismatch:
+            "Run mawd install again, so that launchd runs the daemon from this build."
+        case .clientSignatureRejected:
+            "Build and sign with scripts/sign-dev.sh; a plain swift build replaces the signature."
+        case .machineStopped:
+            "Run the command again to start a new virtual machine."
+        case .launchAgentFailed:
+            nil
         case .kernelNotFound:
             "Install the guest kernel and initramfs with scripts/fetch-guest.sh."
         case .virtualizationEntitlementMissing:
-            "Sign the development build with scripts/sign-dev.sh, then run it again."
+            "Build and sign with scripts/sign-dev.sh, then run it again. For the daemon, run "
+                + "mawd install after signing, so that launchd starts the signed build."
         case .virtualizationUnavailable:
             "Run maw on an Apple silicon Mac directly; nested virtualization is not supported."
         case .invalidVMConfiguration, .vmStartFailed, .vmFailed:
