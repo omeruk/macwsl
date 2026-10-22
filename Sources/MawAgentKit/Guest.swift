@@ -9,13 +9,17 @@
     #endif
 
     extension AgentConfiguration {
-        /// The configuration of the agent in the guest. Power-off goes through busybox `init`,
-        /// which is PID 1: SIGUSR2 asks it to run the inittab shutdown actions, which end in
-        /// `poweroff -f` (see docs/decisions/0005-init-supervises-the-agent.md).
+        /// The configuration of the agent in the guest. Power-off goes through PID 1, which is
+        /// busybox `init` or systemd; see `InitSystem`.
         public static func guest() -> AgentConfiguration {
             AgentConfiguration { () throws(SystemError) in
-                guard kill(1, SIGUSR2) == 0 else {
-                    throw SystemError("kill(1, SIGUSR2)")
+                let initSystem = InitSystem.detect { path in
+                    var status = stat()
+                    return stat(path, &status) == 0 && (status.st_mode & S_IFMT) == S_IFDIR
+                }
+                let signal = initSystem.powerOffSignal
+                guard kill(1, signal) == 0 else {
+                    throw SystemError("kill(1, \(signal))")
                 }
             }
         }
