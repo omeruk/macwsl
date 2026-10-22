@@ -1,7 +1,10 @@
 import ArgumentParser
+import Darwin
 import Foundation
+import MawClient
 import MawCommandLine
 import MawCore
+import MawXPC
 
 /// The `maw` command line, modeled on `wsl.exe`: one root command whose flags select a single
 /// action, rather than subcommands. `resolveAction()` turns the parsed flags into an `Action`
@@ -76,7 +79,93 @@ struct Maw: AsyncParsableCommand {
 
     func run() async throws {
         let action = try resolveAction()
-        throw MawError.notImplemented(feature: action.displayName, phase: action.phase)
+        switch action {
+        case .shell, .run, .exec:
+            let status = try await runSession(SessionPlan(action))
+            if status != 0 {
+                throw ExitCode(status)
+            }
+        case .status:
+            try await Self.showStatus()
+        case .shutdown:
+            try await Self.shutDown()
+        case .version:
+            await Self.showVersion()
+        case .install, .list, .setDefault, .terminate, .export, .importDistro, .unregister:
+            throw MawError.notImplemented(feature: action.displayName, phase: action.phase)
+        }
+    }
+
+    /// Runs the session and returns its exit status. A command that cannot be started ends
+    /// as it would in a shell: 127 if it does not exist, 126 otherwise.
+    private func runSession(_ plan: SessionPlan) async throws -> Int32 {
+        let mode = SessionMode.select(
+            inputIsTerminal: isatty(STDIN_FILENO) == 1, outputIsTerminal: isatty(STDOUT_FILENO) == 1
+        )
+        do {
+            return try await SessionRunner(plan: plan, mode: mode).run()
+        } catch let error as MawError {
+            let status: Int32
+            switch error {
+            case .guestCommandNotFound: status = 127
+            case .guestCommandNotStarted: status = 126
+            default: throw error
+            }
+            FileHandle.standardError.write(Data((Self.failure(for: error)?.output ?? "").utf8))
+            return status
+        }
+    }
+
+    // MARK: Daemon actions
+
+    /// `--status`. A daemon that does not run is a normal state, reported without starting it.
+    static func showStatus() async throws {
+        let label = DaemonInterface.label()
+        guard DaemonClient.isRunning(label: label) else {
+            guard DaemonClient.isInstalled(label: label) else {
+                throw MawError.daemonNotInstalled(label: label)
+            }
+            print(Reports.daemonNotRunning, terminator: "")
+            return
+        }
+        let client = try await DaemonClient.connect(label: label)
+        defer { client.close() }
+        print(Reports.status(try await client.status()), terminator: "")
+    }
+
+    /// `--shutdown`. Prints nothing, as `wsl.exe` does. Without a running daemon, nothing runs,
+    /// and the daemon is not started only to be told so.
+    static func shutDown() async throws {
+        let label = DaemonInterface.label()
+        guard DaemonClient.isRunning(label: label) else { return }
+        let client = try await DaemonClient.connect(label: label)
+        defer { client.close() }
+        _ = try await client.shutdown()
+    }
+
+    /// `--version`: maw, the daemon if it runs, and the installed guest files.
+    static func showVersion() async {
+        let label = DaemonInterface.label()
+        let daemon: Reports.DaemonVersion
+        if DaemonClient.isRunning(label: label) {
+            do {
+                let client = try await DaemonClient.connect(label: label)
+                daemon = .running(client.daemon)
+                client.close()
+            } catch {
+                daemon = .unreachable(error)
+            }
+        } else {
+            daemon = DaemonClient.isInstalled(label: label) ? .notRunning : .notInstalled
+        }
+        let guest: Reports.GuestVersion
+        do {
+            let files = try GuestFiles(directory: MawPaths().kernelDirectory)
+            guest = files.manifest.map { .installed($0) } ?? .unreadable
+        } catch {
+            guest = .missing
+        }
+        print(Reports.version(daemon: daemon, guest: guest), terminator: "")
     }
 }
 

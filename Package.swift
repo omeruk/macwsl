@@ -58,8 +58,12 @@ let package = Package(
         .executableTarget(
             name: "maw",
             dependencies: [
+                "MawClient",
                 "MawCore",
                 "MawCommandLine",
+                "MawProtocol",
+                "MawTerminalIO",
+                "MawXPC",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
@@ -119,6 +123,8 @@ let package = Package(
             dependencies: [
                 "maw",
                 "MawCore",
+                "MawProtocol",
+                "MawXPC",
                 "MawCommandLine",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
