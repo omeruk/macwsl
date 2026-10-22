@@ -44,6 +44,40 @@ import Testing
         #expect(output.standardOutputBytes == input)
     }
 
+    /// A reader slower than the connection, such as a decompressor, keeps the agent's input
+    /// backlog full, so that the agent must stop reading the connection and resume as the
+    /// process drains its pipe.
+    @Test(.timeLimit(.minutes(1)))
+    func relaysLargeInputToASlowReader() async throws {
+        let output = Output()
+        let script = """
+            total=0
+            while :; do
+                n=$(dd bs=65536 count=1 2>/dev/null | wc -c)
+                [ "$n" -eq 0 ] && break
+                total=$((total + n))
+                sleep 0.005
+            done
+            echo "$total"
+            """
+        let process = try await agent.client.exec(
+            ExecRequest(argv: ["/bin/sh", "-c", script]), output: output.handler)
+        // 8 MiB: 32 times the agent's input limit.
+        let size = 8 << 20
+        // A thread of its own: `write` blocks, which must not hold a cooperative thread.
+        startDetachedThread {
+            let chunk = [UInt8](repeating: 0x5A, count: 32 << 10)
+            var written = 0
+            while written < size {
+                process.write(chunk)
+                written += chunk.count
+            }
+            process.closeInput()
+        }
+        #expect(try await process.waitForExit() == .exited(code: 0))
+        #expect(output.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "\(size)")
+    }
+
     @Test func runsWithoutAnyEnvironmentFromTheHost() async throws {
         let output = Output()
         let process = try await agent.client.exec(

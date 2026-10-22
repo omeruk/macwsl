@@ -53,8 +53,7 @@ public final class FrameConnection: @unchecked Sendable {
     public private(set) var isAtEndOfInput = false
 
     private var decoder = FrameDecoder()
-    private var outbox: [UInt8] = []
-    private var outboxStart = 0
+    private var outbox = ByteBuffer()
     private var readBuffer = [UInt8](repeating: 0, count: 64 << 10)
 
     /// Takes ownership of a connected socket and makes it non-blocking.
@@ -72,7 +71,7 @@ public final class FrameConnection: @unchecked Sendable {
     public var rawDescriptor: Int32 { descriptor.rawValue }
 
     /// Bytes queued but not yet accepted by the socket.
-    public var pendingOutputCount: Int { outbox.count - outboxStart }
+    public var pendingOutputCount: Int { outbox.count }
 
     /// Whether to poll for input: false at end-of-file, and while a whole frame is buffered.
     public var canReceive: Bool { !isAtEndOfInput && decoder.canAcceptMoreInput }
@@ -80,7 +79,7 @@ public final class FrameConnection: @unchecked Sendable {
     // MARK: Output
 
     public func enqueue(_ frame: Frame) {
-        Frame.appendHeader(type: frame.type, payloadSize: frame.payload.count, to: &outbox)
+        outbox.append(contentsOf: Frame.header(type: frame.type, payloadSize: frame.payload.count))
         outbox.append(contentsOf: frame.payload)
     }
 
@@ -89,7 +88,7 @@ public final class FrameConnection: @unchecked Sendable {
         var offset = 0
         while offset < bytes.count {
             let size = min(AgentProtocol.maximumDataChunkSize, bytes.count - offset)
-            Frame.appendHeader(type: type, payloadSize: size, to: &outbox)
+            outbox.append(contentsOf: Frame.header(type: type, payloadSize: size))
             outbox.append(contentsOf: bytes[offset..<(offset + size)])
             offset += size
         }
@@ -100,9 +99,8 @@ public final class FrameConnection: @unchecked Sendable {
     @discardableResult
     public func flush() throws(ConnectionError) -> Bool {
         while pendingOutputCount > 0 {
-            let start = outboxStart
             let sent = outbox.withUnsafeBytes { buffer in
-                maw_send(rawDescriptor, buffer.baseAddress! + start, buffer.count - start)
+                maw_send(rawDescriptor, buffer.baseAddress!, buffer.count)
             }
             if sent < 0 {
                 switch errno {
@@ -112,10 +110,8 @@ public final class FrameConnection: @unchecked Sendable {
                 default: throw .system(SystemError("send"))
                 }
             }
-            outboxStart += sent
+            outbox.consume(sent)
         }
-        outbox.removeAll(keepingCapacity: outbox.capacity <= 1 << 20)
-        outboxStart = 0
         return true
     }
 
@@ -171,7 +167,6 @@ public final class FrameConnection: @unchecked Sendable {
     /// Drops queued output, for a peer that has stopped reading.
     public func discardPendingOutput() {
         outbox.removeAll()
-        outboxStart = 0
     }
 
     /// Waits for the next frame. Throws `closed` at end-of-file.

@@ -30,18 +30,19 @@ public struct Frame: Equatable, Sendable {
     public var encoded: [UInt8] {
         var bytes: [UInt8] = []
         bytes.reserveCapacity(Self.headerSize + payload.count)
-        Self.appendHeader(type: type, payloadSize: payload.count, to: &bytes)
+        bytes.append(contentsOf: Self.header(type: type, payloadSize: payload.count))
         bytes.append(contentsOf: payload)
         return bytes
     }
 
-    static func appendHeader(type: FrameType, payloadSize: Int, to bytes: inout [UInt8]) {
+    /// The five header bytes: the payload length, big-endian, then the type.
+    static func header(type: FrameType, payloadSize: Int) -> [UInt8] {
         let length = UInt32(payloadSize)
-        bytes.append(UInt8(truncatingIfNeeded: length >> 24))
-        bytes.append(UInt8(truncatingIfNeeded: length >> 16))
-        bytes.append(UInt8(truncatingIfNeeded: length >> 8))
-        bytes.append(UInt8(truncatingIfNeeded: length))
-        bytes.append(type.rawValue)
+        return [
+            UInt8(truncatingIfNeeded: length >> 24), UInt8(truncatingIfNeeded: length >> 16),
+            UInt8(truncatingIfNeeded: length >> 8), UInt8(truncatingIfNeeded: length),
+            type.rawValue,
+        ]
     }
 
     // MARK: Version frames
