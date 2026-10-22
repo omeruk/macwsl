@@ -44,6 +44,8 @@ let package = Package(
         .target(name: "MawXPC", dependencies: ["MawCore", "MawProtocol"]),
         // Terminal raw mode, window size, and signal routing, shared by maw and mawd.
         .target(name: "MawTerminalIO", dependencies: ["MawCore", "MawProtocol"]),
+        // The client side of the daemon's interface, for maw and later the terminal app.
+        .target(name: "MawClient", dependencies: ["MawCore", "MawProtocol", "MawXPC"]),
         // Error reporting shared by the maw and mawd command lines.
         .target(
             name: "MawCommandLine",
@@ -104,7 +106,9 @@ let package = Package(
             name: "MawTerminalIOTests", dependencies: ["MawTerminalIO", "MawCore", "MawProtocol"]),
         .testTarget(
             name: "MawDaemonKitTests",
-            dependencies: ["MawDaemonKit", "MawXPC", "MawCore", "MawProtocol", "CMawSystem"]
+            dependencies: [
+                "MawDaemonKit", "MawClient", "MawXPC", "MawCore", "MawProtocol", "CMawSystem",
+            ]
         ),
         .testTarget(
             name: "MawXPCTests", dependencies: ["MawXPC", "MawCore", "MawProtocol", "CMawSystem"]),

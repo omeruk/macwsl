@@ -40,12 +40,13 @@
 
         /// Encodes `body` into the reply to `request`, or `nil` if the request expects none.
         public static func encodeReply(
-            to request: XPCObject, _ body: some Encodable, descriptor: Int32? = nil
+            to request: XPCObject, _ body: some Encodable, descriptor: Int32? = nil,
+            version: UInt32 = DaemonInterface.version
         ) throws(MawError) -> XPCObject? {
             guard let reply = xpc_dictionary_create_reply(request.raw) else {
                 return nil
             }
-            try fill(reply, with: body, descriptor: descriptor, version: DaemonInterface.version)
+            try fill(reply, with: body, descriptor: descriptor, version: version)
             return XPCObject(reply)
         }
 
