@@ -76,6 +76,10 @@ import Testing
     }
 
     @Test func namesTheSigningScriptAndInstallForAMissingEntitlement() {
+        #expect(
+            MawError.virtualizationEntitlementMissing.errorDescription
+                == "mawd is not signed with the virtualization entitlement "
+                + "(com.apple.security.virtualization), so it cannot create virtual machines.")
         let suggestion = MawError.virtualizationEntitlementMissing.recoverySuggestion ?? ""
         #expect(suggestion.contains("scripts/sign-dev.sh"))
         #expect(suggestion.contains("mawd install"))

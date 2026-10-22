@@ -133,7 +133,7 @@ extension MawError: LocalizedError {
         case .kernelNotFound(let path):
             "The guest kernel files are missing: \(path) does not exist."
         case .virtualizationEntitlementMissing:
-            "This executable is not signed with the virtualization entitlement "
+            "mawd is not signed with the virtualization entitlement "
                 + "(com.apple.security.virtualization), so it cannot create virtual machines."
         case .virtualizationUnavailable(let reason):
             "Virtualization is not available on this Mac: \(reason)"
