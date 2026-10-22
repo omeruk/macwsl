@@ -32,16 +32,19 @@ import Testing
         try DiskImage.createSparse(at: image, size: .mebibytes(1))
         #expect(!DiskImage.isLocked(image))
 
-        // Another process holds an exclusive lock, as Virtualization.framework's machine does.
+        // Another process holds an exclusive lock, as Virtualization.framework's machine does,
+        // until its standard input closes.
         let holder = Process()
         holder.executableURL = URL(filePath: "/usr/bin/python3")
         holder.arguments = [
             "-I", "-c",
-            "import fcntl,sys,time; f=open(sys.argv[1]); fcntl.flock(f, fcntl.LOCK_EX); "
-                + "print('locked', flush=True); time.sleep(1.5)",
+            "import fcntl,sys; f=open(sys.argv[1]); fcntl.flock(f, fcntl.LOCK_EX); "
+                + "print('locked', flush=True); sys.stdin.read()",
             image.path(percentEncoded: false),
         ]
+        let input = Pipe()
         let output = Pipe()
+        holder.standardInput = input
         holder.standardOutput = output
         try holder.run()
         _ = try output.fileHandleForReading.read(upToCount: 7)
@@ -50,7 +53,10 @@ import Testing
             try await DiskImage.waitUntilUnlocked(image, timeout: .milliseconds(200))
         }
         // It waits until the holder exits.
-        try await DiskImage.waitUntilUnlocked(image, timeout: .seconds(10))
+        let waiting = Task { try await DiskImage.waitUntilUnlocked(image, timeout: .seconds(10)) }
+        try await Task.sleep(for: .milliseconds(300))
+        try input.fileHandleForWriting.close()
+        try await waiting.value
         #expect(!DiskImage.isLocked(image))
         holder.waitUntilExit()
     }
