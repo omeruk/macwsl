@@ -26,13 +26,17 @@
             "systemd-networkd-wait-online.service",
             // Virtual terminal setup: a maw machine has no virtual terminals or keyboard.
             "console-setup.service", "keyboard-setup.service", "setvtrgb.service",
-            // A login prompt on the console; sessions come through the guest agent.
-            "serial-getty@hvc0.service",
+            // Login prompts on the console and on a virtual terminal that nobody can see;
+            // sessions come through the guest agent.
+            "serial-getty@hvc0.service", "getty@tty1.service",
             // News for a message of the day that maw does not show.
             "motd-news.timer",
             // Crash reports and their upload, which a development machine has no use for.
             "apport.service", "apport-autoreport.path", "apport-autoreport.timer",
             "apport-forward.socket",
+            // The Landscape management client (in the WSL image): it is never registered, and
+            // its registration check, a Python program, took 456 ms of every boot.
+            "landscape-client.service",
             // Scrubbing of LVM snapshots; the disk has no LVM.
             "e2scrub_all.timer", "e2scrub_reap.service",
         ]
@@ -107,6 +111,12 @@
             NETPLAN
             chmod 600 "$root/etc/netplan/50-maw.yaml"
             ln -sfn ../run/systemd/resolve/stub-resolv.conf "$root/etc/resolv.conf"
+
+            # The journal: at most 256 MB, instead of journald's default of 10% of the 256 GiB
+            # disk (at most 4 GB), which would stay allocated on the Mac.
+            mkdir -p "$root/etc/systemd/journald.conf.d"
+            printf '# Written by maw. docs/distributions.md\n[Journal]\nSystemMaxUse=256M\n' \
+                > "$root/etc/systemd/journald.conf.d/50-maw.conf"
 
             # Services that serve no purpose in maw.
             for unit in \(maskedUnits.joined(separator: " ")); do
