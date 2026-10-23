@@ -66,11 +66,19 @@ struct InstallCommand {
                 regionCode: Locale.current.region?.identifier))
 
         let signals = SignalMonitor([SIGINT, SIGTERM, SIGHUP])
+        // A resized window gets the download's line redrawn at once, not at the next update.
+        let resizeMonitor = SignalMonitor([SIGWINCH])
+        let resizes = Task {
+            for await _ in resizeMonitor.signals {
+                view.resized()
+            }
+        }
         let outcome = await Self.firstOutcome(
             install: { () async throws(MawError) -> InstallSummary in
                 try await client.install(request)
             },
             events: client.events, view: view, signals: signals.signals)
+        resizes.cancel()
 
         switch outcome {
         case .installed(let summary):
@@ -257,19 +265,36 @@ struct InstallCommand {
 }
 
 /// Writes the progress of an installation to standard output: each step's label when it
-/// starts and its duration when it ends, on the same line. On a terminal, the download's line
-/// is updated in place.
+/// starts and its duration when it ends, on the same line.
+///
+/// On a terminal, the download's line is redrawn in place. It is fitted to the terminal's
+/// width at every update, and erased to the end of the screen before it is drawn again. A
+/// terminal that is made narrower wraps the line already drawn onto more rows, as Terminal.app
+/// and iTerm2 do; the redraw first moves up over those rows. Elsewhere, only each step's final
+/// line is written.
 final class InstallProgressView: @unchecked Sendable {
     private let text: InstallProgressText
     private let isTerminal: Bool
+    private let columns: @Sendable () -> Int?
+    private let output: @Sendable (String) -> Void
     private let lock = NSLock()
     private var current: InstallStep?
     private var lastDownload: DownloadProgress?
+    /// The length of the download's line on the screen, while it is drawn.
+    private var drawnLength = 0
     private var stopped = false
 
-    init(text: InstallProgressText, isTerminal: Bool) {
+    init(
+        text: InstallProgressText, isTerminal: Bool,
+        columns: @escaping @Sendable () -> Int? = {
+            Terminal.windowSize().map { Int($0.columns) }
+        },
+        output: @escaping @Sendable (String) -> Void = InstallProgressView.writeToStandardOutput
+    ) {
         self.text = text
         self.isTerminal = isTerminal
+        self.columns = columns
+        self.output = output
     }
 
     func show(_ progress: InstallProgress) {
@@ -278,24 +303,43 @@ final class InstallProgressView: @unchecked Sendable {
             switch progress {
             case .started(let step):
                 current = step
-                write(text.padded(step))
+                if step == .download, isTerminal {
+                    drawDownload(columns: columns())
+                } else {
+                    output(text.padded(step))
+                }
             case .download(let download):
                 lastDownload = download
                 if isTerminal {
-                    write(
-                        "\r\u{1B}[K" + text.padded(.download)
-                            + InstallProgressText.downloading(download))
+                    drawDownload(columns: columns())
                 }
             case .finished(let step, let milliseconds):
-                if step == .download {
-                    let result = InstallProgressText.downloaded(
-                        lastDownload, milliseconds: milliseconds)
-                    write((isTerminal ? "\r\u{1B}[K" + text.padded(.download) : "") + result + "\n")
+                if step == .download, isTerminal {
+                    let width = columns()
+                    redraw(
+                        text.downloadedLine(
+                            lastDownload, milliseconds: milliseconds,
+                            columns: width.map(Self.usable)),
+                        columns: width)
+                    output("\n")
+                    drawnLength = 0
+                } else if step == .download {
+                    output(
+                        InstallProgressText.downloaded(lastDownload, milliseconds: milliseconds)
+                            + "\n")
                 } else {
-                    write(InstallProgressText.duration(milliseconds: milliseconds) + "\n")
+                    output(InstallProgressText.duration(milliseconds: milliseconds) + "\n")
                 }
                 current = nil
             }
+        }
+    }
+
+    /// Draws the download's line again for the terminal's new width.
+    func resized() {
+        lock.withLock {
+            guard !stopped, isTerminal, current == .download else { return }
+            drawDownload(columns: columns())
         }
     }
 
@@ -317,8 +361,9 @@ final class InstallProgressView: @unchecked Sendable {
     func interrupt() {
         lock.withLock {
             if current != nil {
-                write("\n")
+                output("\n")
                 current = nil
+                drawnLength = 0
             }
         }
     }
@@ -327,8 +372,35 @@ final class InstallProgressView: @unchecked Sendable {
         interrupt()
     }
 
+    /// The columns a line may use: all but the last, so that the cursor never waits at the
+    /// right margin, where terminals differ in what a carriage return does.
+    static func usable(_ columns: Int) -> Int {
+        max(1, columns - 1)
+    }
+
+    private func drawDownload(columns width: Int?) {
+        redraw(
+            text.downloadingLine(lastDownload, columns: width.map(Self.usable)), columns: width)
+    }
+
+    /// Replaces the download's line on the screen with `line`: back to the start of the line,
+    /// up over the rows that a narrower window wrapped it onto, and erased to the end of the
+    /// screen.
+    private func redraw(_ line: String, columns width: Int?) {
+        var sequence = "\r"
+        if let width, drawnLength > 0 {
+            let rowsAbove = (drawnLength - 1) / width
+            if rowsAbove > 0 {
+                sequence += "\u{1B}[\(rowsAbove)A"
+            }
+        }
+        sequence += "\u{1B}[J" + line
+        drawnLength = line.count
+        output(sequence)
+    }
+
     /// Through `stdout`, as `print` writes, so that the two never interleave out of order.
-    private func write(_ string: String) {
+    @Sendable static func writeToStandardOutput(_ string: String) {
         print(string, terminator: "")
         fflush(stdout)
     }
