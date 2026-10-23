@@ -13,6 +13,11 @@ import MawCore
 ///
 /// A dedicated thread runs the connection: it hands output to the `OutputHandler` and sends
 /// what the methods below queue. Every method is safe to call from any thread or task.
+///
+/// Standard input and its end travel in order. `signal` and `resize` overtake the input that
+/// has not been sent yet, and the input window (`AgentProtocol.inputWindow`) keeps the input
+/// already sent small enough for the agent to read the connection at all times, so that both
+/// reach the agent at once however much input the process leaves unread.
 public final class GuestProcess: @unchecked Sendable {
     /// The process ID in the guest.
     public let pid: Int32
@@ -23,8 +28,15 @@ public final class GuestProcess: @unchecked Sendable {
     static let connectionOutputLimit = 64 << 10
 
     private let lock = ConditionLock()
+    /// Standard input and its end, in order.
     private var queue: [Frame] = []
+    /// `signal` and `resize`, sent before `queue`. Each signal is queued once, as a process's
+    /// pending signals are, and only the latest size, so that this stays small.
+    private var controlQueue: [ControlMessage] = []
     private var queuedInputBytes = 0
+    /// Standard input sent and not yet reported consumed by the agent. Used by the I/O thread
+    /// only.
+    private var unconsumedInput = 0
     private var result: Result<ExitStatus, MawError>?
     private var waiters: [CheckedContinuation<Result<ExitStatus, MawError>, Never>] = []
     private let wakeReader: OwnedDescriptor
@@ -79,26 +91,37 @@ public final class GuestProcess: @unchecked Sendable {
         return accepted
     }
 
-    /// Ends standard input. In terminal mode, sends the terminal's end-of-file character.
+    /// Ends standard input, after the input queued before. In terminal mode, sends the
+    /// terminal's end-of-file character.
     public func closeInput() {
-        enqueue(.stdinEOF)
+        enqueue { queue.append(.control(.stdinEOF)) }
     }
 
     /// Sends a signal: to the process group in pipe mode, to the terminal's foreground process
-    /// group in terminal mode.
+    /// group in terminal mode. It overtakes standard input that has not been sent yet.
     public func send(_ signal: Signal) {
-        enqueue(.signal(signal))
+        enqueue {
+            if !controlQueue.contains(.signal(signal)) {
+                controlQueue.append(.signal(signal))
+            }
+        }
     }
 
-    /// Changes the terminal's window size. Has no effect in pipe mode.
+    /// Changes the terminal's window size. Has no effect in pipe mode. It overtakes standard
+    /// input that has not been sent yet.
     public func resize(_ size: TerminalSize) {
-        enqueue(.resize(size))
+        enqueue {
+            controlQueue.removeAll {
+                if case .resize = $0 { true } else { false }
+            }
+            controlQueue.append(.resize(size))
+        }
     }
 
-    private func enqueue(_ message: ControlMessage) {
+    private func enqueue(_ add: () -> Void) {
         let accepted = lock.withLock {
             guard result == nil else { return false }
-            queue.append(.control(message))
+            add()
             return true
         }
         if accepted {
@@ -185,6 +208,19 @@ public final class GuestProcess: @unchecked Sendable {
                         throw .unexpectedMessage(
                             "unexpected \(message.name) message during an exec session")
                     }
+                case .stdinConsumed:
+                    let bytes: UInt32
+                    do throws(FrameError) {
+                        bytes = try frame.consumedByteCount()
+                    } catch {
+                        throw .frame(error)
+                    }
+                    guard Int(bytes) <= unconsumedInput else {
+                        throw .unexpectedMessage(
+                            "the agent reported \(bytes) bytes of input consumed, but only "
+                                + "\(unconsumedInput) were outstanding")
+                    }
+                    unconsumedInput -= Int(bytes)
                 case .version, .stdin:
                     throw .frame(.unexpectedType(frame.type.rawValue, expected: "output"))
                 }
@@ -209,9 +245,10 @@ public final class GuestProcess: @unchecked Sendable {
             if connection.canReceive {
                 events |= POLLIN
             }
-            // Frames still queued need the next iteration as well: moving stops at the
-            // connection's output limit, and when one flush then sends everything, as vsock's
-            // large credit grants allow, a writer blocked on the full queue sends no wake-up.
+            // Frames that only the connection's output limit holds back need the next
+            // iteration as well: when one flush then sends everything, as vsock's large credit
+            // grants allow, a writer blocked on the full queue sends no wake-up. Frames held
+            // back by the input window wait for `stdinConsumed` instead.
             if connection.pendingOutputCount > 0 || (framesRemain && !agentStoppedReading) {
                 events |= POLLOUT
             }
@@ -235,26 +272,40 @@ public final class GuestProcess: @unchecked Sendable {
         }
     }
 
-    /// Moves queued frames to the connection, up to its output limit, and wakes writers
-    /// waiting for room. Returns whether frames remain queued.
+    /// Moves queued frames to the connection, and wakes writers waiting for room: `signal`
+    /// and `resize` first, then standard input and its end, in order, while the connection
+    /// holds less than its output limit and the input window has room. Returns whether frames
+    /// remain that only the output limit holds back.
     private func moveQueuedFrames(to connection: FrameConnection) -> Bool {
         lock.withLock {
+            for message in controlQueue {
+                connection.enqueue(.control(message))
+            }
+            controlQueue.removeAll()
+
             var moved = 0
+            var heldByWindow = false
             while moved < queue.count
                 && connection.pendingOutputCount < Self.connectionOutputLimit
             {
                 let frame = queue[moved]
-                connection.enqueue(frame)
                 if frame.type == .stdin {
+                    guard unconsumedInput + frame.payload.count <= AgentProtocol.inputWindow
+                    else {
+                        heldByWindow = true
+                        break
+                    }
+                    unconsumedInput += frame.payload.count
                     queuedInputBytes -= frame.payload.count
                 }
+                connection.enqueue(frame)
                 moved += 1
             }
             if moved > 0 {
                 queue.removeFirst(moved)
                 lock.broadcast()
             }
-            return !queue.isEmpty
+            return !queue.isEmpty && !heldByWindow
         }
     }
 }

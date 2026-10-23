@@ -16,4 +16,8 @@ public enum AgentProtocol {
     public static let maximumPayloadSize = 1 << 20
     /// The largest payload either side puts in one stdin, stdout, or stderr frame.
     public static let maximumDataChunkSize = 32 << 10
+    /// The standard input, in bytes of `stdin` payload, that the host may have sent and the
+    /// agent not yet reported with `stdinConsumed`. It bounds the agent's backlog, so that the
+    /// agent can always read the connection and act on `signal` and `resize` at once.
+    public static let inputWindow = 1 << 20
 }

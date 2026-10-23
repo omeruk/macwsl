@@ -107,6 +107,17 @@ import Testing
         }
     }
 
+    @Test func readsStdinConsumedFrames() throws {
+        #expect(Frame.stdinConsumed(65_536).encoded == [0, 0, 0, 4, 0x03, 0, 1, 0, 0])
+        #expect(try Frame.stdinConsumed(0xFFFF_FFFF).consumedByteCount() == 0xFFFF_FFFF)
+        #expect(throws: FrameError.malformedStdinConsumed(size: 5)) {
+            try Frame(type: .stdinConsumed, payload: [0, 0, 0, 1, 0]).consumedByteCount()
+        }
+        #expect(throws: FrameError.unexpectedType(0x01, expected: "stdinConsumed")) {
+            try Frame.version().consumedByteCount()
+        }
+    }
+
     @Test func compactsItsBufferOverManyFrames() throws {
         var decoder = FrameDecoder()
         let frame = Frame(type: .stdout, payload: [UInt8](repeating: 1, count: 1_000))

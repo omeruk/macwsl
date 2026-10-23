@@ -78,6 +78,68 @@ final class Output: @unchecked Sendable {
     }
 }
 
+/// Writes lines of `y` to a process's standard input on a thread of its own, as `yes` does,
+/// until the process ends.
+final class InputFlood: @unchecked Sendable {
+    private let lock = ConditionLock()
+    private var written = 0
+
+    init(_ process: GuestProcess) {
+        startDetachedThread { [self] in
+            let chunk = [UInt8](repeating: 0, count: 32 << 10).enumerated().map {
+                $0.offset % 2 == 0 ? UInt8(ascii: "y") : UInt8(ascii: "\n")
+            }
+            while process.write(chunk) {
+                lock.withLock { written += chunk.count }
+            }
+        }
+    }
+
+    /// Waits until the writer has been blocked for 300 ms, and returns the bytes it queued.
+    func waitUntilBlocked() async -> Int {
+        var last = -1
+        while true {
+            let current = lock.withLock { written }
+            if current == last {
+                return current
+            }
+            last = current
+            try? await Task.sleep(for: .milliseconds(300))
+        }
+    }
+}
+
+/// The process's exit status, or `nil` if it has not ended within `timeout`. A task group
+/// would wait for `waitForExit`, which does not end on cancellation.
+func exitStatus(of process: GuestProcess, within timeout: Duration) async
+    -> MawProtocol.ExitStatus?
+{
+    let settled = OnceFlag()
+    return await withCheckedContinuation { continuation in
+        Task.detached {
+            let status = try? await process.waitForExit()
+            if settled.set() { continuation.resume(returning: status) }
+        }
+        Task.detached {
+            try? await Task.sleep(for: timeout)
+            if settled.set() { continuation.resume(returning: nil) }
+        }
+    }
+}
+
+/// True for the first caller of `set` only.
+final class OnceFlag: @unchecked Sendable {
+    private let lock = ConditionLock()
+    private var isSet = false
+
+    func set() -> Bool {
+        lock.withLock {
+            defer { isSet = true }
+            return !isSet
+        }
+    }
+}
+
 final class Counter: @unchecked Sendable {
     private let lock = ConditionLock()
     private var count = 0

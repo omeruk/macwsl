@@ -3,8 +3,9 @@
 The host (`mawd`, and the client library in `MawProtocol`) talks to the guest agent,
 `maw-agent`, over vsock. This document specifies protocol version **2**. The code is in
 `Sources/MawProtocol` (both sides) and `Sources/MawAgentKit` (the agent). Version 2 adds the
-user a session runs as, its program (a command, a shell command line, or a login shell), and
-its locale.
+user a session runs as, its program (a command, a shell command line, or a login shell), its
+locale, and the input window, with which `signal` and `resize` overtake queued standard input
+([0016](decisions/0016-input-window.md)).
 
 ## Transport
 
@@ -37,6 +38,7 @@ as soon as the five header bytes have arrived, before reading the payload.
 |------|------|-----------|---------|
 | `0x01` | `version` | both | the sender's protocol version, 4 bytes, big-endian |
 | `0x02` | `control` | both | a control message, JSON, UTF-8 |
+| `0x03` | `stdinConsumed` | guest to host | standard input the agent has written to the process, or discarded, since its last `stdinConsumed` frame: a byte count, 4 bytes, big-endian |
 | `0x10` | `stdin` | host to guest | raw bytes for the process's standard input |
 | `0x11` | `stdout` | guest to host | raw bytes from standard output, or from the terminal |
 | `0x12` | `stderr` | guest to host | raw bytes from standard error (pipe mode only) |
@@ -82,9 +84,9 @@ names, missing required fields, and wrong types are protocol errors.
 
 | Message | Fields | Effect |
 |---------|--------|--------|
-| `stdinEOF` | none | Pipe mode: closes the process's standard input once the queued input is written. Terminal mode: writes the terminal's end-of-file character (VEOF, normally Ctrl-D), as ssh does. |
-| `signal` | `name`: signal name without `SIG`, such as `"INT"` | Sends the signal. Pipe mode: to the process group. Terminal mode: to the terminal's foreground process group. |
-| `resize` | `rows`, `columns`: u16 | Terminal mode: sets the window size, and the kernel sends SIGWINCH. Pipe mode: ignored. |
+| `stdinEOF` | none | Pipe mode: closes the process's standard input once the queued input is written. Terminal mode: writes the terminal's end-of-file character (VEOF, normally Ctrl-D), as ssh does. `stdin` frames after it are discarded, and a second `stdinEOF` has no effect. |
+| `signal` | `name`: signal name without `SIG`, such as `"INT"` | Sends the signal at once. Pipe mode: to the process group. Terminal mode: to the terminal's foreground process group. |
+| `resize` | `rows`, `columns`: u16 | Terminal mode: sets the window size at once, and the kernel sends SIGWINCH. Pipe mode: ignored. |
 
 Signals travel by name because macOS and Linux number several of them differently. The names
 are `HUP INT QUIT ILL TRAP ABRT BUS FPE KILL USR1 SEGV USR2 PIPE ALRM TERM CHLD CONT STOP
@@ -123,7 +125,7 @@ host                                   agent
  | stdin, control stdinEOF/signal/      |
  |   resize  ------------------------> |
  |  <---------------------- stdout,     |
- |                          stderr     |
+ |                stderr, stdinConsumed |
  |  <------------------ control exited |  then closes
 ```
 
@@ -174,21 +176,34 @@ host                                   agent
   SIGHUP to the process (the foreground process group in terminal mode), as sshd does, and
   SIGKILL two seconds later if it is still running.
 
-## Back-pressure and limits
+## Flow control and ordering
 
-Neither side buffers without bound:
+Neither side buffers without bound, and a control message never waits behind input that the
+process does not read. [Decision record 0016](decisions/0016-input-window.md) explains the
+design and the alternatives.
 
-- The agent reads frames from the connection only while less than 256 KiB of input waits to
-  be written to the process. When the process stops reading, the agent stops reading the
-  socket, and the host's writes block.
-- The agent reads the process's output only while less than 64 KiB waits to be sent. When
-  the host stops reading, the process's writes block.
-- The host client blocks callers of `GuestProcess.write` while 256 KiB of input is queued,
-  and reads from the connection only as fast as its output handler accepts data.
+- **The input window.** The host never has more than **1 MiB** (`AgentProtocol.inputWindow`)
+  of `stdin` payload outstanding: sent, and not yet returned by a `stdinConsumed` frame. The
+  agent sends one once it has written to the process, or discarded, at least 256 KiB since the
+  last (input that arrives after `stdinEOF`, or after the process has closed its standard
+  input, is discarded). The input waiting in the agent is therefore never more than the
+  window, plus the terminal's end-of-file character, and the agent reads the connection at all
+  times. Input beyond the window is a protocol violation, and so is a `stdinConsumed` frame
+  that returns more than is outstanding.
+- **Order.** `stdin` frames and `stdinEOF` arrive in the order the host queued them. `signal`
+  and `resize` overtake the input that the host has not sent yet, and the agent acts on them as
+  they arrive. A signal therefore reaches the process however much input waits for it, for
+  example Ctrl-C in `yes | maw -e sleep 1000`. The host queues each signal once, as a process's
+  pending signals are, and only the latest window size.
+- **Input on the host.** `GuestProcess.write` blocks its caller while 256 KiB of input is
+  queued and not yet sent.
+- **Output.** The agent reads the process's output only while less than 64 KiB waits to be
+  sent. When the host stops reading, the process's writes block. The host reads from the
+  connection only as fast as its output handler accepts data.
 - A receiver holds at most one maximal frame plus one read in its buffer.
 
-A consequence: a control message queued behind a large amount of unwritten input is delayed
-with it. In terminal mode this does not arise in practice, because typed input is small.
+In terminal mode, Ctrl-C typed on the Mac is a byte of input, as in ssh: the guest's terminal
+turns it into SIGINT when it reads it, after the input queued before it.
 
 ## Robustness
 

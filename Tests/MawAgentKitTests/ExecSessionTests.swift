@@ -45,7 +45,7 @@ import Testing
     }
 
     /// A reader slower than the connection, such as a decompressor, keeps the agent's input
-    /// backlog full, so that the agent must stop reading the connection and resume as the
+    /// backlog full, so that the client must wait for the input window and resume as the
     /// process drains its pipe.
     @Test(.timeLimit(.minutes(1)))
     func relaysLargeInputToASlowReader() async throws {
@@ -127,6 +127,81 @@ import Testing
             ExecRequest(argv: ["/bin/sh", "-c", "sleep 30 & exit 4"]), output: Output().handler)
         #expect(try await process.waitForExit() == .exited(code: 4))
         #expect(ContinuousClock.now - started < .seconds(10))
+    }
+
+    // MARK: Control messages ahead of unread input
+
+    /// Ctrl-C reaches a process that never reads its standard input, however much input waits
+    /// for it. Before the input window, the agent stopped reading the connection once 256 KiB
+    /// waited, and the signal stayed behind the rest for good.
+    @Test(.timeLimit(.minutes(1)), arguments: [nil, TerminalSize(rows: 24, columns: 80)])
+    func deliversASignalAheadOfUnreadInput(terminal: TerminalSize?) async throws {
+        let process = try await agent.client.exec(
+            ExecRequest(argv: ["sleep", "1000"], terminal: terminal), output: Output().handler)
+        let flood = InputFlood(process)
+        let queued = await flood.waitUntilBlocked()
+        #expect(queued >= AgentProtocol.inputWindow)
+
+        let sent = ContinuousClock.now
+        process.send(.int)
+        let status = await exitStatus(of: process, within: .seconds(5))
+        let delay = ContinuousClock.now - sent
+        #expect(status == .signaled(signal: Signal.int.linuxNumber))
+        #expect(delay < .seconds(1), "the signal took \(delay)")
+    }
+
+    /// A resize reaches a terminal whose process reads none of a large paste.
+    @Test(.timeLimit(.minutes(1)))
+    func resizesATerminalAheadOfUnreadInput() async throws {
+        let output = Output()
+        let process = try await agent.client.exec(
+            ExecRequest(
+                argv: [
+                    "/bin/sh", "-c",
+                    "trap 'stty size' WINCH; echo ready; while :; do sleep 0.02; done",
+                ],
+                terminal: TerminalSize(rows: 24, columns: 80)),
+            output: output.handler)
+        #expect(await output.waitForOutput(containing: "ready"))
+        let flood = InputFlood(process)
+        #expect(await flood.waitUntilBlocked() >= AgentProtocol.inputWindow)
+
+        process.resize(TerminalSize(rows: 30, columns: 100))
+        #expect(await output.waitForOutput(containing: "30 100", timeout: .seconds(1)))
+        process.send(.kill)
+        _ = await exitStatus(of: process, within: .seconds(5))
+    }
+
+    /// A host that sends more input than the window allows is closed with a protocol error.
+    @Test func closesAConnectionThatExceedsTheInputWindow() throws {
+        let connection = try FrameConnection(try agent.connect())
+        let deadline = ContinuousClock.now + .seconds(10)
+        #expect(try connection.exchangeVersions(until: deadline) == ProtocolVersion.current)
+        connection.enqueue(.control(.exec(ExecRequest(argv: ["sleep", "1000"]))))
+        try connection.flush(until: deadline)
+        guard case .started = try connection.receiveControl(until: deadline, expecting: "started")
+        else {
+            Issue.record("the process did not start")
+            return
+        }
+        // Twice the window, without waiting for `stdinConsumed`: the process's pipe takes at
+        // most 64 KiB of it.
+        let chunk = [UInt8](repeating: 0x79, count: AgentProtocol.maximumDataChunkSize)
+        for _ in 0..<(2 * AgentProtocol.inputWindow / chunk.count) {
+            connection.enqueue(Frame(type: .stdin, payload: chunk))
+        }
+        try connection.flush(until: deadline)
+        var frame = try connection.receiveFrame(until: deadline, expecting: "an error")
+        while frame.type == .stdinConsumed {
+            frame = try connection.receiveFrame(until: deadline, expecting: "an error")
+        }
+        let reply = try frame.controlMessage()
+        guard case .error(let error) = reply else {
+            Issue.record("expected an error, received \(reply.name)")
+            return
+        }
+        #expect(error.code == .protocolViolation)
+        #expect(error.message.contains("window"))
     }
 
     // MARK: Failures to start

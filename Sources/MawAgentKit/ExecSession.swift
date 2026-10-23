@@ -15,14 +15,19 @@ import MawProtocol
 ///
 /// The session runs one `poll(2)` loop on its own thread. Every buffer is bounded:
 ///
-/// - Input from the host: frames are taken from the connection only while less than
-///   `inputLimit` bytes wait to be written to the process. Beyond that the session stops
-///   reading the socket, and the host's writes block.
+/// - Input from the host: the host sends at most `AgentProtocol.inputWindow` bytes of standard
+///   input that the session has not reported consumed with `stdinConsumed`, so the input
+///   waiting for the process never exceeds the window. The session therefore reads the
+///   connection at all times and acts on `signal` and `resize` as they arrive, however much
+///   input the process leaves unread. Input beyond the window is a protocol violation.
 /// - Output to the host: the process's output is read only while the connection holds less
 ///   than `outputLimit` unsent bytes. Beyond that the process's writes block.
 final class ExecSession {
-    static let inputLimit = 256 << 10
     static let outputLimit = 64 << 10
+    /// Consumed input is reported once it reaches this many bytes: often enough that the host
+    /// never waits for room while the process reads, rarely enough to cost little
+    /// (decision record 0016).
+    static let consumedReportThreshold = AgentProtocol.inputWindow / 4
     /// How long output may still arrive after the process exits, from descendants that keep
     /// its pipes open.
     static let drainGrace = Duration.milliseconds(250)
@@ -38,8 +43,14 @@ final class ExecSession {
     private let child: ChildProcess
     private let logger: Logger
 
+    /// Input for the process: the host's bytes, then, after `stdinEOF` in terminal mode, the
+    /// terminal's end-of-file character.
     private var pendingInput = ByteBuffer()
-    private var closeInputWhenWritten = false
+    private var endOfFileCharacterPending = false
+    /// Set by `stdinEOF`. Later input is discarded.
+    private var inputEnded = false
+    /// Input written to the process or discarded, not yet reported to the host.
+    private var consumedInput = 0
     private var exitedAt: ContinuousClock.Instant?
     private var hostLeftAt: ContinuousClock.Instant?
     private var killedAfterHangup = false
@@ -52,6 +63,11 @@ final class ExecSession {
     }
 
     private var pendingInputCount: Int { pendingInput.count }
+
+    /// The host's bytes in `pendingInput`.
+    private var pendingHostInput: Int {
+        pendingInput.count - (endOfFileCharacterPending ? 1 : 0)
+    }
 
     /// Runs the session. On a protocol error, kills the process group, reaps the process, and
     /// rethrows.
@@ -94,6 +110,7 @@ final class ExecSession {
                 child.send(SIGKILL)
             }
 
+            reportConsumedInput()
             try pollOnce()
         }
     }
@@ -117,7 +134,7 @@ final class ExecSession {
 
         if hostLeftAt == nil {
             var events: Int32 = 0
-            if connection.canReceive && pendingInputCount < Self.inputLimit {
+            if connection.canReceive {
                 events |= POLLIN
             }
             if connection.pendingOutputCount > 0 {
@@ -211,19 +228,27 @@ final class ExecSession {
         logger.notice("exec \(child.pid): the host disconnected; sending SIGHUP")
         hostLeftAt = .now
         pendingInput.removeAll()
+        endOfFileCharacterPending = false
         child.closeInput()
         child.send(SIGHUP)
     }
 
-    /// Acts on buffered frames while there is room for more input.
+    /// Acts on every buffered frame.
     private func takeBufferedFrames() throws(ConnectionError) {
-        while hostLeftAt == nil && pendingInputCount < Self.inputLimit,
-            let frame = try connection.nextFrame()
-        {
+        while hostLeftAt == nil, let frame = try connection.nextFrame() {
             switch frame.type {
             case .stdin:
-                if child.input != nil && !closeInputWhenWritten {
+                guard
+                    pendingHostInput + consumedInput + frame.payload.count
+                        <= AgentProtocol.inputWindow
+                else {
+                    throw .unexpectedMessage(
+                        "standard input exceeded the window of \(AgentProtocol.inputWindow) bytes")
+                }
+                if child.input != nil && !inputEnded {
                     pendingInput.append(contentsOf: frame.payload)
+                } else {
+                    consumedInput += frame.payload.count
                 }
             case .control:
                 let message: ControlMessage
@@ -233,7 +258,7 @@ final class ExecSession {
                     throw .frame(error)
                 }
                 try handle(message)
-            case .version, .stdout, .stderr:
+            case .version, .stdinConsumed, .stdout, .stderr:
                 throw .frame(.unexpectedType(frame.type.rawValue, expected: "stdin or control"))
             }
         }
@@ -242,15 +267,17 @@ final class ExecSession {
     private func handle(_ message: ControlMessage) throws(ConnectionError) {
         switch message {
         case .stdinEOF:
+            guard !inputEnded else { return }
+            inputEnded = true
             if child.terminal != nil {
                 // A terminal has no end-of-file; its line discipline turns the EOF character
                 // into one for the reader, as ssh does.
-                pendingInput.append(child.endOfFileCharacter)
-            } else {
-                closeInputWhenWritten = true
-                if pendingInputCount == 0 {
-                    child.closeInput()
+                if child.input != nil {
+                    pendingInput.append(child.endOfFileCharacter)
+                    endOfFileCharacterPending = true
                 }
+            } else if pendingInputCount == 0 {
+                child.closeInput()
             }
         case .signal(let signal):
             child.send(signal.localNumber)
@@ -292,17 +319,26 @@ final class ExecSession {
             write(input.rawValue, buffer.baseAddress!, buffer.count)
         }
         if written > 0 {
+            consumedInput += min(written, pendingHostInput)
             pendingInput.consume(written)
         } else if written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR {
             // EPIPE: the process closed its standard input. EIO: the terminal is gone.
+            consumedInput += pendingHostInput
             pendingInput.removeAll()
             child.closeInput()
-            return
         }
         if pendingInputCount == 0 {
-            if closeInputWhenWritten {
+            endOfFileCharacterPending = false
+            if inputEnded {
                 child.closeInput()
             }
         }
+    }
+
+    /// Returns consumed input to the host's window once there is enough of it.
+    private func reportConsumedInput() {
+        guard hostLeftAt == nil, consumedInput >= Self.consumedReportThreshold else { return }
+        connection.enqueue(.stdinConsumed(UInt32(consumedInput)))
+        consumedInput = 0
     }
 }

@@ -5,6 +5,11 @@ public enum FrameType: UInt8, Sendable, CaseIterable {
     case version = 0x01
     /// A `ControlMessage`, JSON-encoded.
     case control = 0x02
+    /// Standard input that the agent has written to the process, or discarded, since its last
+    /// such frame: a byte count, 4 bytes, big-endian (guest to host). It returns that much room
+    /// to the host's input window. A frame type of its own rather than a control message: it
+    /// arrives for every 256 KiB of input, and decoding JSON that often costs throughput.
+    case stdinConsumed = 0x03
     /// Raw bytes for the process's standard input (host to guest).
     case stdin = 0x10
     /// Raw bytes from the process's standard output, or from its terminal (guest to host).
@@ -67,6 +72,29 @@ public struct Frame: Equatable, Sendable {
         return payload.reduce(0) { $0 << 8 | UInt32($1) }
     }
 
+    // MARK: Consumed input
+
+    public static func stdinConsumed(_ byteCount: UInt32) -> Frame {
+        Frame(
+            type: .stdinConsumed,
+            payload: [
+                UInt8(truncatingIfNeeded: byteCount >> 24),
+                UInt8(truncatingIfNeeded: byteCount >> 16),
+                UInt8(truncatingIfNeeded: byteCount >> 8), UInt8(truncatingIfNeeded: byteCount),
+            ])
+    }
+
+    /// The byte count a `stdinConsumed` frame carries.
+    public func consumedByteCount() throws(FrameError) -> UInt32 {
+        guard type == .stdinConsumed else {
+            throw .unexpectedType(type.rawValue, expected: "stdinConsumed")
+        }
+        guard payload.count == 4 else {
+            throw .malformedStdinConsumed(size: payload.count)
+        }
+        return payload.reduce(0) { $0 << 8 | UInt32($1) }
+    }
+
     // MARK: Control frames
 
     public static func control(_ message: ControlMessage) -> Frame {
@@ -92,6 +120,8 @@ public enum FrameError: Error, Equatable, Sendable, CustomStringConvertible {
     case truncated(buffered: Int)
     /// A version frame whose payload is not 4 bytes.
     case malformedVersion(size: Int)
+    /// A `stdinConsumed` frame whose payload is not 4 bytes.
+    case malformedStdinConsumed(size: Int)
     /// A control frame whose payload is not a valid `ControlMessage`.
     case malformedControl(String)
     /// A frame of a known type that is not valid at this point of the conversation.
@@ -108,6 +138,8 @@ public enum FrameError: Error, Equatable, Sendable, CustomStringConvertible {
             "the connection ended in the middle of a frame (\(buffered) bytes buffered)"
         case .malformedVersion(let size):
             "a version frame has \(size) bytes instead of 4"
+        case .malformedStdinConsumed(let size):
+            "a stdinConsumed frame has \(size) bytes instead of 4"
         case .malformedControl(let reason):
             "a control message could not be decoded: \(reason)"
         case .unexpectedType(let type, let expected):
