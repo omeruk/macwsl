@@ -178,6 +178,19 @@
             return summary
         }
 
+        /// Checks what can be checked about an installation before its account is known, and
+        /// throws the error that `install` would throw for it.
+        public func checkInstall(distribution: String?, name: DistroName?) async throws(MawError) {
+            guard
+                case .installPossible = try await send(
+                    .checkInstall(distribution: distribution, name: name)
+                ).reply
+            else {
+                throw .daemonProtocolError(
+                    reason: "the reply to checkInstall is not installPossible")
+            }
+        }
+
         /// Cancels this client's installation and returns once the daemon has removed its
         /// traces. Returns whether one was running.
         @discardableResult

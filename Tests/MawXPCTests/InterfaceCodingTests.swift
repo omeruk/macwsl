@@ -21,6 +21,8 @@ import XPC
                 password: Secret("correct horse"), locale: "tr_TR.UTF-8")),
         .install(
             InstallRequest(distribution: nil, user: "ayse", password: Secret("x"), locale: nil)),
+        .checkInstall(distribution: "Ubuntu", name: try! DistroName("Work")),
+        .checkInstall(distribution: nil, name: nil),
         .cancelInstall,
     ]
 
@@ -43,6 +45,7 @@ import XPC
             InstallSummary(
                 name: try! DistroName("Ubuntu-24.04"), displayName: "Ubuntu 24.04 LTS",
                 defaultUser: "ayse", isDefault: true, milliseconds: 15_000)),
+        .installPossible,
         .installCancelled(wasRunning: true),
         .shutdownComplete(ShutdownSummary(stoppedMachines: [.initramfs], endedSessions: 2)),
         .failure(.virtualizationEntitlementMissing),

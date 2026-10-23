@@ -164,6 +164,35 @@ import os
         #expect(images.downloads == 0)
     }
 
+    /// What `maw --install` checks before it asks for the account: the same refusals as
+    /// `install`, without a user or a password, and without touching anything.
+    @Test func checksAnInstallationWithoutItsAccount() async throws {
+        let (entry, name) = try await installer().check(distribution: "Ubuntu", name: nil)
+        #expect(entry.name.rawValue == "Ubuntu-24.04")
+        #expect(name.rawValue == "Ubuntu-24.04")
+        await #expect(throws: MawError.unknownDistribution("Debian")) {
+            try await installer().check(distribution: "Debian", name: nil)
+        }
+        let entryImage = DistroCatalog.builtIn.recommendedEntry.image
+        await #expect(
+            throws: MawError.insufficientDiskSpace(
+                required: InstallSpace.required(for: entryImage, alreadyDownloaded: 0).bytes,
+                available: 1 << 30, volume: "Macintosh HD")
+        ) {
+            try await installer(freeSpace: 1 << 30).check(distribution: nil, name: nil)
+        }
+        #expect(images.downloads == 0)
+        #expect(machine.calls.isEmpty)
+        _ = try await installer().install(request(), progress: { _ in })
+        await #expect(throws: MawError.distributionAlreadyInstalled(try DistroName("Ubuntu-24.04")))
+        {
+            try await installer().check(distribution: nil, name: nil)
+        }
+        #expect(
+            try await installer().check(distribution: nil, name: DistroName("Work")).1.rawValue
+                == "Work")
+    }
+
     // MARK: Failure and cancellation
 
     @Test func removesEverythingWhenAStepFails() async throws {
@@ -220,6 +249,10 @@ import os
         // APFS ignores case, so another spelling would end in the same directory.
         await #expect(throws: MawError.installationInProgress(try DistroName("ubuntu-24.04"))) {
             try await installer.install(request(name: "ubuntu-24.04"), progress: { _ in })
+        }
+        // The check that maw --install makes before it asks for the account sees it as well.
+        await #expect(throws: MawError.installationInProgress(try DistroName("Ubuntu-24.04"))) {
+            try await installer.check(distribution: nil, name: nil)
         }
         first.cancel()
         _ = await first.result

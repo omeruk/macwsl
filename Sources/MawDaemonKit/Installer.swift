@@ -105,31 +105,11 @@
             _ request: InstallRequest, progress: @escaping @Sendable (InstallProgress) -> Void
         ) async throws(MawError) -> InstallSummary {
             let started = ContinuousClock.now
-            let entry: CatalogEntry
-            if let wanted = request.distribution {
-                guard let found = catalog.entry(named: wanted) else {
-                    throw .unknownDistribution(wanted)
-                }
-                entry = found
-            } else {
-                entry = catalog.recommendedEntry
-            }
-            let name = request.name ?? entry.name
-            // The initramfs machine's name, which also names its console log.
-            guard name.rawValue.lowercased() != MachineID.initramfs.name else {
-                throw .invalidDistroName(name.rawValue, reason: "the name is reserved for maw")
-            }
-            guard !store.isInstalled(name) else {
-                throw .distributionAlreadyInstalled(name)
-            }
-            let key = name.rawValue.lowercased()
-            guard !active.contains(key) else {
-                throw .installationInProgress(name)
-            }
+            let (entry, name) = try check(distribution: request.distribution, name: request.name)
             let user = try UserName(request.user, reservedNames: entry.reservedNames)
             try Self.checkPassword(request.password)
-            try checkFreeSpace(for: entry.image)
 
+            let key = name.rawValue.lowercased()
             let staging = store.paths.stagingDirectory(for: name, id: UUID().uuidString)
             active.insert(key)
             defer { active.remove(key) }
@@ -171,6 +151,37 @@
                 name: name, displayName: entry.displayName, defaultUser: user.rawValue,
                 isDefault: isDefault,
                 milliseconds: UInt64(max(0, (ContinuousClock.now - started).milliseconds)))
+        }
+
+        /// Checks everything about an installation that does not depend on its account, and
+        /// returns the catalog entry and the name to install it under: the entry exists, the
+        /// name is neither reserved, installed, nor being installed, and the volume has room.
+        @discardableResult
+        public func check(distribution: String?, name: DistroName?) throws(MawError) -> (
+            CatalogEntry, DistroName
+        ) {
+            let entry: CatalogEntry
+            if let wanted = distribution {
+                guard let found = catalog.entry(named: wanted) else {
+                    throw .unknownDistribution(wanted)
+                }
+                entry = found
+            } else {
+                entry = catalog.recommendedEntry
+            }
+            let name = name ?? entry.name
+            // The initramfs machine's name, which also names its console log.
+            guard name.rawValue.lowercased() != MachineID.initramfs.name else {
+                throw .invalidDistroName(name.rawValue, reason: "the name is reserved for maw")
+            }
+            guard !store.isInstalled(name) else {
+                throw .distributionAlreadyInstalled(name)
+            }
+            guard !active.contains(name.rawValue.lowercased()) else {
+                throw .installationInProgress(name)
+            }
+            try checkFreeSpace(for: entry.image)
+            return (entry, name)
         }
 
         // MARK: Steps

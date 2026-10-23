@@ -43,6 +43,12 @@
         /// replies when the installation has finished, failed, or been cancelled. It cancels
         /// the installation if this XPC connection closes.
         case install(InstallRequest)
+        /// Checks what can be checked about an installation without its account: that the
+        /// distribution is in the catalog, that the name is free and not being installed, and
+        /// that the volume has room. `maw --install` asks before it asks for the account, so
+        /// that nobody types a password for an installation that cannot start; `install`
+        /// checks the same again.
+        case checkInstall(distribution: String?, name: DistroName?)
         /// Cancels this connection's installation. Replied to once its traces are removed, or once
         /// it has finished if it had already registered the distribution.
         case cancelInstall
@@ -55,6 +61,7 @@
             case .status: "the status request"
             case .shutdown: "the shutdown request"
             case .install: "the installation"
+            case .checkInstall: "checking the installation"
             case .cancelInstall: "cancelling the installation"
             }
         }
@@ -176,6 +183,8 @@
         case status(DaemonStatus)
         case shutdownComplete(ShutdownSummary)
         case installed(InstallSummary)
+        /// The reply to `checkInstall`: nothing known prevents the installation.
+        case installPossible
         /// The reply to `cancelInstall`. `wasRunning` is true if an installation was stopped and
         /// its traces removed, and false if nothing was being installed or the installation had
         /// already registered the distribution and finished.

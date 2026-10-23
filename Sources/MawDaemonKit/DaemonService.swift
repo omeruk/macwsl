@@ -117,6 +117,12 @@
                         installation = startInstallation(
                             request, with: installer, replyingTo: message, on: peer)
                         continue
+                    case .checkInstall(let distribution, let name):
+                        guard let installer else {
+                            throw .notImplemented(feature: "--install", phase: "05")
+                        }
+                        try await installer.check(distribution: distribution, name: name)
+                        reply = .installPossible
                     case .cancelInstall:
                         var wasCancelled = false
                         if let installation, isRunning(installation.id) {

@@ -13,12 +13,29 @@ import MawXPC
 /// so that nothing is left when maw exits.
 struct InstallCommand {
     let options: InstallOptions
+    /// Connects to the daemon. The tests replace it.
+    var connect: @Sendable () async throws(MawError) -> any InstallDaemon = {
+        () async throws(MawError) -> any InstallDaemon in
+        try await DaemonClient.connect()
+    }
+    /// Announces the installation and asks for the account, or reads it. The tests replace it.
+    var askForAccount: ((Preparation) throws -> (UserName, Secret))?
 
     /// How long maw waits for the daemon to confirm a cancellation before it exits anyway.
     static let cancelTimeout = Duration.seconds(5)
 
-    func run() async throws -> Int32 {
-        signal(SIGPIPE, SIG_IGN)
+    /// What is known before the account is asked for.
+    struct Preparation {
+        let entry: CatalogEntry
+        let name: DistroName
+        let isInteractive: Bool
+    }
+
+    /// Everything before the installation starts, in an order that asks for nothing before
+    /// an error that is knowable without it: the catalog entry and the name, the terminal,
+    /// the connection to the daemon with its signature check, the daemon's checks of the
+    /// name and the free space, and only then the account.
+    func prepare() async throws -> (Preparation, any InstallDaemon, UserName, Secret) {
         let catalog = DistroCatalog.builtIn
         let entry: CatalogEntry
         if let wanted = options.distro {
@@ -30,31 +47,32 @@ struct InstallCommand {
             entry = catalog.recommendedEntry
         }
         let name = options.name ?? entry.name
-        // Checked before asking for anything; the daemon checks again.
-        if FileManager.default.fileExists(
-            atPath: MawPaths().metadataFile(for: name).path(percentEncoded: false))
-        {
-            throw MawError.distributionAlreadyInstalled(name)
-        }
-
-        let interactive = isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1
-        print(
-            "Installing \(entry.displayName)"
-                + (name == entry.name ? "." : " as \(name)."))
-        let (user, password): (UserName, Secret)
-        if let given = options.user {
-            user = try UserName(given, reservedNames: entry.reservedNames)
-            // On a terminal, the password is asked for without echo, never read as typed text.
-            password =
-                isatty(STDIN_FILENO) == 1 ? try Self.askForPassword() : try Self.readPasswordLine()
-        } else if interactive {
-            (user, password) = try Self.askForAccount(reservedNames: entry.reservedNames)
-        } else {
+        let isInteractive = isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1
+        if options.user == nil, !isInteractive {
             throw MawError.installNeedsTerminal
         }
 
-        let client = try await DaemonClient.connect()
+        let client = try await connect()
+        let account: (UserName, Secret)
+        do {
+            try await client.checkInstall(distribution: entry.name.rawValue, name: options.name)
+            let preparation = Preparation(entry: entry, name: name, isInteractive: isInteractive)
+            account = try (askForAccount ?? readAccount)(preparation)
+            return (preparation, client, account.0, account.1)
+        } catch {
+            client.close()
+            throw error
+        }
+    }
+
+    func run() async throws -> Int32 {
+        signal(SIGPIPE, SIG_IGN)
+        let (preparation, client, user, password) = try await prepare()
         defer { client.close() }
+        let entry = preparation.entry
+        let name = preparation.name
+        let interactive = preparation.isInteractive
+
         let view = InstallProgressView(
             text: InstallProgressText(name: name, displayName: entry.displayName),
             isTerminal: isatty(STDOUT_FILENO) == 1)
@@ -175,7 +193,7 @@ struct InstallCommand {
 
     /// Asks the daemon to cancel and waits, for at most `cancelTimeout`, until it has removed
     /// the installation's traces.
-    static func cancel(on client: DaemonClient) async -> Cancellation {
+    static func cancel(on client: any InstallDaemon) async -> Cancellation {
         let first = FirstResult<Cancellation>()
         return await withCheckedContinuation { continuation in
             first.onResult { continuation.resume(returning: $0) }
@@ -202,6 +220,23 @@ struct InstallCommand {
     }
 
     // MARK: The account
+
+    /// Announces the installation, then asks for the account on the terminal, or, with
+    /// `--user`, reads the password.
+    func readAccount(_ preparation: Preparation) throws -> (UserName, Secret) {
+        let entry = preparation.entry
+        print(
+            "Installing \(entry.displayName)"
+                + (preparation.name == entry.name ? "." : " as \(preparation.name)."))
+        if let given = options.user {
+            let user = try UserName(given, reservedNames: entry.reservedNames)
+            // On a terminal, the password is asked for without echo, never read as typed text.
+            let password =
+                isatty(STDIN_FILENO) == 1 ? try Self.askForPassword() : try Self.readPasswordLine()
+            return (user, password)
+        }
+        return try Self.askForAccount(reservedNames: entry.reservedNames)
+    }
 
     /// Asks for the user name until it is valid, then for the password twice, without
     /// echoing it, until both entries match.
@@ -405,6 +440,17 @@ final class InstallProgressView: @unchecked Sendable {
         fflush(stdout)
     }
 }
+
+/// What `maw --install` needs from the daemon. The tests supply a fake.
+protocol InstallDaemon: Sendable {
+    var events: AsyncStream<DaemonClient.Event> { get }
+    func checkInstall(distribution: String?, name: DistroName?) async throws(MawError)
+    func install(_ request: InstallRequest) async throws(MawError) -> InstallSummary
+    func cancelInstall() async throws(MawError) -> Bool
+    func close()
+}
+
+extension DaemonClient: InstallDaemon {}
 
 /// Delivers the first of several results to one handler, once.
 final class FirstResult<Value: Sendable>: @unchecked Sendable {
