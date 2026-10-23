@@ -184,7 +184,10 @@
         /// continuation: a cancellation that arrives first cancels the task at once.
         private var isComplete = false
         private var lastReport = ContinuousClock.now - .seconds(1)
-        private var rateSample: (instant: ContinuousClock.Instant, bytes: UInt64)
+        /// Where the current rate sample started. The first starts with the first bytes of this
+        /// transfer, so that neither the bytes of an earlier attempt nor the time to connect
+        /// count; until a sample of a full second exists, the rate is unknown (0).
+        private var rateSample: (instant: ContinuousClock.Instant, bytes: UInt64)?
         private var bytesPerSecond: UInt64 = 0
 
         init(
@@ -197,7 +200,6 @@
             self.progress = progress
             received = existing
             resumedFrom = existing
-            rateSample = (.now, existing)
         }
 
         func run(_ request: URLRequest, on session: URLSession) async throws(MawError) {
@@ -282,7 +284,8 @@
                         self.handle = handle
                         received = 0
                         resumedFrom = 0
-                        rateSample = (.now, 0)
+                        rateSample = nil
+                        bytesPerSecond = 0
                     }
                 case 416:
                     // The partial file does not fit the server's file. The next attempt starts
@@ -336,12 +339,16 @@
                 }
                 received += UInt64(data.count)
                 let now = ContinuousClock.now
-                let window = now - rateSample.instant
-                if window >= .seconds(1) {
-                    let seconds =
-                        Double(window.components.seconds)
-                        + Double(window.components.attoseconds) / 1e18
-                    bytesPerSecond = UInt64(Double(received - rateSample.bytes) / seconds)
+                if let sample = rateSample {
+                    let window = now - sample.instant
+                    if window >= .seconds(1) {
+                        let seconds =
+                            Double(window.components.seconds)
+                            + Double(window.components.attoseconds) / 1e18
+                        bytesPerSecond = UInt64(Double(received - sample.bytes) / seconds)
+                        rateSample = (now, received)
+                    }
+                } else {
                     rateSample = (now, received)
                 }
                 guard now - lastReport >= .milliseconds(200) || received == image.size else {

@@ -62,6 +62,26 @@ import os
         #expect(try await cache.verify(Self.image).lastPathComponent == Self.image.cacheFileName)
     }
 
+    /// The rate of a resumed download counts only this attempt's bytes, from its first byte:
+    /// a server that takes over a second to answer must not make the first rate look slow, and
+    /// no rate is reported before a sample of a full second exists.
+    @Test func measuresTheRateFromTheFirstBytesOfThisAttempt() async throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let half = Self.content.count / 2
+        try Self.content.prefix(half).write(to: cache.partialFile(for: Self.image))
+        try "\"v1\"".write(
+            to: cache.validatorFile(for: Self.image), atomically: true, encoding: .utf8)
+        StubServer.responseDelay = .milliseconds(1_100)
+        StubServer.bytesPerSecond = 1 << 20
+
+        let reports = try await download()
+        #expect(reports.first?.bytesPerSecond == 0)
+        let rates = reports.map(\.bytesPerSecond).filter { $0 > 0 }
+        try #require(!rates.isEmpty, "\(reports)")
+        // The server sends 1 MiB/s; a rate that counted the time to answer would be far lower.
+        #expect(rates.allSatisfy { $0 > 512 << 10 }, "\(rates)")
+    }
+
     @Test func startsOverWhenTheServerSendsTheWholeFile() async throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // A partial file of another version: the server ignores the range because the
@@ -194,6 +214,8 @@ final class StubServer: URLProtocol, @unchecked Sendable {
         var honorsRanges = true
         var failure: URLError?
         var redirect: URL?
+        var responseDelay: Duration?
+        var bytesPerSecond: Int?
     }
 
     private static let state = OSAllocatedUnfairLock(initialState: State())
@@ -222,6 +244,17 @@ final class StubServer: URLProtocol, @unchecked Sendable {
         set { state.withLock { $0.redirect = newValue } }
     }
 
+    /// How long the server waits before it answers.
+    static var responseDelay: Duration? {
+        get { state.withLock { $0.responseDelay } }
+        set { state.withLock { $0.responseDelay = newValue } }
+    }
+    /// The pace at which the server sends the body, in 64 KiB pieces; at once if `nil`.
+    static var bytesPerSecond: Int? {
+        get { state.withLock { $0.bytesPerSecond } }
+        set { state.withLock { $0.bytesPerSecond = newValue } }
+    }
+
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
@@ -243,6 +276,11 @@ final class StubServer: URLProtocol, @unchecked Sendable {
             client?.urlProtocolDidFinishLoading(self)
             return
         }
+        if let delay = current.responseDelay {
+            Thread.sleep(
+                forTimeInterval: Double(delay.components.seconds) + Double(
+                    delay.components.attoseconds) / 1e18)
+        }
         var status = current.status
         var body = current.body
         if status == 200, current.honorsRanges,
@@ -259,11 +297,15 @@ final class StubServer: URLProtocol, @unchecked Sendable {
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         if status == 200 || status == 206 {
             // In pieces, as a network delivers it.
+            let piece = current.bytesPerSecond == nil ? 256 << 10 : 64 << 10
             var offset = 0
             while offset < body.count {
-                let end = min(offset + (256 << 10), body.count)
+                let end = min(offset + piece, body.count)
                 client?.urlProtocol(self, didLoad: body.subdata(in: offset..<end))
                 offset = end
+                if let pace = current.bytesPerSecond {
+                    Thread.sleep(forTimeInterval: Double(piece) / Double(pace))
+                }
             }
         }
         client?.urlProtocolDidFinishLoading(self)
