@@ -19,6 +19,6 @@ pass on a real Apple Silicon Mac.
 | 11a | Terminal app foundation      | maw app: title-bar tabs, split panes, command palette, themes, settings (local shell) | Done    |
 | 11b | Linux sessions in the app    | Distribution tabs and the distributions screen through the daemon; follows 05 | Planned |
 | 11 | Terminal app                   | SwiftUI + SwiftTerm app: tabs, distro profiles, themes, settings         | Planned |
-| 12 | Configuration and lifecycle    | `.mawconfig`, `maw.conf`, idle shutdown, sleep/wake clock sync           | Planned |
+| 12 | Configuration and lifecycle    | `.mawconfig`, `maw.conf`, idle shutdown, sleep/wake clock sync, a `.mawconfig` setting to choose `.fsync` disk synchronization ([0013](decisions/0013-systemd-and-the-agent.md)) | Planned |
 | 12b | Hardening                    | Close the recorded limitations, long-running and sleep/wake soak tests, `docs/security.md` review, beta testing | Planned |
 | 13 | Packaging and release          | Signed, notarized app; Homebrew cask; auto-update                        | Planned |

@@ -46,7 +46,8 @@ distribution when maw updates it.
    the machine stops. Phase 12 adds the balloon's control.
 6. **Disk.** Virtualization.framework chooses the caching mode (`.automatic`). The
    synchronization mode is `.full`: every flush from the guest issues `F_FULLFSYNC`, so that
-   data the guest has flushed survives a crash or a power loss of the Mac.
+   data the guest has flushed survives a crash or a power loss of the Mac. The measurements
+   below record the cost and the choice.
 
 ## Measurements
 
@@ -76,8 +77,10 @@ fresh distribution, median of 3:
 | `.fsync` | 4.68, 4.20, 4.06 s | 4.20 s |
 
 `.full` makes package installation about 4.2 times slower, because dpkg flushes after every
-package. It is the default because it protects the user's data; whether to trade that
-protection for speed is the owner's decision, recorded in the pull request.
+package. The owner decided to keep `.full` (2026-10-23): a flush the guest has made survives a
+crash or a power loss of the Mac, which `.fsync` does not guarantee, and the integrity of the
+user's data comes before speed. Phase 12 adds a `.mawconfig` setting with which a user can
+choose `.fsync` for their machines and accept that risk.
 
 **Discard.** Virtualization.framework has no setting for it. On macOS 27 the guest's virtio
 block device accepts discard requests (`discard_max_bytes` is the disk's size, the granularity
