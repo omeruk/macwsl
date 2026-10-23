@@ -83,6 +83,11 @@
                 mkdir -p "$root/var/lib/systemd/linger"
                 : > "$root/var/lib/systemd/linger/$user"
             fi
+            # Ubuntu's bash prints a hint about sudo at every login until this file exists;
+            # sudo creates it after the first successful use. The first prompt stays quiet.
+            home=$(chroot "$root" /usr/bin/getent passwd "$user" | cut -d: -f6)
+            : > "$root$home/.sudo_as_admin_successful"
+            chroot "$root" /usr/bin/chown "$user:" "$home/.sudo_as_admin_successful"
             printf '# maw settings for this distribution. docs/distributions.md describes them.\\n[user]\\ndefault = %s\\n' \\
                 "$user" > "$root/etc/maw.conf"
 

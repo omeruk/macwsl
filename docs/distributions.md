@@ -67,6 +67,7 @@ installations of the same image share one download: the second waits for the fir
 | `/etc/fstab`: `LABEL=maw-root / ext4 defaults 0 0` | The initramfs checks and mounts the root; systemd needs no fsck of it. |
 | A user, created with `useradd --create-home --shell /bin/bash`, in the groups `adm`, `dialout`, `cdrom`, `floppy`, `sudo`, `audio`, `dip`, `video`, `plugdev`, `netdev`, `users` that the image has | The groups WSL's Ubuntu setup gives the first user; `sudo` requires the user's password. |
 | The user's password, set with `chpasswd` | It travels only as `chpasswd`'s standard input. |
+| `~/.sudo_as_admin_successful`, empty and owned by the user | Ubuntu's `/etc/bash.bashrc` prints "To run a command as administrator (user "root"), use "sudo <command>"." at every login until this file exists, which `sudo` creates after its first successful use. The first prompt stays quiet; `sudo` itself is unchanged and asks for the password. |
 | `/var/lib/systemd/linger/<user>` | The user manager runs from boot, so that a shell does not wait for it ([0015](decisions/0015-sessions-through-pam.md)). |
 | `/etc/maw.conf` with `[user] default = <user>` | Sessions run as this user unless `-u` names another. |
 | The Mac's locale generated with `locale-gen`, if the image supports it, and `/etc/default/locale` set to it; `LANG=C.UTF-8` otherwise | A UTF-8 character type in every session. |

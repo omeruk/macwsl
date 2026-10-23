@@ -160,6 +160,27 @@ struct DistributionIntegrationTests {
         #expect(await session.waitForExit(timeout: .seconds(30)) == 0)
     }
 
+    /// The first login of a new distribution prints nothing before the prompt: no message of
+    /// the day, no warning, and no hint about sudo. Terminal escape sequences, such as the
+    /// window title that Ubuntu's prompt sets, are not text.
+    @Test func printsNothingBeforeTheFirstPrompt() async throws {
+        let name = "\(maw.prefix)-quiet"
+        let install = await (try maw.install(name)).waitForExit(timeout: .seconds(300))
+        try #require(install.status == 0, "\(install.output)\(install.standardError)")
+        let session = try maw.interactive(["-d", name])
+        let host = maw.hostname(of: name)
+        try #require(await session.waitForPrompt(user: maw.user, host: host))
+        let beforePrompt = session.plainOutput.components(separatedBy: "\(maw.user)@\(host):")[0]
+        #expect(beforePrompt.isEmpty, "\(session.plainOutput)")
+        session.type("exit\r")
+        _ = await session.waitForExit(timeout: .seconds(30))
+
+        let hint = try await maw.session(
+            ["--", "stat -c '%U:%G %s' ~/.sudo_as_admin_successful"], in: name)
+        #expect(hint.output == "\(maw.user):\(maw.user) 0\n", "\(hint.standardError)")
+        try await maw.remove(name)
+    }
+
     @Test func registersShellsWithLogind() async throws {
         let session = try maw.interactive(["-d", distribution])
         let host = maw.hostname(of: distribution)
