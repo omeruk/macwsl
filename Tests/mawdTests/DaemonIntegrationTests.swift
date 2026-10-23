@@ -101,6 +101,44 @@ struct DaemonIntegrationTests {
         #expect(try await machineRow().contains("Running"))
     }
 
+    /// Ctrl-C reaches a command that reads none of its endless input, `yes | maw -e sleep 1000`:
+    /// the signal overtakes the queued input, and the input window keeps the agent reading the
+    /// connection. Before, the signal stayed behind the input for good.
+    @Test func passesSIGINTAheadOfUnreadInput() async throws {
+        var delays: [Double] = []
+        for _ in 0..<5 {
+            let yes = Process()
+            yes.executableURL = URL(filePath: "/usr/bin/yes")
+            let pipe = Pipe()
+            yes.standardOutput = pipe
+            try yes.run()
+            defer {
+                yes.terminate()
+                yes.waitUntilExit()
+            }
+            let session = try DebugBootProcess(
+                executable: maw.maw, arguments: ["-d", distribution, "-e", "sleep", "1000"],
+                standardInputPipe: pipe, separateStandardError: true,
+                environment: maw.mawEnvironment)
+            try await waitForSessions(1)
+            // Long enough for every buffer on the way to fill.
+            try await Task.sleep(for: .seconds(1))
+
+            let sent = ContinuousClock.now
+            session.signal(SIGINT)
+            let result = await session.waitForExit(timeout: .seconds(10))
+            #expect(result.status == 130, "\(result.standardError)")
+            if let exitedAt = session.exitedAt {
+                delays.append((exitedAt - sent).fractionalMilliseconds)
+            }
+            try await waitForSessions(0)
+        }
+        let median = MawIntegration.report(
+            "SIGINT to the exit of yes | maw -e sleep 1000", delays)
+        #expect(delays.count == 5)
+        #expect(median < 100)
+    }
+
     @Test func reportsADistributionThatIsNotInstalled() async throws {
         let missing = "\(maw.prefix)-missing"
         let result = try await maw.session(["-e", "true"], in: missing)

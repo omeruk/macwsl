@@ -215,6 +215,7 @@ final class DebugBootProcess: @unchecked Sendable {
     }
 
     private let process = Process()
+    private let exitTime = OSAllocatedUnfairLock<ContinuousClock.Instant?>(initialState: nil)
     private let collected = OSAllocatedUnfairLock(initialState: Data())
     private let collectedError = OSAllocatedUnfairLock(initialState: Data())
 
@@ -228,12 +229,13 @@ final class DebugBootProcess: @unchecked Sendable {
             separateStandardError: separateStandardError, environment: environment)
     }
 
-    /// Runs any executable, such as `maw`. Its standard input is `standardInputFile`, or a
-    /// pipe that receives `standardInput` before this returns, or nothing.
+    /// Runs any executable, such as `maw`. Its standard input is `standardInputFile`, or
+    /// `standardInputPipe`, or a pipe that receives `standardInput` before this returns, or
+    /// nothing.
     init(
         executable: URL, arguments: [String], standardInput: Data? = nil,
-        standardInputFile: URL? = nil, separateStandardError: Bool = false,
-        environment: [String: String]? = nil
+        standardInputFile: URL? = nil, standardInputPipe: Pipe? = nil,
+        separateStandardError: Bool = false, environment: [String: String]? = nil
     ) throws {
         let pipe = Pipe()
         process.executableURL = executable
@@ -267,8 +269,13 @@ final class DebugBootProcess: @unchecked Sendable {
         let inputPipe = standardInput.map { _ in Pipe() }
         if let standardInputFile {
             process.standardInput = try FileHandle(forReadingFrom: standardInputFile)
+        } else if let standardInputPipe {
+            process.standardInput = standardInputPipe
         } else {
             process.standardInput = inputPipe ?? FileHandle.nullDevice
+        }
+        process.terminationHandler = { [exitTime] _ in
+            exitTime.withLock { $0 = .now }
         }
         try process.run()
         if let inputPipe, let standardInput {
@@ -290,6 +297,9 @@ final class DebugBootProcess: @unchecked Sendable {
     }
 
     var isRunning: Bool { process.isRunning }
+
+    /// When the process exited, as its termination handler observed it.
+    var exitedAt: ContinuousClock.Instant? { exitTime.withLock { $0 } }
 
     /// Waits until a line of output satisfies `predicate`. Returns whether one did.
     func waitForLine(where predicate: (String) -> Bool, timeout: Duration) async -> Bool {
