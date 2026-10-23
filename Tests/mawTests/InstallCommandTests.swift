@@ -227,3 +227,109 @@ import os
         #expect(calls.withLock { $0 }.isEmpty)
     }
 }
+
+/// Ctrl-C ends `maw --install` while nothing reads its output, as after Ctrl-S on a terminal.
+@Suite struct InstallCancellationTests {
+    /// Installs until it is cancelled.
+    final class StalledDaemon: InstallDaemon, @unchecked Sendable {
+        let events: AsyncStream<DaemonClient.Event>
+        private let continuation: AsyncStream<DaemonClient.Event>.Continuation
+        let cancelled = OSAllocatedUnfairLock(initialState: false)
+
+        init() {
+            (events, continuation) = AsyncStream.makeStream(of: DaemonClient.Event.self)
+        }
+
+        func report(_ progress: InstallProgress) {
+            continuation.yield(.installProgress(progress))
+        }
+
+        func checkInstall(distribution: String?, name: DistroName?) async throws(MawError) {}
+
+        func install(_ request: InstallRequest) async throws(MawError) -> InstallSummary {
+            while !cancelled.withLock({ $0 }) {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            throw .installationCancelled(try! DistroName("Ubuntu-24.04"))
+        }
+
+        func cancelInstall() async throws(MawError) -> Bool {
+            cancelled.withLock { $0 = true }
+            return true
+        }
+
+        func close() {}
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func endsOnCtrlCWhileStandardOutputIsNotRead() async throws {
+        var descriptors: [Int32] = [-1, -1]
+        try #require(pipe(&descriptors) == 0)
+        let (reader, writer) = (descriptors[0], descriptors[1])
+        let output = OutputQueue(standardOutput: writer, standardError: writer)
+        // More than a pipe holds: the queue's thread blocks in write(2) until the pipe is read.
+        output.write(String(repeating: "x", count: 1 << 20))
+
+        let view = InstallProgressView(
+            text: InstallProgressText(
+                name: try DistroName("Ubuntu-24.04"), displayName: "Ubuntu 24.04 LTS"),
+            isTerminal: true, columns: { 80 }, output: output.write)
+        let daemon = StalledDaemon()
+        let (signals, signal) = AsyncStream.makeStream(of: Int32.self)
+        let (resizes, _) = AsyncStream.makeStream(of: Int32.self)
+        let request = InstallRequest(
+            distribution: "Ubuntu-24.04", name: nil, user: "ayse", password: Secret("secret"),
+            locale: nil)
+        let ended = OSAllocatedUnfairLock<InstallCommand.Ending?>(initialState: nil)
+        Task.detached {
+            let ending = try? await InstallCommand.perform(
+                request, name: try DistroName("Ubuntu-24.04"), on: daemon, view: view,
+                output: output, signals: signals, resizes: resizes)
+            ended.withLock { $0 = ending }
+        }
+        daemon.report(.started(.download))
+        for _ in 0..<20 {
+            daemon.report(.download(InstallProgressWidthTests.progress))
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let sent = ContinuousClock.now
+        signal.yield(SIGINT)
+        while ended.withLock({ $0 }) == nil, ContinuousClock.now - sent < .seconds(5) {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let delay = ContinuousClock.now - sent
+        guard case .status(let status) = ended.withLock({ $0 }) else {
+            Issue.record("maw --install did not end within 5 seconds of Ctrl-C")
+            return
+        }
+        #expect(status == 130)
+        #expect(delay < .seconds(1), "Ctrl-C took \(delay)")
+        #expect(daemon.cancelled.withLock { $0 })
+
+        // The pipe is read at last: everything queued is written, in order, and the pipe can
+        // be closed.
+        let text = OSAllocatedUnfairLock(initialState: [UInt8]())
+        let drained = Thread {
+            var buffer = [UInt8](repeating: 0, count: 64 << 10)
+            while true {
+                let count = buffer.withUnsafeMutableBytes { read(reader, $0.baseAddress, $0.count) }
+                guard count > 0 else { break }
+                let bytes = buffer[..<count]
+                text.withLock { $0 += bytes }
+            }
+        }
+        drained.start()
+        #expect(await output.waitUntilWritten(timeout: .seconds(5)))
+        close(writer)
+        try await Task.sleep(for: .milliseconds(100))
+        close(reader)
+        let written = String(decoding: text.withLock { $0 }, as: UTF8.self)
+        #expect(
+            written.hasSuffix(
+                "Cancelling the installation...\n"
+                    + "maw: The installation of Ubuntu-24.04 was cancelled.\n"
+                    + "Nothing was installed. Run maw --install to start again; an interrupted "
+                    + "download resumes where it stopped.\n"))
+    }
+}

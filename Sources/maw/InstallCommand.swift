@@ -10,7 +10,9 @@ import MawXPC
 /// does.
 ///
 /// Ctrl-C asks the daemon to cancel and waits until it has removed the installation's traces,
-/// so that nothing is left when maw exits.
+/// so that nothing is left when maw exits. Output from then on goes through an `OutputQueue`,
+/// so that a terminal that does not read, such as one stopped with Ctrl-S, cannot hold up the
+/// cancellation or the exit.
 struct InstallCommand {
     let options: InstallOptions
     /// Connects to the daemon. The tests replace it.
@@ -23,6 +25,9 @@ struct InstallCommand {
 
     /// How long maw waits for the daemon to confirm a cancellation before it exits anyway.
     static let cancelTimeout = Duration.seconds(5)
+    /// How long the messages after Ctrl-C may wait for a terminal that does not read before
+    /// maw exits without them. The daemon has removed the installation by then.
+    static let outputTimeout = Duration.milliseconds(250)
 
     /// What is known before the account is asked for.
     struct Preparation {
@@ -71,60 +76,104 @@ struct InstallCommand {
         defer { client.close() }
         let entry = preparation.entry
         let name = preparation.name
-        let interactive = preparation.isInteractive
 
+        let output = OutputQueue()
         let view = InstallProgressView(
             text: InstallProgressText(name: name, displayName: entry.displayName),
-            isTerminal: isatty(STDOUT_FILENO) == 1)
+            isTerminal: isatty(STDOUT_FILENO) == 1, output: output.write)
         let request = InstallRequest(
             distribution: entry.name.rawValue, name: options.name, user: user.rawValue,
             password: password,
             locale: GuestLocale.preferred(
                 languageCode: Locale.current.language.languageCode?.identifier,
                 regionCode: Locale.current.region?.identifier))
-
         let signals = SignalMonitor([SIGINT, SIGTERM, SIGHUP])
         // A resized window gets the download's line redrawn at once, not at the next update.
-        let resizeMonitor = SignalMonitor([SIGWINCH])
-        let resizes = Task {
-            for await _ in resizeMonitor.signals {
+        let resizes = SignalMonitor([SIGWINCH])
+
+        switch try await Self.perform(
+            request, name: name, on: client, view: view, output: output,
+            signals: signals.signals, resizes: resizes.signals)
+        {
+        case .status(let status):
+            return status
+        case .installed(let summary):
+            guard preparation.isInteractive else { return 0 }
+            // As wsl --install does: the new distribution opens.
+            let plan = SessionPlan(machine: .distribution(summary.name), program: .loginShell)
+            return try await SessionRunner(plan: plan, mode: .terminal).run()
+        }
+    }
+
+    /// How `perform` ended, when it did not throw.
+    enum Ending {
+        /// The distribution is installed, and the summary written.
+        case installed(InstallSummary)
+        /// maw exits with this status: a signal cancelled the installation.
+        case status(Int32)
+    }
+
+    /// Runs the installation with its progress and returns once it has ended. A signal cancels
+    /// it.
+    ///
+    /// After a signal, everything that maw still writes waits at most `outputTimeout` for the
+    /// terminal. After the end in any other way, SIGINT, SIGTERM, and SIGHUP regain their
+    /// default action while maw waits for the terminal to take its last lines, since there is
+    /// nothing left to cancel.
+    static func perform(
+        _ request: InstallRequest, name: DistroName, on client: any InstallDaemon,
+        view: InstallProgressView, output: OutputQueue, signals: AsyncStream<Int32>,
+        resizes: AsyncStream<Int32>
+    ) async throws -> Ending {
+        let resizing = Task {
+            for await _ in resizes {
                 view.resized()
             }
         }
-        let outcome = await Self.firstOutcome(
+        let outcome = await firstOutcome(
             install: { () async throws(MawError) -> InstallSummary in
                 try await client.install(request)
             },
-            events: client.events, view: view, signals: signals.signals)
-        resizes.cancel()
+            events: client.events, view: view, signals: signals)
+        resizing.cancel()
 
         switch outcome {
         case .installed(let summary):
             view.finish()
-            print("")
-            print(Self.summary(summary))
-            guard interactive else { return 0 }
-            // As wsl --install does: the new distribution opens.
-            let plan = SessionPlan(machine: .distribution(summary.name), program: .loginShell)
-            return try await SessionRunner(plan: plan, mode: .terminal).run()
+            output.write("\n" + Self.summary(summary) + "\n")
+            restoreDefaultSignalActions()
+            await output.waitUntilWritten()
+            return .installed(summary)
         case .failed(let error):
             view.interrupt()
+            restoreDefaultSignalActions()
+            await output.waitUntilWritten()
             throw error
         case .signal(let number):
             view.interrupt()
-            FileHandle.standardError.write(Data("Cancelling the installation...\n".utf8))
+            output.writeError("Cancelling the installation...\n")
             let error: MawError
-            switch await Self.cancel(on: client) {
+            switch await cancel(on: client) {
             case .cancelled:
                 error = .installationCancelled(name)
             case .alreadyFinished:
-                print("The installation had already finished. Run maw -d \(name) to use it.")
-                return 0
+                output.write(
+                    "The installation had already finished. Run maw -d \(name) to use it.\n")
+                await output.waitUntilWritten(timeout: outputTimeout)
+                return .status(0)
             case .unconfirmed:
                 error = .daemonConnectionLost(during: "cancelling the installation")
             }
-            FileHandle.standardError.write(Data((Maw.failure(for: error)?.output ?? "").utf8))
-            return 128 + number
+            output.writeError(Maw.failure(for: error)?.output ?? "")
+            await output.waitUntilWritten(timeout: outputTimeout)
+            return .status(128 + number)
+        }
+    }
+
+    /// Gives SIGINT, SIGTERM, and SIGHUP their default action again, which ends maw.
+    private static func restoreDefaultSignalActions() {
+        for number in [SIGINT, SIGTERM, SIGHUP] {
+            signal(number, SIG_DFL)
         }
     }
 
@@ -302,6 +351,10 @@ struct InstallCommand {
 /// Writes the progress of an installation to standard output: each step's label when it
 /// starts and its duration when it ends, on the same line.
 ///
+/// `output` must not block, and in maw it only queues the text on an `OutputQueue`: the view
+/// calls it while it holds its lock, which keeps the lines in order, and `stop()`, on the way
+/// from Ctrl-C to the exit, takes the same lock.
+///
 /// On a terminal, the download's line is redrawn in place. It is fitted to the terminal's
 /// width at every update, and erased to the end of the screen before it is drawn again. A
 /// terminal that is made narrower wraps the line already drawn onto more rows, as Terminal.app
@@ -324,7 +377,7 @@ final class InstallProgressView: @unchecked Sendable {
         columns: @escaping @Sendable () -> Int? = {
             Terminal.windowSize().map { Int($0.columns) }
         },
-        output: @escaping @Sendable (String) -> Void = InstallProgressView.writeToStandardOutput
+        output: @escaping @Sendable (String) -> Void
     ) {
         self.text = text
         self.isTerminal = isTerminal
@@ -432,12 +485,6 @@ final class InstallProgressView: @unchecked Sendable {
         sequence += "\u{1B}[J" + line
         drawnLength = line.count
         output(sequence)
-    }
-
-    /// Through `stdout`, as `print` writes, so that the two never interleave out of order.
-    @Sendable static func writeToStandardOutput(_ string: String) {
-        print(string, terminator: "")
-        fflush(stdout)
     }
 }
 
