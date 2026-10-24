@@ -98,12 +98,13 @@ struct MawIntegration: Sendable {
     }
 
     /// maw on a pseudo-terminal, as a user at a keyboard runs it.
-    func interactive(_ arguments: [String], rows: UInt16 = 24, columns: UInt16 = 80) throws
-        -> InteractiveSession
-    {
+    func interactive(
+        _ arguments: [String], rows: UInt16 = 24, columns: UInt16 = 80,
+        collectsOutput: Bool = true
+    ) throws -> InteractiveSession {
         try InteractiveSession(
             executable: maw, arguments: arguments, environment: mawEnvironment, rows: rows,
-            columns: columns)
+            columns: columns, collectsOutput: collectsOutput)
     }
 
     /// Installs a distribution under `name` for the test user, without a terminal.

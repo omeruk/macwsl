@@ -356,6 +356,8 @@ final class DebugBootProcess: @unchecked Sendable {
 
     var isRunning: Bool { process.isRunning }
 
+    var processIdentifier: pid_t { process.processIdentifier }
+
     /// When the process exited, as its termination handler observed it.
     var exitedAt: ContinuousClock.Instant? { exitTime.withLock { $0 } }
 
@@ -426,10 +428,12 @@ final class InteractiveSession: @unchecked Sendable {
             columns: columns)
     }
 
-    /// Runs any executable on the pseudo-terminal, such as `maw`.
+    /// Runs any executable on the pseudo-terminal, such as `maw`. Without `collectsOutput`,
+    /// nothing reads the terminal, as when a user presses Ctrl-S or a terminal window stops
+    /// responding, until the caller reads `primaryDescriptor` itself.
     init(
         executable: URL, arguments: [String], environment: [String: String]? = nil,
-        rows: UInt16 = 0, columns: UInt16 = 0
+        rows: UInt16 = 0, columns: UInt16 = 0, collectsOutput: Bool = true
     ) throws {
         var primary: Int32 = -1
         var secondary: Int32 = -1
@@ -453,12 +457,14 @@ final class InteractiveSession: @unchecked Sendable {
         process.standardOutput = terminal
         process.standardError = terminal
         primaryHandle = FileHandle(fileDescriptor: primary, closeOnDealloc: false)
-        primaryHandle.readabilityHandler = { [collected] handle in
-            let data = handle.availableData
-            if data.isEmpty {
-                handle.readabilityHandler = nil
+        if collectsOutput {
+            primaryHandle.readabilityHandler = { [collected] handle in
+                let data = handle.availableData
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
+                }
+                collected.withLock { $0.append(data) }
             }
-            collected.withLock { $0.append(data) }
         }
         try process.run()
     }
@@ -475,6 +481,9 @@ final class InteractiveSession: @unchecked Sendable {
     }
 
     var isRunning: Bool { process.isRunning }
+
+    /// The terminal's primary side, from which the program's output is read.
+    var primaryDescriptor: Int32 { primary }
 
     /// Changes the terminal's window size and sends SIGWINCH to debug-boot, as a terminal
     /// emulator does. The pseudo-terminal is not debug-boot's controlling terminal, so the
