@@ -107,6 +107,23 @@ int maw_vsock_listen(uint32_t port, int backlog);
 /// The new descriptor is close-on-exec. ENOSYS outside Linux.
 int maw_vsock_accept_host(int fd, uint32_t *peer_cid);
 
+/// Opens a non-blocking, close-on-exec vsock stream socket. Returns the descriptor, or -1 with
+/// errno set (ENOSYS outside Linux).
+int maw_vsock_socket(void);
+
+/// Binds a vsock socket to `port` for any context ID. Ports up to 1023 need
+/// CAP_NET_BIND_SERVICE in the initial user namespace; without it the result is EACCES.
+int maw_vsock_bind(int fd, uint32_t port);
+
+/// Connects a vsock socket to `port` of context `cid`. On a non-blocking socket the result is
+/// EINPROGRESS while the connection is being made; `maw_socket_error` then gives its outcome
+/// once the socket is writable.
+int maw_vsock_connect(int fd, uint32_t cid, uint32_t port);
+
+/// The socket's pending error (SO_ERROR), which it also clears: 0 after a successful
+/// non-blocking connect. Returns 0 and sets `*error`, or returns an errno value.
+int maw_socket_error(int fd, int *error);
+
 #ifdef __cplusplus
 }
 #endif

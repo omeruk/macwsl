@@ -403,3 +403,49 @@ int maw_vsock_accept_host(int fd, uint32_t *peer_cid) {
 #endif
 }
 
+int maw_vsock_socket(void) {
+#if defined(__linux__)
+    return socket(AF_VSOCK, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+int maw_vsock_bind(int fd, uint32_t port) {
+#if defined(__linux__)
+    struct sockaddr_vm address;
+    memset(&address, 0, sizeof address);
+    address.svm_family = AF_VSOCK;
+    address.svm_port = port;
+    address.svm_cid = VMADDR_CID_ANY;
+    return bind(fd, (struct sockaddr *)&address, sizeof address) == 0 ? 0 : errno;
+#else
+    (void)fd;
+    (void)port;
+    return ENOSYS;
+#endif
+}
+
+int maw_vsock_connect(int fd, uint32_t cid, uint32_t port) {
+#if defined(__linux__)
+    struct sockaddr_vm address;
+    memset(&address, 0, sizeof address);
+    address.svm_family = AF_VSOCK;
+    address.svm_port = port;
+    address.svm_cid = cid;
+    // Not retried on EINTR: a repeated connect would report EALREADY. The agent's sockets
+    // are non-blocking, so connect does not wait and is not interrupted.
+    return connect(fd, (struct sockaddr *)&address, sizeof address) == 0 ? 0 : errno;
+#else
+    (void)fd;
+    (void)cid;
+    (void)port;
+    return ENOSYS;
+#endif
+}
+
+int maw_socket_error(int fd, int *error) {
+    socklen_t length = sizeof *error;
+    return getsockopt(fd, SOL_SOCKET, SO_ERROR, error, &length) == 0 ? 0 : errno;
+}
