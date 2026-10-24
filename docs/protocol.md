@@ -218,8 +218,14 @@ design and the alternatives.
   a Unix stream socket (`net.local.stream.sendspace`), with a low-water mark of 2048 bytes, so
   it may block from 6145 bytes on. `SO_RCVBUF` on the host's descriptor is accepted but does
   not change this, in the daemon and in a process that the descriptor was handed to alike
-  (`scripts/measure-vsock-buffer.sh`). The host therefore must not stop reading a connection
-  for long; this is not yet the case (see the pull request for phase 05).
+  (`scripts/measure-vsock-buffer.sh`). This applies to connections that the host opens
+  (`VZVirtioSocketDevice.connect(toPort:)`). On a connection that the guest opens to a
+  `VZVirtioSocketListener`, the host's socket fills in the same way, but only the guest's
+  writer blocks, after 256 KiB; the machine's other connections, new connections in both directions, and the console go on
+  working, also through a 60-second stall and while the process holding the descriptor is
+  stopped (`scripts/measure-vsock-buffer.sh --guest-initiated`). The host therefore must not
+  stop reading a connection that it opened for long; this is not yet the case (see the pull
+  request for phase 05).
 - A receiver holds at most one maximal frame plus one read in its buffer.
 
 In terminal mode, Ctrl-C typed on the Mac is a byte of input, as in ssh: the guest's terminal
