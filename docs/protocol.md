@@ -1,11 +1,13 @@
 # Host and guest agent protocol
 
 The host (`mawd`, and the client library in `MawProtocol`) talks to the guest agent,
-`maw-agent`, over vsock. This document specifies protocol version **2**. The code is in
-`Sources/MawProtocol` (both sides) and `Sources/MawAgentKit` (the agent). Version 2 adds the
+`maw-agent`, over vsock. This document specifies protocol version **3**. The code is in
+`Sources/MawProtocol` (both sides) and `Sources/MawAgentKit` (the agent). Version 2 added the
 user a session runs as, its program (a command, a shell command line, or a login shell), its
 locale, and the input window, with which `signal` and `resize` overtake queued standard input
-([0016](decisions/0016-input-window.md)).
+([0016](decisions/0016-input-window.md)). Version 3 adds the dial-back: the `dialBack`
+request, its `dialedBack` reply, the `dialBackNonce` frame, and the `dialBackFailed` error.
+The agent implements it; the host does not send `dialBack` yet.
 
 ## Transport
 
@@ -15,6 +17,8 @@ locale, and the input window, with which `signal` and `resize` overtake queued s
 - Each request uses a connection of its own. An exec session holds its connection until the
   process ends. `info` and `shutdown` each use a short connection that the agent closes after
   replying.
+- In reply to `dialBack`, the agent connects to the host's vsock port **19800** (`0x4D58`,
+  `AgentProtocol.dialBackPort`); see [Dial-back](#dial-back).
 - The host connects with `VirtualMachine.connectToAgent(timeout:)`, which retries every 20 ms
   while the agent is not listening yet, until the deadline. The descriptor it returns is a
   plain connected stream socket, independent of the `VirtualMachine` object.
@@ -39,6 +43,7 @@ as soon as the five header bytes have arrived, before reading the payload.
 | `0x01` | `version` | both | the sender's protocol version, 4 bytes, big-endian |
 | `0x02` | `control` | both | a control message, JSON, UTF-8 |
 | `0x03` | `stdinConsumed` | guest to host | standard input the agent has written to the process, or discarded, since its last `stdinConsumed` frame: a byte count, 4 bytes, big-endian |
+| `0x04` | `dialBackNonce` | guest to host | the nonce of a `dialBack` request, exactly 32 bytes; the first frame on a connection the agent dials. A header that declares any other size is a protocol error as soon as it arrives. |
 | `0x10` | `stdin` | host to guest | raw bytes for the process's standard input |
 | `0x11` | `stdout` | guest to host | raw bytes from standard output, or from the terminal |
 | `0x12` | `stderr` | guest to host | raw bytes from standard error (pipe mode only) |
@@ -54,8 +59,9 @@ An empty data frame is valid and has no effect.
 3. If the versions differ, the agent sends an `error` control message with code
    `versionMismatch`, `hostVersion`, and `guestVersion`, and closes the connection. The host
    reports `MawError.guestAgentVersionMismatch(host:guest:)`, whose suggested fix is to
-   update the guest files with `scripts/fetch-guest.sh`.
-4. Otherwise the host sends one request: `exec`, `info`, or `shutdown`.
+   install guest files built from the same commit, with `scripts/fetch-guest.sh` or by
+   rebuilding them.
+4. Otherwise the host sends one request: `exec`, `info`, `shutdown`, or `dialBack`.
 
 The agent closes a connection that has not completed the handshake and sent its request
 within 10 seconds.
@@ -79,6 +85,7 @@ names, missing required fields, and wrong types are protocol errors.
 | `exec` | `program`: one of `{"argv": [string]}`, `{"shellCommand": string}`, `{"loginShell": {}}`, required. `user`: string, default: the distribution's default user. `locale`: string, the host's preferred locale, optional. `environment`: {string: string}, default `{}`. `workingDirectory`: string, default: the user's home directory. `terminal`: `{"rows": u16, "columns": u16}`, absent for pipe mode. | `started`, then the session; or `error` |
 | `info` | none | `agentInfo` |
 | `shutdown` | none | `shutdownAcknowledged`, or `error` (`shutdownFailed`) |
+| `dialBack` | `nonce`: 64 lowercase hexadecimal digits, the 32 bytes of the nonce | `dialedBack`, or `error` (`dialBackFailed`); see [Dial-back](#dial-back) |
 
 ### During an exec session (host to guest)
 
@@ -100,6 +107,7 @@ TSTP TTIN TTOU URG XCPU XFSZ VTALRM PROF WINCH IO SYS`.
 | `exited` | `code`: i32 (0 to 255), or `signal`: i32 | The process ended. Exactly one field is present. `signal` is the Linux signal number. The last message of a session. |
 | `agentInfo` | `agentVersion`: string, `protocolVersion`: u32, `kernelRelease`: string, `uptimeMilliseconds`: u64 | Reply to `info`. |
 | `shutdownAcknowledged` | none | The agent has asked `init` to power off. The VM stops shortly after. |
+| `dialedBack` | none | Reply to `dialBack`: the agent has connected to the host and sends the nonce first on that connection. |
 | `error` | `code`: string, `message`: string, optional `hostVersion`, `guestVersion`: u32, optional `user`: string | A request failed, or the agent is closing the connection because of a protocol error. |
 
 Error codes:
@@ -114,6 +122,40 @@ Error codes:
 | `shutdownFailed` | The agent could not signal `init`. | `guestAgentFailed` |
 | `busy` | The agent is serving its maximum of 64 connections. It sends its `version` frame and this error without acting on the request. | `guestAgentFailed` |
 | `userNotFound` | The requested user, or the default user that `/etc/maw.conf` names, is not in `/etc/passwd`. `user` names it. | `userNotFound` |
+| `dialBackFailed` | The agent could not connect to the host for `dialBack`: no source port below 1024 was free, binding one failed, or the connection failed or did not complete within 2 seconds. The message says which. | `guestAgentFailed` |
+
+## Dial-back
+
+`dialBack` asks the agent to open a connection to the host. The design keeps a session's
+traffic off connections that the host opens, which stop the machine's vsock traffic while
+the host does not read them (see [Flow control and ordering](#flow-control-and-ordering)).
+
+```
+host                                    agent
+ | version                     version  |          request connection
+ | control dialBack{nonce}  ----------> |  bind a source port, connect to 19800
+ |  <---------------- control dialedBack|  then closes the request connection
+ |
+ |  <------------------- dialBackNonce  |          dialed connection
+ | version                     version  |
+ | control exec/info/shutdown --------> |  as on any new connection
+```
+
+1. The agent accepts `dialBack` only as the request of a connection that the host opened:
+   the agent's listener closes connections from any other context ID before reading
+   (docs/security.md). On a connection that the agent dialed, `dialBack` is a protocol
+   violation, and so it is during an exec session.
+2. The agent binds the highest free source port below 1024, counting down from 1023 and
+   skipping ports in use, and connects to the host's port 19800 with a timeout of 2 seconds.
+   If no port is free, binding fails for another reason, or the connection fails or times out,
+   it replies `error` with code `dialBackFailed` and closes the request connection.
+3. Otherwise it queues a `dialBackNonce` frame with the request's nonce as the first frame of
+   the dialed connection, replies `dialedBack`, and closes the request connection. It then
+   serves the dialed connection like a new one, in the same connection slot: the version
+   exchange, then one request.
+4. The host is to read exactly the 37 bytes of the nonce frame from the dialed connection,
+   and nothing more, so that the rest is left for whoever runs the session. The host side is
+   not implemented yet.
 
 ## Exec sessions
 
@@ -221,9 +263,10 @@ design and the alternatives.
   (`scripts/measure-vsock-buffer.sh`). This applies to connections that the host opens
   (`VZVirtioSocketDevice.connect(toPort:)`). On a connection that the guest opens to a
   `VZVirtioSocketListener`, the host's socket fills in the same way, but only the guest's
-  writer blocks, after 256 KiB; the machine's other connections, new connections in both directions, and the console go on
-  working, also through a 60-second stall and while the process holding the descriptor is
-  stopped (`scripts/measure-vsock-buffer.sh --guest-initiated`). The host therefore must not
+  writer blocks, after 256 KiB; the machine's other connections, new connections in both
+  directions, and the console go on working, also through a 60-second stall and while the
+  process holding the descriptor is stopped (`scripts/measure-vsock-buffer.sh
+  --guest-initiated`). The host therefore must not
   stop reading a connection that it opened for long; this is not yet the case (see the pull
   request for phase 05).
 - A receiver holds at most one maximal frame plus one read in its buffer.
