@@ -25,6 +25,14 @@
 // stream socket of those processes, for checking a running maw, mawd, and virtual machine
 // process: for example a `maw -e head -c 16777216 /dev/zero` whose standard output is a FIFO
 // that nothing reads, and the virtual machine's com.apple.Virtualization.VirtualMachine.
+//
+// With --guest-initiated, the connections that carry output are opened by the guest instead:
+// the host listens with VZVirtioSocketListener, and scripts/measure-vsock-guest.c, copied into
+// the guest's /run through the agent, connects and writes. For each run it records the same
+// figures, and also whether a guest-initiated connection (a guest program that connects every
+// 100 ms) and the console (a shell on hvc0 that echoes a line) still answer within 2 seconds.
+// It also checks which source ports the guest may bind, what VZVirtioSocketConnection reports
+// for a guest-initiated connection, and how long a dial-back takes.
 
 import Darwin
 import Foundation
@@ -123,6 +131,11 @@ func peer(of descriptor: Int32) -> (pid: pid_t, info: socket_fdinfo)? {
     guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERPID, &pid, &length) == 0,
         let own = socketInfo(pid: getpid(), descriptor: descriptor)
     else { return nil }
+    return socket(connectedTo: own.psi.soi_pcb, in: pid).map { (pid, $0) }
+}
+
+/// The socket in process `pid` whose peer is the socket with control block `pcb`.
+func socket(connectedTo pcb: UInt64, in pid: pid_t) -> socket_fdinfo? {
     let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
     guard size > 0 else { return nil }
     var entries = [proc_fdinfo](
@@ -132,9 +145,9 @@ func peer(of descriptor: Int32) -> (pid: pid_t, info: socket_fdinfo)? {
     where entry.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
         if let info = socketInfo(pid: pid, descriptor: entry.proc_fd),
             info.psi.soi_kind == Int32(SOCKINFO_UN),
-            info.psi.soi_proto.pri_un.unsi_conn_pcb == own.psi.soi_pcb
+            info.psi.soi_proto.pri_un.unsi_conn_pcb == pcb
         {
-            return (pid, info)
+            return info
         }
     }
     return nil
@@ -358,20 +371,94 @@ func spawnReceiver(receiveBuffer: Int32?, console: URL) -> (pid: pid_t, control:
 
 // MARK: The virtual machine
 
+/// A connection that the guest opened to a host listener.
+struct AcceptedConnection {
+    let descriptor: Int32
+    let sourcePort: UInt32
+    let destinationPort: UInt32
+    /// When the listener's delegate received it (DispatchTime nanoseconds).
+    let time: UInt64
+}
+
+final class ListenerDelegate: NSObject, VZVirtioSocketListenerDelegate {
+    let queue: DispatchQueue
+    let accept: (AcceptedConnection) -> Void
+
+    init(queue: DispatchQueue, accept: @escaping (AcceptedConnection) -> Void) {
+        self.queue = queue
+        self.accept = accept
+    }
+
+    func listener(
+        _ listener: VZVirtioSocketListener,
+        shouldAcceptNewConnection connection: VZVirtioSocketConnection,
+        from socketDevice: VZVirtioSocketDevice
+    ) -> Bool {
+        let time = DispatchTime.now().uptimeNanoseconds
+        // As the daemon does with a connection it opens: keep a duplicate of the descriptor
+        // and close the connection object, here once the delegate has returned.
+        let descriptor = dup(connection.fileDescriptor)
+        queue.async { connection.close() }
+        accept(
+            AcceptedConnection(
+                descriptor: descriptor, sourcePort: connection.sourcePort,
+                destinationPort: connection.destinationPort, time: time))
+        return true
+    }
+}
+
+/// Accepted connections, in order, for one thread to wait for.
+final class AcceptQueue: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [AcceptedConnection] = []
+    private let available = DispatchSemaphore(value: 0)
+
+    func add(_ connection: AcceptedConnection) {
+        lock.lock()
+        items.append(connection)
+        lock.unlock()
+        available.signal()
+    }
+
+    func next(timeout: Double) -> AcceptedConnection? {
+        guard available.wait(timeout: .now() + timeout) == .success else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        return items.removeFirst()
+    }
+}
+
 final class Machine: @unchecked Sendable {
     let queue = DispatchQueue(label: "measure-vsock-buffer")
     var machine: VZVirtualMachine!
     var device: VZVirtioSocketDevice!
+    /// The write end of the console's input, with `debugShell`.
+    var consoleInput: Int32 = -1
+    private var delegates: [ListenerDelegate] = []
 
-    init(kernelDirectory: URL, console: URL) {
+    /// With `debugShell`, the initramfs also runs a shell on the console, which reads what
+    /// is written to `consoleInput`.
+    init(kernelDirectory: URL, console: URL, debugShell: Bool = false) {
         let bootLoader = VZLinuxBootLoader(kernelURL: kernelDirectory.appending(path: "Image"))
         bootLoader.initialRamdiskURL = kernelDirectory.appending(path: "initramfs.cpio.gz")
-        bootLoader.commandLine = "console=hvc0"
+        bootLoader.commandLine = "console=hvc0" + (debugShell ? " maw.debug=shell" : "")
         let serial = VZVirtioConsoleDeviceSerialPortConfiguration()
-        do {
-            serial.attachment = try VZFileSerialPortAttachment(url: console, append: false)
-        } catch {
-            fail("console: \(error)")
+        if debugShell {
+            var pipeEnds: [Int32] = [-1, -1]
+            guard pipe(&pipeEnds) == 0,
+                FileManager.default.createFile(atPath: console.path, contents: nil),
+                let output = try? FileHandle(forWritingTo: console)
+            else { fail("console: cannot create its pipe or its log") }
+            consoleInput = pipeEnds[1]
+            serial.attachment = VZFileHandleSerialPortAttachment(
+                fileHandleForReading: FileHandle(fileDescriptor: pipeEnds[0]),
+                fileHandleForWriting: output)
+        } else {
+            do {
+                serial.attachment = try VZFileSerialPortAttachment(url: console, append: false)
+            } catch {
+                fail("console: \(error)")
+            }
         }
         let configuration = VZVirtualMachineConfiguration()
         configuration.bootLoader = bootLoader
@@ -425,6 +512,41 @@ final class Machine: @unchecked Sendable {
         return box.descriptor
     }
 
+    /// Accepts the guest's connections to `port` and passes each to `accept`, on the machine's
+    /// queue.
+    func listen(on port: UInt32, _ accept: @escaping (AcceptedConnection) -> Void) {
+        queue.sync {
+            let delegate = ListenerDelegate(queue: queue, accept: accept)
+            delegates.append(delegate)
+            let listener = VZVirtioSocketListener()
+            listener.delegate = delegate
+            device.setSocketListener(listener, forPort: port)
+        }
+    }
+
+    /// Like `connect(timeout:)` for any port, also returning how long the connection took to
+    /// open, in microseconds.
+    func timedConnect(to port: UInt32, timeout: Double) -> (descriptor: Int32, micros: Double)? {
+        final class Box: @unchecked Sendable {
+            var result: (Int32, UInt64)?
+        }
+        let box = Box()
+        let done = DispatchSemaphore(value: 0)
+        let start = DispatchTime.now().uptimeNanoseconds
+        queue.async { [device] in
+            device!.connect(toPort: port) { result in
+                if case .success(let connection) = result {
+                    box.result = (dup(connection.fileDescriptor), DispatchTime.now().uptimeNanoseconds)
+                    connection.close()
+                }
+                done.signal()
+            }
+        }
+        guard done.wait(timeout: .now() + timeout) == .success, let (descriptor, end) = box.result
+        else { return nil }
+        return (descriptor, Double(end - start) / 1000)
+    }
+
     /// Whether a new connection completes its version exchange within `timeout` seconds.
     func answers(within timeout: Double) -> Bool {
         let started = Date()
@@ -442,6 +564,425 @@ final class Machine: @unchecked Sendable {
         }
         _ = stopped.wait(timeout: .now() + 10)
     }
+}
+
+// MARK: Guest-initiated connections
+
+let streamPort: UInt32 = 20000
+let pingPort: UInt32 = 20001
+let dialPort: UInt32 = 20002
+let servePort: UInt32 = 20100
+let acceptPort: UInt32 = 20101
+let helperPath = "/run/measure-vsock-guest"
+
+/// The virtual machine's process, which holds the other end of the host's vsock descriptors.
+var machinePID: pid_t = 0
+
+let endOfInputFrame = frame(0x02, Array(#"{"stdinEOF":{}}"#.utf8))
+
+/// Reads a session's frames to its end. Returns its standard output and error, and the
+/// control message that ended it.
+func finish(_ descriptor: Int32) -> (output: String, ending: String) {
+    var output: [UInt8] = []
+    while let received = readFrame(descriptor) {
+        if received.type == 0x11 || received.type == 0x12 { output += received.payload }
+        let text = String(decoding: received.payload, as: UTF8.self)
+        if received.type == 0x02, text.contains("exited") || text.contains("error") {
+            return (String(decoding: output, as: UTF8.self), text)
+        }
+    }
+    return (String(decoding: output, as: UTF8.self), "the connection closed without exited")
+}
+
+/// Runs `argv` in the guest through the agent, with `input` as its standard input.
+func run(_ argv: [String], input: [UInt8] = [], on machine: Machine) -> (
+    output: String, ending: String
+) {
+    guard let descriptor = machine.connect(timeout: 5) else { fail("could not connect") }
+    defer { close(descriptor) }
+    var bytes = versionFrame() + execFrame(argv: argv)
+    for start in stride(from: 0, to: input.count, by: 32768) {
+        bytes += frame(0x10, Array(input[start..<min(start + 32768, input.count)]))
+    }
+    writeAll(descriptor, bytes + endOfInputFrame)
+    return finish(descriptor)
+}
+
+/// Arrival times of the guest's periodic connections.
+final class Pings: @unchecked Sendable {
+    private let lock = NSLock()
+    private var arrivals: [Date] = []
+
+    func record() {
+        lock.lock()
+        arrivals.append(Date())
+        lock.unlock()
+    }
+
+    /// Waits up to `timeout` seconds for a connection that arrives after now.
+    func arrive(within timeout: Double) -> Bool {
+        let start = Date()
+        while Date().timeIntervalSince(start) < timeout {
+            lock.lock()
+            let last = arrivals.last
+            lock.unlock()
+            if let last, last > start { return true }
+            usleep(10_000)
+        }
+        return false
+    }
+}
+
+/// Whether the shell on the console echoes a line within `timeout` seconds.
+func consoleAnswers(_ machine: Machine, console: URL, within timeout: Double) -> Bool {
+    let word = "console-pong-" + UUID().uuidString.prefix(8).lowercased()
+    writeAll(machine.consoleInput, Array("echo \(word)\n".utf8))
+    let start = Date()
+    while Date().timeIntervalSince(start) < timeout {
+        if let text = try? String(contentsOf: console, encoding: .utf8),
+            text.split(whereSeparator: \.isNewline).contains(where: {
+                $0.hasSuffix(word) && !$0.contains("echo")
+            })
+        {
+            return true
+        }
+        usleep(20_000)
+    }
+    return false
+}
+
+/// Whether a host-initiated connection, a guest-initiated connection, and the console each
+/// answer within 2 seconds, checked one after the other.
+func checks(_ machine: Machine, pings: Pings, console: URL) -> String {
+    let host = machine.answers(within: 2)
+    let guest = pings.arrive(within: 2)
+    let shell = consoleAnswers(machine, console: console, within: 2)
+    return "  answers within 2 s: host-initiated connection \(host), "
+        + "guest-initiated connection \(guest), console \(shell)"
+}
+
+/// Waits, without reading, until the bytes held by descriptor `descriptor` of process `pid`
+/// and the guest's count stop changing, or 30 seconds pass. Returns a report.
+func observe(pid: pid_t, descriptor: Int32, console: URL, tag: String, total: Int) -> String {
+    var stableSince = Date()
+    var last = (bytes: UInt32.max, count: -1)
+    let started = Date()
+    while Date().timeIntervalSince(started) < 30 {
+        usleep(100_000)
+        let held = socketInfo(pid: pid, descriptor: descriptor)?.psi.soi_rcv.sbi_cc ?? 0
+        let now = (bytes: held, count: lastCount(in: console, tag: tag))
+        if now != last {
+            last = now
+            stableSince = Date()
+        } else if Date().timeIntervalSince(stableSince) >= 1.5 {
+            break
+        }
+    }
+    return snapshot(pid: pid, descriptor: descriptor, console: console, tag: tag, total: total)
+}
+
+func snapshot(pid: pid_t, descriptor: Int32, console: URL, tag: String, total: Int) -> String {
+    guard let own = socketInfo(pid: pid, descriptor: descriptor) else {
+        return "  host socket: cannot be inspected"
+    }
+    let count = lastCount(in: console, tag: tag)
+    var lines = [
+        "  host socket holds \(own.psi.soi_rcv.sbi_cc) bytes",
+        "  the guest program wrote \(count) of \(total) bytes"
+            + (count == total ? " (it did not block)" : " before it blocked"),
+        "  host socket   receive: \(format(own.psi.soi_rcv)); kind \(own.psi.soi_kind), "
+            + "family \(own.psi.soi_family), type \(own.psi.soi_type)",
+    ]
+    if let info = socket(connectedTo: own.psi.soi_pcb, in: machinePID) {
+        lines.append("  peer (pid \(machinePID)) send:  \(format(info.psi.soi_snd))")
+    } else {
+        lines.append("  peer socket: not found in the virtual machine's process")
+    }
+    return lines.joined(separator: "\n")
+}
+
+/// Reads `descriptor` to end-of-file. Returns the byte count.
+func drainRaw(_ descriptor: Int32) -> Int {
+    var total = 0
+    var buffer = [UInt8](repeating: 0, count: 64 << 10)
+    while true {
+        var request = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+        guard poll(&request, 1, 60_000) > 0 else { return total }
+        let count = buffer.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
+        if count < 0 && errno == EINTR { continue }
+        guard count > 0 else { return total }
+        total += count
+    }
+}
+
+/// The holding process for a handed-over guest-initiated connection: takes the descriptor over
+/// descriptor 3 and reports its number. With `stream`, it then reads to end-of-file at once;
+/// otherwise it waits for the parent's word first. Reports the byte count over descriptor 3.
+func runHolder(stream: Bool) -> Never {
+    let control: Int32 = 3
+    let descriptor = receiveDescriptor(over: control)
+    writeLine(control, String(descriptor))
+    if !stream { _ = readLine(control) }
+    writeLine(control, String(drainRaw(descriptor)))
+    exit(0)
+}
+
+func spawnHolder(stream: Bool) -> (pid: pid_t, control: Int32) {
+    var pair: [Int32] = [-1, -1]
+    guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else { fail("socketpair") }
+    var actions: posix_spawn_file_actions_t?
+    posix_spawn_file_actions_init(&actions)
+    posix_spawn_file_actions_adddup2(&actions, pair[1], 3)
+    let arguments = [CommandLine.arguments[0], "--holder"] + (stream ? ["--stream"] : [])
+    let argv = arguments.map { strdup($0) } + [nil]
+    var pid: pid_t = 0
+    let result = posix_spawn(&pid, CommandLine.arguments[0], &actions, nil, argv, environ)
+    guard result == 0 else { fail("posix_spawn: \(describe(result))") }
+    close(pair[1])
+    return (pid, pair[0])
+}
+
+/// The control for `guestInitiatedRun`: the same guest program writes the same bytes on a
+/// connection that the host opens, which this process holds and does not read.
+func hostInitiatedRawRun(_ machine: Machine, pings: Pings, console: URL, total: Int) {
+    let tag = UUID().uuidString.prefix(8).lowercased()
+    guard let session = machine.connect(timeout: 5) else { fail("could not connect") }
+    defer { close(session) }
+    writeAll(
+        session,
+        versionFrame()
+            + execFrame(argv: [helperPath, "accept-write", String(acceptPort), String(total), tag])
+            + endOfInputFrame)
+    var descriptor: Int32?
+    for _ in 0..<50 where descriptor == nil {
+        descriptor = machine.timedConnect(to: acceptPort, timeout: 2)?.descriptor
+        if descriptor == nil { usleep(100_000) }
+    }
+    guard let descriptor else { fail("could not connect to the guest program") }
+    print(observe(pid: getpid(), descriptor: descriptor, console: console, tag: tag, total: total))
+    print(checks(machine, pings: pings, console: console))
+    let received = drainRaw(descriptor)
+    close(descriptor)
+    print("  after reading: \(received) of \(total) bytes" + (received == total ? "" : " (INCOMPLETE)"))
+    print("  the guest program's session ended with \(finish(session).ending)")
+}
+
+enum Holder {
+    /// This process holds the connection and does not read it.
+    case this
+    /// A second process holds it and does not read it.
+    case handedOver
+    /// A second process reads it, and is stopped with SIGSTOP 300 ms after it starts.
+    case handedOverStopped
+}
+
+/// One guest-initiated run: the guest program connects to `streamPort` and writes `total`
+/// bytes, which `holder` leaves unread until the checks are done; then every byte is read.
+func guestInitiatedRun(
+    _ machine: Machine, streams: AcceptQueue, pings: Pings, console: URL, holder: Holder,
+    total: Int, extraStall: UInt32 = 0
+) {
+    let tag = UUID().uuidString.prefix(8).lowercased()
+    guard let session = machine.connect(timeout: 5) else { fail("could not connect") }
+    defer { close(session) }
+    writeAll(
+        session,
+        versionFrame()
+            + execFrame(argv: [helperPath, "write", String(streamPort), String(total), tag])
+            + endOfInputFrame)
+    guard let accepted = streams.next(timeout: 10) else { fail("the guest did not connect") }
+    print(
+        "  accepted: sourcePort \(accepted.sourcePort), destinationPort "
+            + "\(accepted.destinationPort)")
+
+    func stall(pid: pid_t, descriptor: Int32) {
+        print(observe(pid: pid, descriptor: descriptor, console: console, tag: tag, total: total))
+        print(checks(machine, pings: pings, console: console))
+        if extraStall > 0 {
+            sleep(extraStall)
+            print("  after \(extraStall) s more without reading:")
+            print(snapshot(pid: pid, descriptor: descriptor, console: console, tag: tag, total: total))
+            print(checks(machine, pings: pings, console: console))
+        }
+    }
+
+    let received: Int
+    switch holder {
+    case .this:
+        stall(pid: getpid(), descriptor: accepted.descriptor)
+        received = drainRaw(accepted.descriptor)
+        close(accepted.descriptor)
+    case .handedOver, .handedOverStopped:
+        let stopped = holder == .handedOverStopped
+        let child = spawnHolder(stream: stopped)
+        sendDescriptor(accepted.descriptor, over: child.control)
+        close(accepted.descriptor)
+        guard let descriptor = Int32(readLine(child.control)) else { fail("holder") }
+        if stopped {
+            usleep(300_000)
+            kill(child.pid, SIGSTOP)
+            print("  the holding process was stopped with SIGSTOP after 300 ms")
+        }
+        stall(pid: child.pid, descriptor: descriptor)
+        if stopped {
+            kill(child.pid, SIGCONT)
+        } else {
+            writeLine(child.control, "drain")
+        }
+        received = Int(readLine(child.control)) ?? -1
+        var status: Int32 = 0
+        waitpid(child.pid, &status, 0)
+        close(child.control)
+    }
+    print("  after reading: \(received) of \(total) bytes" + (received == total ? "" : " (INCOMPLETE)"))
+    print("  the guest program's session ended with \(finish(session).ending)")
+}
+
+func percentiles(_ samples: [Double]) -> String {
+    let sorted = samples.sorted()
+    return String(
+        format: "median %.0f µs, 95th percentile %.0f µs, slowest %.0f µs (%d runs)",
+        sorted[sorted.count / 2], sorted[sorted.count * 95 / 100], sorted[sorted.count - 1],
+        sorted.count)
+}
+
+/// The time from writing a request on an open host-initiated connection to holding the
+/// connection the guest dials back, and to having read the request's 16 bytes from it.
+func dialBacks(_ machine: Machine, dials: AcceptQueue, count: Int) {
+    let started = run([helperPath, "serve", String(servePort), String(dialPort)], on: machine)
+    print("  the dial-back stand-in started: \(started.ending)")
+    var control: Int32?
+    for _ in 0..<50 where control == nil {
+        control = machine.timedConnect(to: servePort, timeout: 2)?.descriptor
+        if control == nil { usleep(100_000) }
+    }
+    guard let control else { fail("could not connect to the dial-back stand-in") }
+    defer { close(control) }
+    var accepted: [Double] = []
+    var read: [Double] = []
+    var ports: [UInt32] = []
+    for _ in 0..<count {
+        let nonce = (0..<16).map { _ in UInt8.random(in: 0...255) }
+        let start = DispatchTime.now().uptimeNanoseconds
+        writeAll(control, nonce)
+        guard let connection = dials.next(timeout: 5) else { fail("no dial-back") }
+        guard readExactly(connection.descriptor, 16, timeout: 5) == nonce else {
+            fail("the dial-back carried other bytes")
+        }
+        let end = DispatchTime.now().uptimeNanoseconds
+        close(connection.descriptor)
+        accepted.append(Double(connection.time - start) / 1000)
+        read.append(Double(end - start) / 1000)
+        ports.append(connection.sourcePort)
+    }
+    print("  request to accepted descriptor: \(percentiles(accepted))")
+    print("  request to 16 bytes read from it: \(percentiles(read))")
+    print(
+        "  source ports reported: \(ports.min()!) to \(ports.max()!), destinationPort "
+            + "\(dialPort)")
+
+    var opened: [Double] = []
+    var versions: [Double] = []
+    for _ in 0..<count {
+        let start = DispatchTime.now().uptimeNanoseconds
+        guard let connection = machine.timedConnect(to: agentPort, timeout: 5) else {
+            fail("could not connect")
+        }
+        writeAll(connection.descriptor, versionFrame())
+        guard readExactly(connection.descriptor, 9, timeout: 5) != nil else { fail("no version") }
+        let end = DispatchTime.now().uptimeNanoseconds
+        close(connection.descriptor)
+        opened.append(connection.micros)
+        versions.append(Double(end - start) / 1000)
+    }
+    print("  for comparison, connect(toPort:) to the agent: \(percentiles(opened))")
+    print("  connect(toPort:) and the version exchange: \(percentiles(versions))")
+}
+
+func guestInitiatedMeasurements(kernelDirectory: URL, console: URL, helper: URL, runs: Int) {
+    let machine = Machine(kernelDirectory: kernelDirectory, console: console, debugShell: true)
+    let bootStarted = Date()
+    while !machine.answers(within: 1) {
+        if Date().timeIntervalSince(bootStarted) > 30 { fail("the agent did not answer in 30 s") }
+    }
+    print(String(format: "agent ready after %.1f s", Date().timeIntervalSince(bootStarted)))
+    guard let probe = machine.connect(timeout: 5) else { fail("could not connect") }
+    var length = socklen_t(MemoryLayout<pid_t>.size)
+    getsockopt(probe, SOL_LOCAL, LOCAL_PEERPID, &machinePID, &length)
+    close(probe)
+
+    guard let program = FileManager.default.contents(atPath: helper.path) else {
+        fail("cannot read \(helper.path)")
+    }
+    let installed = run(
+        ["/bin/sh", "-c", "cat > \(helperPath) && chmod 755 \(helperPath)"],
+        input: Array(program), on: machine)
+    print("copied the guest program (\(program.count) bytes): \(installed.ending)")
+
+    let streams = AcceptQueue()
+    let dials = AcceptQueue()
+    let pings = Pings()
+    machine.listen(on: streamPort) { streams.add($0) }
+    machine.listen(on: dialPort) { dials.add($0) }
+    machine.listen(on: pingPort) { connection in
+        DispatchQueue.global().async {
+            if readExactly(connection.descriptor, 8, timeout: 2) != nil { pings.record() }
+            close(connection.descriptor)
+        }
+    }
+
+    print("source ports in the guest (\(helperPath) ports):")
+    let ports = run([helperPath, "ports", String(pingPort)], on: machine)
+    for line in ports.output.split(separator: "\n") { print("  \(line)") }
+    print("  \(ports.ending)")
+
+    print("guest connection every 100 ms: \(run([helperPath, "ping", String(pingPort), "100"], on: machine).ending)")
+    print("with nothing stalled:")
+    print(checks(machine, pings: pings, console: console))
+
+    let chunks = chunkSize * chunkCount
+    for index in 1...runs {
+        print("host-initiated, in this process, run \(index):")
+        guard let descriptor = machine.connect(timeout: 5) else { fail("could not connect") }
+        print(measure(descriptor, receiveBuffer: nil, console: console))
+        print(checks(machine, pings: pings, console: console))
+        print(drain(descriptor))
+        close(descriptor)
+    }
+    for index in 1...runs {
+        print("host-initiated to the guest program, in this process, run \(index):")
+        hostInitiatedRawRun(machine, pings: pings, console: console, total: chunks)
+    }
+    for index in 1...runs {
+        print("guest-initiated, in this process, run \(index):")
+        guestInitiatedRun(
+            machine, streams: streams, pings: pings, console: console, holder: .this,
+            total: chunks)
+    }
+    for index in 1...runs {
+        print("guest-initiated, handed over, run \(index):")
+        guestInitiatedRun(
+            machine, streams: streams, pings: pings, console: console, holder: .handedOver,
+            total: chunks)
+    }
+    for index in 1...runs {
+        print("guest-initiated, handed over, holder reading and then stopped, run \(index):")
+        guestInitiatedRun(
+            machine, streams: streams, pings: pings, console: console,
+            holder: .handedOverStopped, total: 1 << 30)
+    }
+    print("guest-initiated, in this process, 60 s stall:")
+    guestInitiatedRun(
+        machine, streams: streams, pings: pings, console: console, holder: .this, total: chunks,
+        extraStall: 60)
+    print("guest-initiated, handed over, 60 s stall:")
+    guestInitiatedRun(
+        machine, streams: streams, pings: pings, console: console, holder: .handedOver,
+        total: chunks, extraStall: 60)
+
+    print("dial-back:")
+    dialBacks(machine, dials: dials, count: 200)
+    machine.stop()
 }
 
 // MARK: Main
@@ -475,6 +1016,10 @@ if let index = arguments.firstIndex(of: "--inspect") {
     exit(0)
 }
 
+if arguments.contains("--holder") {
+    runHolder(stream: arguments.contains("--stream"))
+}
+
 if arguments.contains("--receiver") {
     guard let console = value(after: "--console") else { fail("--console is required") }
     runReceiver(
@@ -489,6 +1034,12 @@ let runs = value(after: "--runs").flatMap { Int($0) } ?? 3
 let console = URL(filePath: consolePath)
 
 signal(SIGPIPE, SIG_IGN)
+if let helper = value(after: "--guest-initiated") {
+    guestInitiatedMeasurements(
+        kernelDirectory: URL(filePath: kernelDirectory), console: console,
+        helper: URL(filePath: helper), runs: runs)
+    exit(0)
+}
 print("sysctl net.local.stream.sendspace and recvspace, kern.ipc.maxsockbuf:")
 for name in ["net.local.stream.sendspace", "net.local.stream.recvspace", "kern.ipc.maxsockbuf"] {
     var value: Int32 = 0
