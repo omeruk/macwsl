@@ -80,6 +80,9 @@
         /// Lines of guest console output. Bounded; see `Console` for the back-pressure policy.
         public nonisolated var consoleLines: AsyncStream<String> { console.lines }
         public nonisolated var consoleLogURL: URL { console.logURL }
+        /// Admits the connections that the agent dials for sessions, on
+        /// `AgentProtocol.dialBackPort`.
+        public nonisolated let dialBackGate: DialBackGate
 
         public private(set) var state: State = .stopped
 
@@ -88,6 +91,7 @@
         private let stateContinuation: AsyncStream<State>.Continuation
         private var machine: VZVirtualMachine?
         private var delegate: Delegate?
+        private var dialBackListener: (VZVirtioSocketListener, DialBackListenerDelegate)?
         private var hasStarted = false
         private var stopWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
         private let logger = Logger.virtualization
@@ -112,6 +116,11 @@
                 lineBufferLimit: consoleLineBufferLimit)
             (states, stateContinuation) = AsyncStream.makeStream(
                 of: State.self, bufferingPolicy: .bufferingNewest(32))
+            dialBackGate = DialBackGate { [console, name] message in
+                Logger.virtualization.notice(
+                    "\(name, privacy: .public): \(message, privacy: .public)")
+                console.note("dial-back: \(message)")
+            }
         }
 
         // MARK: Starting
@@ -171,7 +180,18 @@
             }
             if state == .starting {
                 transition(to: .running)
+                listenForDialBacks(on: machine)
             }
+        }
+
+        /// Accepts the connections that the agent dials for sessions until the machine stops.
+        private func listenForDialBacks(on machine: VZVirtualMachine) {
+            guard let device = machine.socketDevices.first as? VZVirtioSocketDevice else { return }
+            let delegate = DialBackListenerDelegate(gate: dialBackGate, queue: queue)
+            let listener = VZVirtioSocketListener()
+            listener.delegate = delegate
+            device.setSocketListener(listener, forPort: AgentProtocol.dialBackPort)
+            dialBackListener = (listener, delegate)
         }
 
         // MARK: Stopping
@@ -315,7 +335,29 @@
             }
         }
 
-        /// A client for the guest agent whose connections come from `connectToAgent`.
+        /// Opens a session's connection: the agent dials it in reply to a `dialBack` request
+        /// sent over a connection from `connectToAgent` (`DialBackGate`). Returns it positioned
+        /// where the version exchange starts, for `GuestAgentClient`.
+        public nonisolated func openSessionConnection(connectTimeout: Duration)
+            async throws(MawError) -> OwnedDescriptor
+        {
+            try await dialBackGate.openSessionConnection(
+                through: agentClient(connectTimeout: connectTimeout))
+        }
+
+        /// A client for the guest agent whose sessions run on connections from
+        /// `openSessionConnection`.
+        public nonisolated func sessionClient(
+            connectTimeout: Duration, replyTimeout: Duration = .seconds(10)
+        ) -> GuestAgentClient {
+            GuestAgentClient(replyTimeout: replyTimeout) { [self] () throws(MawError) in
+                try await openSessionConnection(connectTimeout: connectTimeout)
+            }
+        }
+
+        /// A client for the guest agent whose connections come from `connectToAgent`. Only
+        /// for `info` and `shutdown`, whose replies are small: a session's output on such a
+        /// connection could stall the machine's vsock device (docs/protocol.md).
         public nonisolated func agentClient(
             connectTimeout: Duration, replyTimeout: Duration = .seconds(10)
         ) -> GuestAgentClient {
@@ -391,6 +433,12 @@
         /// Enters a final state, wakes everyone waiting for the stop, and releases the machine.
         private func didStop(_ finalState: State) {
             transition(to: finalState)
+            dialBackGate.close()
+            if dialBackListener != nil {
+                (machine?.socketDevices.first as? VZVirtioSocketDevice)?
+                    .removeSocketListener(forPort: AgentProtocol.dialBackPort)
+                dialBackListener = nil
+            }
             for waiter in stopWaiters.values {
                 waiter.resume(returning: true)
             }
@@ -455,6 +503,43 @@
         func resume(_ result: Result<Int32, VirtualMachine.ConnectFailure>) -> Bool {
             guard let continuation = state.withLock({ $0.take() }) else { return false }
             continuation.resume(returning: result)
+            return true
+        }
+    }
+
+    /// Admits or refuses each connection to the dial-back port, on the virtual machine's queue,
+    /// without reading from it, and authenticates an admitted one on a thread of its own.
+    private final class DialBackListenerDelegate: NSObject, VZVirtioSocketListenerDelegate {
+        let gate: DialBackGate
+        let queue: DispatchSerialQueue
+
+        init(gate: DialBackGate, queue: DispatchSerialQueue) {
+            self.gate = gate
+            self.queue = queue
+        }
+
+        func listener(
+            _ listener: VZVirtioSocketListener,
+            shouldAcceptNewConnection connection: VZVirtioSocketConnection,
+            from socketDevice: VZVirtioSocketDevice
+        ) -> Bool {
+            guard gate.admit(sourcePort: connection.sourcePort) == nil else { return false }
+            // As for a connection the host opens: keep a duplicate of the descriptor and close
+            // the connection object, here once the delegate has returned.
+            let descriptor = dup(connection.fileDescriptor)
+            guard descriptor >= 0 else {
+                gate.abandon()
+                return false
+            }
+            nonisolated(unsafe) let connection = connection
+            queue.async { connection.close() }
+            let owned = OwnedDescriptor(descriptor)
+            let gate = self.gate
+            guard startDetachedThread({ gate.authenticate(owned) }) else {
+                owned.close()
+                gate.abandon()
+                return false
+            }
             return true
         }
     }
