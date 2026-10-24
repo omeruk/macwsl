@@ -13,7 +13,9 @@ reviews it as a whole.
   through `maw -u root`, as `wsl -u root` gives it on Windows; the guest's `sudo` password
   protects the guest against processes inside the guest, not against the Mac user.
 - **The guest must not reach beyond itself.** It has no access to the Mac's files in this phase
-  (phase 07 adds `/mnt/mac`), and no network path into the Mac other than NAT's.
+  (phase 07 adds `/mnt/mac`), and no network path into the Mac other than NAT's. The only
+  other connection it can open to the Mac is to the dial-back listener on vsock, which gives it
+  nothing without a session's nonce.
 - **Downloads are not trusted** until they are verified against a value that maw pins.
 
 ## Entry points
@@ -39,8 +41,10 @@ code signing requirement `identifier "dev.maw.maw" or identifier "dev.maw.mawd"`
 the host may connect:
 
 - On the Mac, vsock connections into a machine are opened through Virtualization.framework,
-  which only the process that runs the machine, `mawd`, can do. The daemon hands a
-  connection's descriptor to its client after the XPC checks above.
+  which only the process that runs the machine, `mawd`, can do. The daemon opens them only
+  for `info`, `shutdown`, and `dialBack` requests; a session runs on a connection that the
+  agent dials back (see the next section), whose descriptor the daemon hands to its client
+  after the XPC checks above.
 - Inside the guest, the kernel is built without the vsock loopback transport
   (`CONFIG_VSOCKETS_LOOPBACK` is not set, and `Guest/kernel/check-config.sh` requires that), so a
   guest process cannot connect to the guest's own ports.
@@ -56,6 +60,63 @@ as root without a password. An integration test now checks that a guest process 
 - The host treats the guest as untrusted input: frames are length-checked before they are
   read, payloads are limited to 1 MiB, buffers are bounded in both directions, and a malformed
   frame closes only its connection. The fuzz test sends 10,000 random frames.
+
+### The dial-back listener
+
+While a machine runs, `mawd` listens on the machine's vsock port 19800
+(`AgentProtocol.dialBackPort`), where the agent dials each session's connection in reply to a
+`dialBack` request ([decision record 0017](decisions/0017-dial-back-for-sessions.md),
+[docs/protocol.md](protocol.md)). It is the one exception to the phase 05 rule that nothing on
+the Mac listens for the guest.
+
+- **Who can reach it.** Only processes in that machine's guest, through its vsock device. The
+  listener is a `VZVirtioSocketListener` inside `mawd`, not a socket of the Mac's network stack:
+  other machines, other hosts, and processes on the Mac cannot connect to it. It is set when
+  the machine starts running and removed when it stops.
+- **The nonce is the boundary.** For each session, the daemon draws a 32-byte nonce from the
+  system's random number generator and sends it to the agent on a connection that the daemon
+  opened. It hands a dialed connection to a session only if the connection's first frame
+  carries a nonce that a session of that machine waits for. A nonce is used once, is valid for
+  5 seconds, and is compared in constant time. At most 64 sessions of a machine wait at once.
+- **The source port only filters.** The daemon refuses at once, before reading anything, a
+  connection from a source port of 1024 or above. In the guest kernel (6.18.57,
+  `net/vmw_vsock/af_vsock.c`, `__vsock_bind_connectible`), binding a port at or below 1023
+  needs `capable(CAP_NET_BIND_SERVICE)`, which is `ns_capable(&init_user_ns, ...)`: the
+  capability in the initial user namespace. Root in a container that runs in that namespace,
+  such as Docker's default, whose capabilities include `CAP_NET_BIND_SERVICE`, therefore
+  passes the filter; a process in another user namespace does not, even as root there. Bound
+  vsock ports are not separated by network namespace.
+- **Before anything is read**, the daemon also refuses every connection while no session of
+  the machine waits for one, and every connection once as many admitted connections have not
+  yet sent their nonce as there are waiting sessions plus 4. From an admitted connection it
+  reads exactly the 37-byte nonce frame, within 2 seconds, on a thread of its own, and closes
+  the connection if the frame is late, malformed, or carries no waiting session's nonce.
+- **A guest process without the capability** cannot bind a source port below 1024 (EACCES),
+  and the daemon refuses its dials without reading from them. It cannot learn a nonce: the
+  nonce travels only on the daemon's connection to the agent, which no other guest process
+  can read, and the agent runs as root.
+- **Guest root** can bind such a port and connect while a session opens, but without the
+  nonce its connection is closed after at most 37 bytes or 2 seconds and receives nothing;
+  guessing a 256-bit nonce is not feasible. Root could read a nonce from the agent's memory and
+  take a session's connection, but root can already trace or replace the agent and read every
+  session, so it gains nothing; the host treats every byte from the guest as untrusted.
+- **Denial of service by guest root, accepted.** While a session opens, guest root can hold
+  the places for connections without a nonce, as many as there are waiting sessions plus 4,
+  for up to 2 seconds each, or bind every source port below 1024. The agent's dial is then
+  refused, or finds no port, and the session fails with `sessionDialBackFailed`. While no
+  session opens, every connection is refused before anything is read. This is accepted
+  because root in the guest can stop or disturb its own machine in many other ways, and the
+  failure is limited to that machine.
+- **Nonces are never logged.** A nonce describes itself as `<nonce>`, refusals name their
+  reason without it, and the security integration test checks that the console log contains
+  neither the nonce that a refused dial sent nor any 64-digit hexadecimal string in a refusal.
+  Refusals go to the machine's console log, at most 5 in 10 seconds.
+- **Descriptors are closed on exec.** Virtualization.framework's own descriptor of a vsock
+  connection does not have `FD_CLOEXEC` set. The daemon duplicates it with `F_DUPFD_CLOEXEC`
+  and closes the framework's connection right away: in the connect completion handler for a
+  connection it opens, and once the listener's delegate has returned for a dialed one. The
+  console pipes are closed on exec as well, and the daemon starts programs with
+  `POSIX_SPAWN_CLOEXEC_DEFAULT`, so that no program it starts inherits a session.
 
 ### Guest files from CI
 
@@ -121,8 +182,9 @@ From phase 05 each distribution has a virtio network device with
 `VZNATNetworkDeviceAttachment` ([decision record 0014](decisions/0014-network-in-phase-05.md)).
 
 - The guest can open outbound connections, as any program on the Mac can.
-- Nothing listens on the Mac for the guest, and other machines cannot connect to the guest:
-  the NAT network is private to this Mac.
+- Nothing on the Mac listens for the guest on this network, and other machines cannot connect
+  to the guest: the NAT network is private to this Mac. The dial-back listener above is on
+  vsock, not on this network.
 - Port forwarding and `localhost` access arrive in phase 08 and will be described here.
 
 ### Files on the Mac
