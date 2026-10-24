@@ -368,7 +368,9 @@ extension MawError: LocalizedError {
             "Check the console log. Guest files from before the agent existed have no agent; "
                 + "update them with scripts/fetch-guest.sh."
         case .guestAgentVersionMismatch:
-            "Update the guest files with scripts/fetch-guest.sh."
+            "The guest files come from another build of maw. Install guest files built from "
+                + "the same commit: fetch them with scripts/fetch-guest.sh, or rebuild them as "
+                + "Guest/README.md describes."
         case .guestAgentFailed:
             "The console log may contain details."
         case .guestCommandNotFound:

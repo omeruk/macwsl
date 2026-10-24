@@ -71,6 +71,20 @@ import Testing
         #expect(error.recoverySuggestion?.contains("mawd install") == true)
     }
 
+    /// A host and guest files from different builds fail at the handshake with the fix named.
+    @Test func namesTheGuestFilesFixOnAProtocolMismatch() {
+        let error = MawError.guestAgentVersionMismatch(host: 3, guest: 2)
+        #expect(
+            error.errorDescription
+                == "The guest agent speaks protocol version 2, but this build of maw speaks "
+                + "version 3.")
+        #expect(
+            error.recoverySuggestion
+                == "The guest files come from another build of maw. Install guest files built "
+                + "from the same commit: fetch them with scripts/fetch-guest.sh, or rebuild them "
+                + "as Guest/README.md describes.")
+    }
+
     @Test func namesTheSigningScriptForARejectedSignature() {
         let error = MawError.clientSignatureRejected(identifier: "maw-5555")
         #expect(error.recoverySuggestion?.contains("scripts/sign-dev.sh") == true)
