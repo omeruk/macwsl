@@ -56,6 +56,10 @@ int maw_set_nonblocking(int fd) {
     return 0;
 }
 
+int maw_duplicate(int fd) {
+    return fcntl(fd, F_DUPFD_CLOEXEC, 0);
+}
+
 int maw_suppress_sigpipe(int fd) {
 #if defined(__APPLE__)
     int on = 1;

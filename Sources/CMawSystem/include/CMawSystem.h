@@ -79,6 +79,10 @@ int maw_terminal_eof_character(int fd);
 /// Makes a descriptor non-blocking.
 int maw_set_nonblocking(int fd);
 
+/// Duplicates a descriptor with close-on-exec set on the duplicate (`F_DUPFD_CLOEXEC`), unlike
+/// `dup`. Returns the duplicate, or -1 with errno set.
+int maw_duplicate(int fd);
+
 /// Stops writes to a socket or pipe whose reader has gone from raising SIGPIPE, where the
 /// platform allows that per descriptor (Darwin). Elsewhere, use `maw_send` for sockets.
 int maw_suppress_sigpipe(int fd);
