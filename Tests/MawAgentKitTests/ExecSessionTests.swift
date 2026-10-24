@@ -4,6 +4,12 @@ import Testing
 
 @testable import MawAgentKit
 
+#if canImport(Darwin)
+    import Darwin
+#elseif canImport(Glibc)
+    import Glibc
+#endif
+
 /// `GuestAgentClient` against the agent's session code over socket pairs.
 @Suite struct ExecSessionTests {
     let agent = TestAgent()
@@ -148,6 +154,37 @@ import Testing
         let delay = ContinuousClock.now - sent
         #expect(status == .signaled(signal: Signal.int.linuxNumber))
         #expect(delay < .seconds(1), "the signal took \(delay)")
+    }
+
+    /// Ctrl-C reaches a process whose output nobody reads within 100 ms. The output handler
+    /// blocks, as `maw`'s write to a standard output that nobody reads does; before, it blocked
+    /// the client's I/O thread, and the signal was never sent. The process's trap creates a
+    /// file, so that the test sees the signal arrive without reading any output.
+    @Test(.timeLimit(.minutes(1)), arguments: [nil, TerminalSize(rows: 24, columns: 80)])
+    func deliversASignalWhileTheOutputIsNotRead(terminal: TerminalSize?) async throws {
+        let marker = "/tmp/maw-test-signal-\(getpid())-\(UInt32.random(in: 0...UInt32.max))"
+        defer { unlink(marker) }
+        let output = UnreadOutput()
+        let process = try await agent.client.exec(
+            ExecRequest(
+                argv: ["/bin/sh", "-c", "trap 'touch \"$0\"; exit 130' INT; yes", marker],
+                terminal: terminal),
+            output: output.handler)
+        #expect(await output.waitUntilBlocked())
+        // Long enough for every buffer on the way to fill.
+        try await Task.sleep(for: .milliseconds(300))
+
+        let sent = ContinuousClock.now
+        process.send(.int)
+        while access(marker, F_OK) != 0 && ContinuousClock.now - sent < .seconds(5) {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        let delay = ContinuousClock.now - sent
+        #expect(access(marker, F_OK) == 0, "the signal did not arrive")
+        #expect(delay < .milliseconds(100), "the signal took \(delay)")
+
+        output.release()
+        #expect(await exitStatus(of: process, within: .seconds(5)) == .exited(code: 130))
     }
 
     /// A resize reaches a terminal whose process reads none of a large paste.

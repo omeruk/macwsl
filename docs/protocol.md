@@ -200,8 +200,12 @@ design and the alternatives.
 - **Input on the host.** `GuestProcess.write` blocks its caller while 256 KiB of input is
   queued and not yet sent.
 - **Output.** The agent reads the process's output only while less than 64 KiB waits to be
-  sent. When the host stops reading, the process's writes block. The host reads from the
-  connection only as fast as its output handler accepts data.
+  sent. When the host stops reading, the process's writes block. The host hands output to its
+  output handler on a thread of its own, and stops reading the connection while 256 KiB
+  (`GuestProcess.outputLimit`) waits for the handler. The thread that sends never waits for
+  the handler, so a signal or a window size is sent while a write to the Mac's standard
+  output blocks, for example SIGINT sent to `maw -e yes` while nobody reads its standard
+  output.
 - A receiver holds at most one maximal frame plus one read in its buffer.
 
 In terminal mode, Ctrl-C typed on the Mac is a byte of input, as in ssh: the guest's terminal

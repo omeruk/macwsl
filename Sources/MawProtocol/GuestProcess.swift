@@ -11,13 +11,15 @@ import MawCore
 
 /// A command running in the guest, started by `GuestAgentClient.exec`.
 ///
-/// A dedicated thread runs the connection: it hands output to the `OutputHandler` and sends
-/// what the methods below queue. Every method is safe to call from any thread or task.
+/// A dedicated I/O thread runs the connection: it sends what the methods below queue and
+/// queues the output it receives for a second thread, which hands it to the `OutputHandler`.
+/// Every method is safe to call from any thread or task.
 ///
 /// Standard input and its end travel in order. `signal` and `resize` overtake the input that
 /// has not been sent yet, and the input window (`AgentProtocol.inputWindow`) keeps the input
 /// already sent small enough for the agent to read the connection at all times, so that both
-/// reach the agent at once however much input the process leaves unread.
+/// reach the agent at once however much input the process leaves unread. The I/O thread never
+/// waits for the `OutputHandler`, so that they also reach it while the handler blocks.
 public final class GuestProcess: @unchecked Sendable {
     /// The process ID in the guest.
     public let pid: Int32
@@ -26,6 +28,10 @@ public final class GuestProcess: @unchecked Sendable {
     static let inputLimit = 256 << 10
     /// Queued frames move to the connection while it holds less than this.
     static let connectionOutputLimit = 64 << 10
+    /// Output that may wait for the `OutputHandler` before the I/O thread stops reading it.
+    static let outputLimit = 256 << 10
+
+    private typealias QueuedOutput = (stream: GuestAgentClient.OutputStream, bytes: [UInt8])
 
     private let lock = ConditionLock()
     /// Standard input and its end, in order.
@@ -37,6 +43,12 @@ public final class GuestProcess: @unchecked Sendable {
     /// Standard input sent and not yet reported consumed by the agent. Used by the I/O thread
     /// only.
     private var unconsumedInput = 0
+    /// Output received and not yet handed to the `OutputHandler`.
+    private var outputQueue: [QueuedOutput] = []
+    private var queuedOutputBytes = 0
+    /// How the connection ended, set by the I/O thread. Input is refused from then on.
+    private var ending: Result<ExitStatus, MawError>?
+    /// `ending`, once the output received before it has been delivered.
     private var result: Result<ExitStatus, MawError>?
     private var waiters: [CheckedContinuation<Result<ExitStatus, MawError>, Never>] = []
     private let wakeReader: OwnedDescriptor
@@ -56,11 +68,13 @@ public final class GuestProcess: @unchecked Sendable {
         _ = maw_set_nonblocking(fds[0])
         _ = maw_set_nonblocking(fds[1])
 
-        let started = startDetachedThread { [self] in
-            run(connection, output: output)
-        }
-        guard started else {
+        guard startDetachedThread({ [self] in deliverOutput(to: output) }) else {
             connection.descriptor.close()
+            throw .guestAgentFailed(reason: "could not start the output thread")
+        }
+        guard startDetachedThread({ [self] in run(connection) }) else {
+            connection.descriptor.close()
+            end(.failure(.guestAgentFailed(reason: "could not start the I/O thread")))
             throw .guestAgentFailed(reason: "could not start the I/O thread")
         }
     }
@@ -72,10 +86,10 @@ public final class GuestProcess: @unchecked Sendable {
     @discardableResult
     public func write(_ bytes: some Collection<UInt8>) -> Bool {
         let accepted = lock.withLock {
-            while queuedInputBytes >= Self.inputLimit && result == nil {
+            while queuedInputBytes >= Self.inputLimit && ending == nil {
                 lock.wait()
             }
-            guard result == nil else { return false }
+            guard ending == nil else { return false }
             var remaining = bytes[...]
             while !remaining.isEmpty {
                 let chunk = remaining.prefix(AgentProtocol.maximumDataChunkSize)
@@ -120,7 +134,7 @@ public final class GuestProcess: @unchecked Sendable {
 
     private func enqueue(_ add: () -> Void) {
         let accepted = lock.withLock {
-            guard result == nil else { return false }
+            guard ending == nil else { return false }
             add()
             return true
         }
@@ -154,20 +168,49 @@ public final class GuestProcess: @unchecked Sendable {
         return try outcome.get()
     }
 
-    // MARK: I/O thread
+    // MARK: Output thread
 
-    private func run(_ connection: FrameConnection, output: GuestAgentClient.OutputHandler) {
-        let outcome: Result<ExitStatus, MawError>
-        do {
-            outcome = .success(try serve(connection, output: output))
-        } catch {
-            outcome = .failure(GuestAgentClient.map(error, during: "exec"))
+    /// Hands queued output to `output` until the connection has ended and everything before
+    /// the end has been delivered, then publishes the result.
+    private func deliverOutput(to output: GuestAgentClient.OutputHandler) {
+        while true {
+            let work = lock.withLock { () -> OutputWork in
+                while outputQueue.isEmpty && ending == nil {
+                    lock.wait()
+                }
+                if let ending, outputQueue.isEmpty {
+                    return .finish(ending)
+                }
+                defer {
+                    outputQueue = []
+                    queuedOutputBytes = 0
+                }
+                return .deliver(outputQueue, resumeReading: queuedOutputBytes >= Self.outputLimit)
+            }
+            switch work {
+            case .deliver(let batch, let resumeReading):
+                // The I/O thread stopped reading at the limit; it may read again.
+                if resumeReading {
+                    wake()
+                }
+                for piece in batch {
+                    piece.bytes.withUnsafeBytes { output(piece.stream, $0) }
+                }
+            case .finish(let outcome):
+                publish(outcome)
+                return
+            }
         }
-        connection.descriptor.close()
+    }
 
+    private enum OutputWork {
+        case deliver([QueuedOutput], resumeReading: Bool)
+        case finish(Result<ExitStatus, MawError>)
+    }
+
+    private func publish(_ outcome: Result<ExitStatus, MawError>) {
         let waiting = lock.withLock {
             result = outcome
-            lock.broadcast()
             defer { waiters.removeAll() }
             return waiters
         }
@@ -176,9 +219,39 @@ public final class GuestProcess: @unchecked Sendable {
         }
     }
 
-    private func serve(_ connection: FrameConnection, output: GuestAgentClient.OutputHandler)
-        throws(ConnectionError) -> ExitStatus
-    {
+    // MARK: I/O thread
+
+    private func run(_ connection: FrameConnection) {
+        let outcome: Result<ExitStatus, MawError>
+        do {
+            outcome = .success(try serve(connection))
+        } catch {
+            outcome = .failure(GuestAgentClient.map(error, during: "exec"))
+        }
+        connection.descriptor.close()
+        end(outcome)
+    }
+
+    /// Records how the connection ended: writers stop waiting, and the output thread
+    /// publishes `outcome` once it has delivered the output before it.
+    private func end(_ outcome: Result<ExitStatus, MawError>) {
+        lock.withLock {
+            ending = outcome
+            lock.broadcast()
+        }
+    }
+
+    private func queueOutput(_ stream: GuestAgentClient.OutputStream, _ bytes: [UInt8]) {
+        lock.withLock {
+            if outputQueue.isEmpty {
+                lock.broadcast()
+            }
+            outputQueue.append((stream, bytes))
+            queuedOutputBytes += bytes.count
+        }
+    }
+
+    private func serve(_ connection: FrameConnection) throws(ConnectionError) -> ExitStatus {
         var drain = [UInt8](repeating: 0, count: 64)
         // Set when the agent has closed its side, typically right after sending `exited`.
         // What it sent before is still read; what is queued for it is dropped.
@@ -189,9 +262,9 @@ public final class GuestProcess: @unchecked Sendable {
             while let frame = try connection.nextFrame() {
                 switch frame.type {
                 case .stdout:
-                    frame.payload.withUnsafeBytes { output(.stdout, $0) }
+                    queueOutput(.stdout, frame.payload)
                 case .stderr:
-                    frame.payload.withUnsafeBytes { output(.stderr, $0) }
+                    queueOutput(.stderr, frame.payload)
                 case .control:
                     let message: ControlMessage
                     do throws(FrameError) {
@@ -242,7 +315,10 @@ public final class GuestProcess: @unchecked Sendable {
             }
 
             var events: Int32 = 0
-            if connection.canReceive {
+            // While the output thread is behind, the I/O thread stops reading, which applies
+            // back-pressure to the process, but it keeps sending.
+            let outputIsFull = lock.withLock { queuedOutputBytes >= Self.outputLimit }
+            if connection.canReceive && !outputIsFull {
                 events |= POLLIN
             }
             // Frames that only the connection's output limit holds back need the next
@@ -252,8 +328,10 @@ public final class GuestProcess: @unchecked Sendable {
             if connection.pendingOutputCount > 0 || (framesRemain && !agentStoppedReading) {
                 events |= POLLOUT
             }
+            // With no events, the connection is left out: `poll` reports a hang-up whatever the
+            // events requested, and the thread would spin until the output thread catches up.
             var requests = [
-                pollRequest(connection.rawDescriptor, events),
+                pollRequest(events == 0 ? -1 : connection.rawDescriptor, events),
                 pollRequest(wakeReader.rawValue, POLLIN),
             ]
             do {
@@ -266,7 +344,7 @@ public final class GuestProcess: @unchecked Sendable {
                     read(wakeReader.rawValue, $0.baseAddress, $0.count)
                 }) > 0 {}
             }
-            if requests[0].returned(POLLIN | POLLHUP | POLLERR) {
+            if events & POLLIN != 0 && requests[0].returned(POLLIN | POLLHUP | POLLERR) {
                 try connection.receive()
             }
         }

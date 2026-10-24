@@ -14,8 +14,10 @@ public struct GuestAgentClient: Sendable {
         case stderr
     }
 
-    /// Receives a process's output on the client's I/O thread. It may block; while it does,
-    /// the client stops reading from the guest, which applies back-pressure to the process.
+    /// Receives a process's output, in order, on a thread of the client's own. It may block;
+    /// once `GuestProcess.outputLimit` bytes wait for it, the client stops reading the
+    /// process's output from the guest, which applies back-pressure to the process. Signals and
+    /// resizes still reach the guest while it blocks.
     public typealias OutputHandler = @Sendable (OutputStream, UnsafeRawBufferPointer) -> Void
 
     private let connect: Connector

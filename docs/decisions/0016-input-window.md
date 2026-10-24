@@ -34,6 +34,12 @@ Protocol version 2 has not been released, so it can change without a new version
 3. **`stdinEOF` stays in order** behind the input before it, in the input's queue. It ends the
    input once; input that follows it, and a second `stdinEOF`, have no effect.
 4. One connection per session, as before.
+5. **The host's I/O thread never waits for the output handler.** It queues the process's output
+   for a thread of its own, which hands it to the handler, and stops reading the connection
+   while 256 KiB (`GuestProcess.outputLimit`) waits there. A signal or a resize is therefore
+   sent while a write to the Mac's standard output blocks. Before, the I/O thread called the
+   handler itself, and a `maw -e` whose standard output nobody read never sent Ctrl-C. (Added
+   on 2026-10-24.)
 
 ## The window's size and the report's form
 
@@ -60,6 +66,10 @@ window returns input less often, but lets the agent hold more: 1 MiB per session
 against 256 KiB before this decision. Beyond 1 MiB the gain was within the noise of these
 runs, so the window is 1 MiB.
 
+The remaining cost of 1.7 % over vsock is accepted. It was measured while the Mac's load
+average was between 2 and 8, and will be measured again on an idle Mac before phase 05 is
+complete.
+
 ## Alternatives considered
 
 - **A second connection per session for control messages.** This would separate the two
@@ -81,7 +91,11 @@ runs, so the window is 1 MiB.
 
 ## Consequences
 
-- Ctrl-C and resizes reach the guest process however much input is queued for it.
+- Ctrl-C and resizes reach the guest process however much input is queued for it, and
+  whether or not the host's standard output is read.
+- The host runs a second thread per session, for the output. It holds less than 1 MiB of
+  output per session: up to 256 KiB plus one read waiting for the handler, and as much again
+  in the batch that the handler is writing.
 - Memory stays bounded on both sides: the host queues at most 256 KiB of input beyond the
   window, and the agent holds at most the window, 1 MiB, plus the terminal's end-of-file
   character. Before this decision the agent held at most 256 KiB, and the guest kernel's vsock

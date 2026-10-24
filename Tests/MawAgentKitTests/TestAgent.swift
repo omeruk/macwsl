@@ -78,6 +78,44 @@ final class Output: @unchecked Sendable {
     }
 }
 
+/// An output handler that blocks until `release()`, as a write to a standard output that
+/// nobody reads does, and discards what it receives.
+final class UnreadOutput: @unchecked Sendable {
+    private let lock = ConditionLock()
+    private var entered = false
+    private var released = false
+
+    var handler: GuestAgentClient.OutputHandler {
+        { [self] _, _ in
+            lock.withLock {
+                entered = true
+                while !released {
+                    lock.wait()
+                }
+            }
+        }
+    }
+
+    /// Waits until the handler has received output and blocked. Returns whether it did.
+    func waitUntilBlocked(timeout: Duration = .seconds(10)) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if lock.withLock({ entered }) {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
+    }
+
+    func release() {
+        lock.withLock {
+            released = true
+            lock.broadcast()
+        }
+    }
+}
+
 /// Writes lines of `y` to a process's standard input on a thread of its own, as `yes` does,
 /// until the process ends.
 final class InputFlood: @unchecked Sendable {
