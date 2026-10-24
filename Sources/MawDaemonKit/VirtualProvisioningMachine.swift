@@ -147,7 +147,7 @@
             }
             return GuestAgentClient(guestName: "the provisioning machine") {
                 () throws(MawError) in
-                try await machine.connectToAgent()
+                try await machine.openSessionConnection()
             }
         }
 

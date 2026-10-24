@@ -79,8 +79,8 @@
 
         // MARK: Sessions
 
-        /// Starts `machine` if needed, takes a lease on it, and connects to its guest agent.
-        /// `onEnd` runs if the machine stops while the lease is held.
+        /// Starts `machine` if needed, takes a lease on it, and opens a session's connection to
+        /// its guest agent. `onEnd` runs if the machine stops while the lease is held.
         public func openSession(
             on machine: MachineID, onEnd: @escaping LeaseEndHandler
         ) async throws(MawError) -> (Lease, OwnedDescriptor) {
@@ -94,7 +94,7 @@
                 connecting[lease.id] = .some(nil)
                 let result: Result<OwnedDescriptor, MawError>
                 do throws(MawError) {
-                    result = .success(try await handle.connectToAgent())
+                    result = .success(try await handle.openSessionConnection())
                 } catch {
                     result = .failure(error)
                 }

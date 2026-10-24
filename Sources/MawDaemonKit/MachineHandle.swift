@@ -14,8 +14,9 @@
         /// Boots the machine and returns once its guest agent answers.
         func start() async throws(MawError)
 
-        /// Opens a new connection to the guest agent, which the caller owns.
-        func connectToAgent() async throws(MawError) -> OwnedDescriptor
+        /// Opens a new session's connection to the guest agent, which the caller owns. The
+        /// agent dials it in reply to a `dialBack` request (docs/protocol.md).
+        func openSessionConnection() async throws(MawError) -> OwnedDescriptor
 
         /// Stops the machine cleanly, or forcibly if the guest does not power off in time.
         /// Returns once it has stopped, with a description of how for the log.

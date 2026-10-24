@@ -11,7 +11,7 @@
         static let agentReadyTimeout = Duration.seconds(30)
         /// How long `stop()` waits for the guest after each request to power off.
         static let stopTimeout = Duration.seconds(5)
-        /// How long a session's connection to a running agent may take.
+        /// How long the connection for a session's `dialBack` request may take.
         static let connectTimeout = Duration.seconds(5)
         /// How long `start()` waits for another virtual machine to release the disk.
         static let diskReleaseTimeout = Duration.seconds(10)
@@ -99,8 +99,8 @@
                 "\(machine): agent ready after \((ContinuousClock.now - started).milliseconds) ms")
         }
 
-        public func connectToAgent() async throws(MawError) -> OwnedDescriptor {
-            try await virtualMachine.connectToAgent(timeout: Self.connectTimeout)
+        public func openSessionConnection() async throws(MawError) -> OwnedDescriptor {
+            try await virtualMachine.openSessionConnection(connectTimeout: Self.connectTimeout)
         }
 
         public func stop() async -> String {
