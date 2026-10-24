@@ -32,16 +32,42 @@ import os
         #expect(gate.gate.admit(sourcePort: 1023) == .noPendingRequest)
     }
 
-    /// At most 4 admitted connections may be without a nonce; a fifth is refused until one of
-    /// them has been authenticated or refused.
-    @Test func capsTheConnectionsThatHaveNotSentTheirNonce() async throws {
+    /// However many sessions open at once, each one's dial finds a place: N waiting sessions
+    /// admit N dials that have not yet sent their nonce.
+    @Test(arguments: [1, 32, 64])
+    func admitsADialForEveryWaitingSessionInABurst(_ sessions: Int) throws {
         let gate = TestGate()
-        _ = try gate.gate.expect()
-        for _ in 0..<4 {
+        for _ in 0..<sessions {
+            _ = try gate.gate.expect()
+        }
+        for dial in 0..<sessions {
+            #expect(gate.gate.admit(sourcePort: 1023) == nil, "dial \(dial + 1) of \(sessions)")
+        }
+        #expect(gate.reports.isEmpty)
+    }
+
+    @Test func refusesEveryDialWhileNoSessionWaits() {
+        let gate = TestGate()
+        for _ in 0..<10 {
+            #expect(gate.gate.admit(sourcePort: 1023) == .noPendingRequest)
+        }
+    }
+
+    /// Beyond one place for each waiting session, 4 admitted connections may be without a
+    /// nonce; the next is refused until one of them has been authenticated, refused, or
+    /// abandoned.
+    @Test(arguments: [1, 3, 64])
+    func capsTheConnectionsThatHaveNotSentTheirNonce(_ sessions: Int) async throws {
+        let gate = TestGate()
+        for _ in 0..<sessions {
+            _ = try gate.gate.expect()
+        }
+        let limit = sessions + 4
+        for _ in 0..<limit {
             #expect(gate.gate.admit(sourcePort: 1023) == nil)
         }
-        #expect(gate.gate.admit(sourcePort: 1023) == .tooManyUnauthenticated(limit: 4))
-        #expect(gate.gate.admit(sourcePort: 1022) == .tooManyUnauthenticated(limit: 4))
+        #expect(gate.gate.admit(sourcePort: 1023) == .tooManyUnauthenticated(limit: limit))
+        #expect(gate.gate.admit(sourcePort: 1022) == .tooManyUnauthenticated(limit: limit))
 
         let pair = try SocketPair()
         pair.closeGuestSide()
@@ -49,10 +75,24 @@ import os
             gate.gate.authenticate(pair.host)
                 == .nonceNotReceived("the connection closed after 0 bytes"))
         #expect(gate.gate.admit(sourcePort: 1023) == nil)
-        #expect(gate.gate.admit(sourcePort: 1023) == .tooManyUnauthenticated(limit: 4))
+        #expect(gate.gate.admit(sourcePort: 1023) == .tooManyUnauthenticated(limit: limit))
 
         gate.gate.abandon()
         #expect(gate.gate.admit(sourcePort: 1023) == nil)
+    }
+
+    /// The places follow the waiting sessions: once a session's request is withdrawn, its
+    /// place goes with it.
+    @Test func givesUpThePlaceOfASessionThatNoLongerWaits() throws {
+        let gate = TestGate()
+        let first = try gate.gate.expect()
+        _ = try gate.gate.expect()
+        for _ in 0..<6 {
+            #expect(gate.gate.admit(sourcePort: 1023) == nil)
+        }
+        #expect(gate.gate.admit(sourcePort: 1023) == .tooManyUnauthenticated(limit: 6))
+        gate.gate.cancel(first)
+        #expect(gate.gate.admit(sourcePort: 1023) == .tooManyUnauthenticated(limit: 5))
     }
 
     // MARK: Authentication

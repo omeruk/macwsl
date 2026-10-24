@@ -13,8 +13,9 @@
     ///
     /// 1. `admit(sourcePort:)`, on the virtual machine's queue, before anything is read: it
     ///    refuses a source port of 1024 or above, any connection while no session waits, and
-    ///    any connection beyond `Limits.unauthenticatedConnections` that have not yet sent
-    ///    their nonce.
+    ///    any connection once as many admitted connections have not yet sent their nonce as
+    ///    there are waiting sessions plus `Limits.extraUnauthenticatedConnections`. Each
+    ///    waiting session's own dial therefore finds a place, however many open at once.
     /// 2. `authenticate(_:)`, on a thread of its own: it reads exactly the nonce frame, within
     ///    `Limits.nonceReadTimeout`, and never a byte more, so that the session's own bytes stay
     ///    in the socket for the client. A connection whose nonce matches no waiting session is
@@ -26,8 +27,9 @@
     /// logged. `state` is guarded by its lock.
     public final class DialBackGate: Sendable {
         public struct Limits: Sendable {
-            /// Connections admitted that have not yet sent their nonce.
-            public var unauthenticatedConnections = 4
+            /// Connections admitted that have not yet sent their nonce, beyond one for each
+            /// waiting session.
+            public var extraUnauthenticatedConnections = 4
             /// Sessions waiting for their connection: the agent's own connection limit.
             public var pendingRequests = AgentProtocol.maximumConnections
             /// How long a session's nonce stays valid after `expect()`.
@@ -47,7 +49,8 @@
             case unprivilegedSourcePort(UInt32)
             /// No session is waiting for a connection.
             case noPendingRequest
-            /// `limit` admitted connections have not yet sent their nonce.
+            /// `limit` admitted connections have not yet sent their nonce: one for each waiting
+            /// session, and `Limits.extraUnauthenticatedConnections` more.
             case tooManyUnauthenticated(limit: Int)
             /// The connection did not send a whole nonce frame in time.
             case nonceNotReceived(String)
@@ -252,10 +255,9 @@
                 if state.pending.isEmpty {
                     return (.noPendingRequest, waiters)
                 }
-                if state.unauthenticated >= limits.unauthenticatedConnections {
-                    return (
-                        .tooManyUnauthenticated(limit: limits.unauthenticatedConnections), waiters
-                    )
+                let limit = state.pending.count + limits.extraUnauthenticatedConnections
+                if state.unauthenticated >= limit {
+                    return (.tooManyUnauthenticated(limit: limit), waiters)
                 }
                 state.unauthenticated += 1
                 return (nil, waiters)
