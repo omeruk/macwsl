@@ -156,13 +156,12 @@ struct DaemonIntegrationTests {
     /// the guest, and a second session, which waits for that file, ends at once; the time to
     /// its exit bounds the delay from above.
     ///
-    /// maw's I/O thread no longer waits for the write to its standard output, and sends the
-    /// signal at once (ExecSessionTests covers this over a socket pair). Over vsock the signal
-    /// still does not arrive: once the host side of the session's connection is full,
-    /// Virtualization.framework's vsock device blocks in a write to it and stops carrying the
-    /// machine's other vsock traffic, the signal and the second session included.
-    @Test(.disabled("The vsock device stops while one connection's host side is full."))
-    func passesSIGINTWhileTheOutputIsNotRead() async throws {
+    /// maw's I/O thread does not wait for the write to its standard output, and sends the
+    /// signal at once (ExecSessionTests covers this over a socket pair). Over vsock this needs
+    /// the session to run on a connection that the agent dialed: on one that the host opened,
+    /// Virtualization.framework's vsock device blocked once the host side was full, and carried
+    /// neither the signal nor the second session.
+    @Test func passesSIGINTWhileTheOutputIsNotRead() async throws {
         var delays: [Double] = []
         var markers: [String] = []
         for run in 0..<5 {
