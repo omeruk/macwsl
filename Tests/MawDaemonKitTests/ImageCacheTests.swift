@@ -65,10 +65,13 @@ import os
     /// The rate of a resumed download counts only this attempt's bytes, from its first byte:
     /// a server that takes over a second to answer must not make the first rate look slow, and
     /// no rate is reported before a sample of a full second exists.
+    ///
+    /// The first rate is compared with the later ones, not with the stub's pace, which a busy
+    /// machine does not keep.
     @Test func measuresTheRateFromTheFirstBytesOfThisAttempt() async throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let half = Self.content.count / 2
-        try Self.content.prefix(half).write(to: cache.partialFile(for: Self.image))
+        let resumed = Self.content.count / 6
+        try Self.content.prefix(resumed).write(to: cache.partialFile(for: Self.image))
         try "\"v1\"".write(
             to: cache.validatorFile(for: Self.image), atomically: true, encoding: .utf8)
         StubServer.responseDelay = .milliseconds(1_100)
@@ -76,10 +79,17 @@ import os
 
         let reports = try await download()
         #expect(reports.first?.bytesPerSecond == 0)
-        let rates = reports.map(\.bytesPerSecond).filter { $0 > 0 }
-        try #require(!rates.isEmpty, "\(reports)")
-        // The server sends 1 MiB/s; a rate that counted the time to answer would be far lower.
-        #expect(rates.allSatisfy { $0 > 512 << 10 }, "\(rates)")
+        // Each sample's rate once: the reports repeat a rate until the next sample ends.
+        var rates: [UInt64] = []
+        for rate in reports.map(\.bytesPerSecond) where rate > 0 && rate != rates.last {
+            rates.append(rate)
+        }
+        // 2.5 MiB at 1 MiB/s leaves time for at least two samples of a second.
+        try #require(rates.count >= 2, "\(reports)")
+        // A first rate that counted the time the server took to answer would be about a
+        // twentieth of the later ones.
+        let slowestLater = try #require(rates.dropFirst().min())
+        #expect(rates[0] >= slowestLater / 2, "\(rates)")
     }
 
     @Test func startsOverWhenTheServerSendsTheWholeFile() async throws {
