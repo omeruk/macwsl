@@ -159,11 +159,13 @@ host                                    agent
    exchange, then one request.
 4. The host's listener on port 19800, one per machine while it runs, refuses at once,
    before reading anything, a connection from a source port of 1024 or above, any connection
-   while no session of that machine waits for one, and any connection beyond 4 that have not
-   yet sent their nonce. It reads exactly the 37 bytes of the nonce frame from an accepted
-   connection, within 2 seconds, and nothing more, so that the rest is left for whoever runs
-   the session. A connection whose frame does not arrive in time, is malformed, or carries a
-   nonce that no session waits for is closed (`DialBackGate`).
+   while no session of that machine waits for one, and any connection once as many accepted
+   connections have not yet sent their nonce as there are waiting sessions plus 4. Each
+   waiting session's own dial therefore finds a place however many sessions open at once, and
+   the agent does not retry a refused dial. It reads exactly the 37 bytes of the nonce frame
+   from an accepted connection, within 2 seconds, and nothing more, so that the rest is left
+   for whoever runs the session. A connection whose frame does not arrive in time, is
+   malformed, or carries a nonce that no session waits for is closed (`DialBackGate`).
 5. The host keeps a session's nonce for 5 seconds from the request, and for at most 64
    sessions per machine, the agent's connection limit. A nonce is used once, compared in
    constant time, and never logged. Refusals go to the machine's console log, at most 5 in
@@ -258,33 +260,37 @@ design and the alternatives.
 - **Input on the host.** `GuestProcess.write` blocks its caller while 256 KiB of input is
   queued and not yet sent.
 - **Output.** The agent reads the process's output only while less than 64 KiB waits to be
-  sent. When the host stops reading, the process's writes block. The host hands output to its
+  sent. When the host stops reading, the process's writes block, and only they: a session
+  runs on a connection that the agent dialed, and the machine's other connections, new
+  sessions, and the console go on working (see the next item). The host hands output to its
   output handler on a thread of its own, and stops reading the connection while 256 KiB
   (`GuestProcess.outputLimit`) waits for the handler. The thread that sends never waits for
-  the handler, so a signal or a window size is sent while a write to the Mac's standard
-  output blocks, for example SIGINT sent to `maw -e yes` while nobody reads its standard
-  output.
-- **A full connection stops the machine's vsock traffic.** Over vsock, the signal in that
-  example is sent but does not arrive. Virtualization.framework's vsock device writes the
-  guest's data to the host's socket on one serial queue, and once the host stops reading a
+  the handler, so a signal or a window size is sent, and arrives, while a write to the Mac's
+  standard output blocks, for example SIGINT sent to `maw -e yes` while nobody reads its
+  standard output.
+- **A full host-opened connection would stop the machine's vsock traffic.** This is why no
+  session runs on a connection that the host opens
+  ([decision record 0017](decisions/0017-dial-back-for-sessions.md)). On such a connection
+  (`VZVirtioSocketDevice.connect(toPort:)`), Virtualization.framework's vsock device writes the
+  guest's data to the host's socket on one serial queue, and once the host stops reading the
   connection and its socket is full, the device blocks in that write. Until the host reads
-  again, no vsock connection of the machine carries data in either direction, and no new
-  connection opens. A sample of the machine's process showed the queue
-  `com.apple.virtualization.virtio.vsock-device:0` in `writev` for 3 s out of 3 s. The
-  host's descriptor is one end of a Unix stream socket pair whose other end the machine's
-  process holds, and the device blocks once 8192 bytes wait in it: the default send buffer of
-  a Unix stream socket (`net.local.stream.sendspace`), with a low-water mark of 2048 bytes, so
-  it may block from 6145 bytes on. `SO_RCVBUF` on the host's descriptor is accepted but does
-  not change this, in the daemon and in a process that the descriptor was handed to alike
-  (`scripts/measure-vsock-buffer.sh`). This applies to connections that the host opens
-  (`VZVirtioSocketDevice.connect(toPort:)`). On a connection that the guest opens to a
-  `VZVirtioSocketListener`, the host's socket fills in the same way, but only the guest's
-  writer blocks, after 256 KiB; the machine's other connections, new connections in both
-  directions, and the console go on working, also through a 60-second stall and while the
-  process holding the descriptor is stopped (`scripts/measure-vsock-buffer.sh
-  --guest-initiated`). Sessions therefore run on connections that the agent dials (see
-  [Dial-back](#dial-back)); the connections that the host opens carry only short requests
-  with small replies.
+  again, no vsock connection of the machine carries data in either direction, no new
+  connection opens, and the console may stop as well. A sample of the machine's process
+  showed the queue `com.apple.virtualization.virtio.vsock-device:0` in `writev` for 3 s out
+  of 3 s. The host's descriptor is one end of a Unix stream socket pair whose other end the
+  machine's process holds, and the device blocks once 8192 bytes wait in it: the default send
+  buffer of a Unix stream socket (`net.local.stream.sendspace`), with a low-water mark of 2048
+  bytes, so it may block from 6145 bytes on. `SO_RCVBUF` on the host's descriptor is accepted
+  but does not change this, in the daemon and in a process that the descriptor was handed to
+  alike (`scripts/measure-vsock-buffer.sh`). The host's own connections therefore carry only
+  `info`, `shutdown`, and `dialBack`, whose replies are a few hundred bytes at most, and the
+  host reads each reply in full at once and then closes the connection; it never hands such a
+  connection to a client. On a connection that the guest opens to a `VZVirtioSocketListener`,
+  the host's socket fills in the same way, but only the guest's writer blocks, after 256 KiB;
+  the machine's other connections, new connections in both directions, and the console go on
+  working, also through a 60-second stall and while the process holding the descriptor is
+  stopped (`scripts/measure-vsock-buffer.sh --guest-initiated`). Apple documents neither
+  behavior; it was measured on macOS 27.0.1.
 - A receiver holds at most one maximal frame plus one read in its buffer.
 
 In terminal mode, Ctrl-C typed on the Mac is a byte of input, as in ssh: the guest's terminal
