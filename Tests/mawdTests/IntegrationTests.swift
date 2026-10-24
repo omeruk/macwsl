@@ -236,11 +236,13 @@ final class DebugBootProcess: @unchecked Sendable {
 
     /// Runs any executable, such as `maw`. Its standard input is `standardInputFile`, or
     /// `standardInputPipe`, or a pipe that receives `standardInput` before this returns, or
-    /// nothing.
+    /// nothing. Its standard output is collected, or goes to `standardOutputPipe`, which the
+    /// caller may leave unread.
     init(
         executable: URL, arguments: [String], standardInput: Data? = nil,
         standardInputFile: URL? = nil, standardInputPipe: Pipe? = nil,
-        separateStandardError: Bool = false, environment: [String: String]? = nil
+        standardOutputPipe: Pipe? = nil, separateStandardError: Bool = false,
+        environment: [String: String]? = nil
     ) throws {
         let pipe = Pipe()
         process.executableURL = executable
@@ -248,7 +250,7 @@ final class DebugBootProcess: @unchecked Sendable {
         if let environment {
             process.environment = environment
         }
-        process.standardOutput = pipe
+        process.standardOutput = standardOutputPipe ?? pipe
         pipe.fileHandleForReading.readabilityHandler = { [collected] handle in
             let data = handle.availableData
             // At end-of-file the handler would be called again at once, for ever, and spin a

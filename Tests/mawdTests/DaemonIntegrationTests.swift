@@ -152,6 +152,59 @@ struct DaemonIntegrationTests {
         return session.exitedAt.map { ($0 - sent).fractionalMilliseconds }
     }
 
+    /// Ctrl-C reaches a command whose output nobody reads. The command's trap creates a file in
+    /// the guest, and a second session, which waits for that file, ends at once; the time to
+    /// its exit bounds the delay from above.
+    ///
+    /// maw's I/O thread no longer waits for the write to its standard output, and sends the
+    /// signal at once (ExecSessionTests covers this over a socket pair). Over vsock the signal
+    /// still does not arrive: once the host side of the session's connection is full,
+    /// Virtualization.framework's vsock device blocks in a write to it and stops carrying the
+    /// machine's other vsock traffic, the signal and the second session included.
+    @Test(.disabled("The vsock device stops while one connection's host side is full."))
+    func passesSIGINTWhileTheOutputIsNotRead() async throws {
+        var delays: [Double] = []
+        var markers: [String] = []
+        for run in 0..<5 {
+            let marker = "/tmp/maw-test-sigint-\(run)-\(UInt32.random(in: 0...UInt32.max))"
+            markers.append(marker)
+            let watcher = try maw.start([
+                "-d", distribution, "-e", "sh", "-c",
+                "while [ ! -e \"$0\" ]; do sleep 0.002; done", marker,
+            ])
+            let session = try DebugBootProcess(
+                executable: maw.maw,
+                arguments: [
+                    "-d", distribution, "-e", "sh", "-c", "trap 'touch \"$0\"; exit 130' INT; yes",
+                    marker,
+                ],
+                standardOutputPipe: Pipe(), separateStandardError: true,
+                environment: maw.mawEnvironment)
+            try await waitForSessions(2)
+            // Long enough for every buffer on the way to fill.
+            try await Task.sleep(for: .seconds(1))
+
+            let sent = ContinuousClock.now
+            session.signal(SIGINT)
+            let watched = await watcher.waitForExit(timeout: .seconds(10))
+            #expect(watched.status == 0, "The signal did not arrive: \(watched.standardError)")
+            if watched.status == 0, let exitedAt = watcher.exitedAt {
+                delays.append((exitedAt - sent).fractionalMilliseconds)
+            }
+            // The command has ended, but maw still waits to write its output.
+            #expect(session.isRunning)
+            session.signal(SIGKILL)
+            _ = await session.waitForExit(timeout: .seconds(10))
+            try await waitForSessions(0)
+        }
+        _ = try await maw.session(["-e", "rm", "-f"] + markers)
+        let median = MawIntegration.report(
+            "SIGINT to the guest with an unread standard output, through a second session",
+            delays)
+        #expect(delays.count == 5)
+        #expect(median < 100)
+    }
+
     @Test func reportsADistributionThatIsNotInstalled() async throws {
         let missing = "\(maw.prefix)-missing"
         let result = try await maw.session(["-e", "true"], in: missing)
