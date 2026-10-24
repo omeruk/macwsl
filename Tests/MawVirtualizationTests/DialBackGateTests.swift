@@ -204,7 +204,7 @@ import os
 
     /// A connection that sends nothing, or part of a frame, is closed after 2 s.
     @Test(arguments: [0, 36])
-    func waitsAtMostTwoSecondsForTheNonce(sending count: Int) throws {
+    func waitsAtMostTwoSecondsForTheNonce(sending count: Int) async throws {
         let gate = TestGate(limits: DialBackGate.Limits())
         #expect(gate.gate.limits.nonceReadTimeout == .seconds(2))
         let pending = try gate.gate.expect()
@@ -213,7 +213,10 @@ import os
 
         #expect(gate.gate.admit(sourcePort: 1023) == nil)
         let started = ContinuousClock.now
-        let refusal = gate.gate.authenticate(pair.host)
+        // On a thread of its own, as the listener does: a 2-second block on the cooperative
+        // pool would hold up other tests' tasks.
+        let host = pair.host
+        let refusal = await runOnDedicatedThread { gate.gate.authenticate(host) }
         let elapsed = ContinuousClock.now - started
         // The header is read first, then the payload.
         let received = count < Frame.headerSize ? count : count - Frame.headerSize

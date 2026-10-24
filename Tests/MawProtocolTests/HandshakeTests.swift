@@ -21,9 +21,11 @@ import Testing
             return try? connection?.exchangeVersions(until: .now + .seconds(5))
         }
         let hostConnection = try FrameConnection(host)
-        #expect(
+        // A blocking exchange on the cooperative pool could leave no thread to start the peer.
+        let hostVersion = try await runOnDedicatedThread { () throws(ConnectionError) in
             try hostConnection.exchangeVersions(until: .now + .seconds(5))
-                == ProtocolVersion.current)
+        }
+        #expect(hostVersion == ProtocolVersion.current)
         #expect(await peerVersion == ProtocolVersion.current)
     }
 
