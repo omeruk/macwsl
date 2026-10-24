@@ -239,17 +239,22 @@ extension InteractiveSession {
     func waitForPrompt(
         user: String, host: String, count: Int = 1, timeout: Duration = .seconds(30)
     ) async -> Bool {
-        let prompt = "\(user)@\(host):"
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
-            let prompts = plainOutput.components(separatedBy: prompt).dropFirst()
-                .filter { $0.firstMatch(of: #/^\S*\$ /#) != nil }
-            if prompts.count >= count {
+            if promptCount(user: user, host: host) >= count {
                 return true
             }
             try? await Task.sleep(for: .milliseconds(5))
         }
         return false
+    }
+
+    /// How often the shell prompt of `user` on `host` has appeared so far. Readline draws the
+    /// prompt again when the window size changes, so a count taken before an action is a
+    /// better reference for the next prompt than a fixed number.
+    func promptCount(user: String, host: String) -> Int {
+        plainOutput.components(separatedBy: "\(user)@\(host):").dropFirst()
+            .filter { $0.firstMatch(of: #/^\S*\$ /#) != nil }.count
     }
 }
 

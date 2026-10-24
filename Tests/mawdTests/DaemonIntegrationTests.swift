@@ -261,19 +261,28 @@ struct DaemonIntegrationTests {
         try #require(
             await session.waitForPrompt(user: maw.user, host: host), "\(session.plainOutput)")
 
+        // Each step waits for one prompt more than the output held before it, because readline
+        // draws the prompt again after the resize. Typing on before the shell has answered
+        // Ctrl-C loses input to its interrupt handling.
+        var prompts = session.promptCount(user: maw.user, host: host)
         session.type("stty size\r")
         #expect(await session.waitForOutput(containing: "24 80"), "\(session.plainOutput)")
-        #expect(await session.waitForPrompt(user: maw.user, host: host, count: 2))
+        #expect(await session.waitForPrompt(user: maw.user, host: host, count: prompts + 1))
 
         session.resize(rows: 30, columns: 100)
         try await Task.sleep(for: .milliseconds(300))
+        prompts = session.promptCount(user: maw.user, host: host)
         session.type("stty size\r")
         #expect(await session.waitForOutput(containing: "30 100"), "\(session.plainOutput)")
-        #expect(await session.waitForPrompt(user: maw.user, host: host, count: 3))
+        #expect(await session.waitForPrompt(user: maw.user, host: host, count: prompts + 1))
 
-        // Ctrl-C reaches the guest's shell, which prints a new prompt.
+        // Ctrl-C reaches the guest's shell, which echoes ^C and prints a new prompt.
         session.type([0x03])
-        #expect(await session.waitForPrompt(user: maw.user, host: host, count: 4))
+        let answered = await maw.eventually(within: .seconds(30)) {
+            session.plainOutput.components(separatedBy: "^C").dropFirst().last?
+                .contains("\(maw.user)@\(host):") == true
+        }
+        #expect(answered, "\(session.plainOutput)")
         #expect(session.isRunning)
 
         // `exit` alone would exit with the status of the interrupted prompt, 130.
