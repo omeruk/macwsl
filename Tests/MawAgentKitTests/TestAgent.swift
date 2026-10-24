@@ -16,11 +16,19 @@ final class TestAgent: Sendable {
     let server: AgentServer
     let powerOffRequests = Counter()
 
-    init(maximumConnections: Int = 64, system: GuestSystem = .testing()) {
+    /// `dialBack` opens the connection that a `dialBack` request asks for; by default the
+    /// dial fails, as it does without a host.
+    init(
+        maximumConnections: Int = 64, system: GuestSystem = .testing(),
+        dialBack: @escaping @Sendable () throws(DialBackError) -> OwnedDescriptor = {
+            () throws(DialBackError) -> OwnedDescriptor in
+            throw .connectFailed(SystemError("connect", code: ECONNREFUSED))
+        }
+    ) {
         let requests = powerOffRequests
         server = AgentServer(
             configuration: AgentConfiguration(
-                maximumConnections: maximumConnections, system: system
+                maximumConnections: maximumConnections, system: system, dialBack: dialBack
             ) {
                 requests.increment()
             })
