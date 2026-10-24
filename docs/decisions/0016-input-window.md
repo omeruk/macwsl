@@ -95,6 +95,8 @@ complete.
   the host's standard output is not read, the host still sends them, but over vsock they do
   not arrive: Virtualization.framework's vsock device stops carrying the machine's traffic
   once one connection's host side is full (docs/protocol.md, Flow control and ordering).
+  [0017](0017-dial-back-for-sessions.md) resolves this for the output direction: sessions run
+  on connections that the agent dials, which do not stop the device.
 - The host runs a second thread per session, for the output. It holds less than 1 MiB of
   output per session: up to 256 KiB plus one read waiting for the handler, and as much again
   in the batch that the handler is writing.
