@@ -73,12 +73,48 @@ import Testing
         }
     }
 
+    /// `dialBack` against the agent's server: the agent dials, sends the nonce first on the
+    /// dialed connection, and replies `dialedBack`.
+    @Test func asksTheAgentToDialBack() async throws {
+        let (request, agentSide) = try Self.socketPair()
+        let (dialedHost, dialedAgent) = try Self.socketPair()
+        let server = AgentServer(
+            configuration: AgentConfiguration(
+                dialBack: { () throws(DialBackError) -> OwnedDescriptor in dialedAgent },
+                powerOff: {}))
+        server.serveOnNewThread(agentSide)
+        let client = GuestAgentClient { () throws(MawError) in request }
+        let nonce = DialBackNonce.random()
+        try await client.dialBack(nonce)
+
+        let connection = try FrameConnection(dialedHost)
+        let first = try await runOnDedicatedThread { () throws(ConnectionError) -> Frame in
+            try connection.receiveFrame(until: .now + .seconds(5))
+        }
+        #expect(try first.dialBackNonce() == nonce)
+    }
+
+    @Test func reportsADialBackThatTheAgentCouldNotMake() async throws {
+        let (request, agentSide) = try Self.socketPair()
+        let server = AgentServer(
+            configuration: AgentConfiguration(
+                dialBack: { () throws(DialBackError) -> OwnedDescriptor in throw .noFreePort },
+                powerOff: {}))
+        server.serveOnNewThread(agentSide)
+        let client = GuestAgentClient { () throws(MawError) in request }
+        await #expect(
+            throws: MawError.sessionDialBackFailed(reason: "no source port below 1024 is free")
+        ) {
+            try await client.dialBack(.random())
+        }
+    }
+
     @Test func mapsAFailedDialBack() {
         #expect(
             GuestAgentClient.map(
                 .remote(AgentError(.dialBackFailed, "no source port below 1024 is free")),
                 during: "dialBack")
-                == .guestAgentFailed(reason: "dialBack: no source port below 1024 is free"))
+                == .sessionDialBackFailed(reason: "no source port below 1024 is free"))
     }
 
     @Test func agentRejectsAHostWithAnotherVersion() async throws {

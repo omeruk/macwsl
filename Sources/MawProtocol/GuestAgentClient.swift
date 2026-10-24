@@ -75,6 +75,26 @@ public struct GuestAgentClient: Sendable {
         }
     }
 
+    /// Asks the agent to open a connection to the host's dial-back port that starts with
+    /// `nonce`. Returns once the agent reports that it connected; the host's listener receives
+    /// the connection.
+    public func dialBack(_ nonce: DialBackNonce) async throws(MawError) {
+        let descriptor = try await connect()
+        let timeout = replyTimeout
+        try await runOnDedicatedThread { () throws(MawError) in
+            try Self.mapErrors(during: "dialBack") { () throws(ConnectionError) in
+                let connection = try Self.open(descriptor, timeout: timeout)
+                connection.enqueue(.control(.dialBack(nonce)))
+                switch try Self.reply(on: connection, timeout: timeout, to: "dialBack") {
+                case .dialedBack:
+                    return
+                case let other:
+                    throw .unexpectedMessage("expected dialedBack, received \(other.name)")
+                }
+            }
+        }
+    }
+
     /// Starts a command. Returns once the agent reports it started.
     public func exec(
         _ request: ExecRequest, output: @escaping OutputHandler
@@ -166,7 +186,9 @@ public struct GuestAgentClient: Sendable {
                 return .guestCommandNotStarted(command: command, reason: agentError.message)
             case .userNotFound:
                 return .userNotFound(agentError.user ?? "", distribution: guestName)
-            case .protocolViolation, .shutdownFailed, .busy, .dialBackFailed:
+            case .dialBackFailed:
+                return .sessionDialBackFailed(reason: agentError.message)
+            case .protocolViolation, .shutdownFailed, .busy:
                 return .guestAgentFailed(reason: "\(request): \(agentError.message)")
             }
         case .timedOut(let what):
