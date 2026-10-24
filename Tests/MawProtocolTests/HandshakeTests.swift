@@ -46,6 +46,41 @@ import Testing
         }
     }
 
+    /// An agent from a build before version 3, as it answers a newer host: its version, then
+    /// an error naming both versions.
+    @Test func clientReportsAnAgentFromAnEarlierBuild() async throws {
+        let (host, peer) = try Self.socketPair()
+        let client = GuestAgentClient { () throws(MawError) in host }
+        let earlier = ProtocolVersion.current - 1
+        startDetachedThread {
+            guard let connection = try? FrameConnection(peer) else { return }
+            connection.enqueue(.version(earlier))
+            connection.enqueue(
+                .control(
+                    .error(
+                        AgentError(
+                            .versionMismatch, "mismatch", hostVersion: ProtocolVersion.current,
+                            guestVersion: earlier))))
+            try? connection.flush(until: .now + .seconds(5))
+            _ = try? connection.receiveFrame(until: .now + .seconds(5))
+            peer.close()
+        }
+        await #expect(
+            throws: MawError.guestAgentVersionMismatch(
+                host: ProtocolVersion.current, guest: earlier)
+        ) {
+            _ = try await client.exec(ExecRequest(argv: ["true"])) { _, _ in }
+        }
+    }
+
+    @Test func mapsAFailedDialBack() {
+        #expect(
+            GuestAgentClient.map(
+                .remote(AgentError(.dialBackFailed, "no source port below 1024 is free")),
+                during: "dialBack")
+                == .guestAgentFailed(reason: "dialBack: no source port below 1024 is free"))
+    }
+
     @Test func agentRejectsAHostWithAnotherVersion() async throws {
         let (host, peer) = try Self.socketPair()
         let server = AgentServer(configuration: AgentConfiguration(powerOff: {}))

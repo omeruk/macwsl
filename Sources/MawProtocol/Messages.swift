@@ -17,6 +17,11 @@ public enum ControlMessage: Equatable, Sendable {
     case info
     /// Asks the guest to power off. The agent replies with `shutdownAcknowledged`.
     case shutdown
+    /// Asks the agent to open a connection to the host's `AgentProtocol.dialBackPort` and to
+    /// send this nonce first on it. The agent replies with `dialedBack`, and serves the dialed
+    /// connection as a new one: its first request may be `exec`, `info`, or `shutdown`.
+    /// Accepted only on a connection that the host opened.
+    case dialBack(DialBackNonce)
 
     // During an exec session, host to guest.
 
@@ -38,6 +43,9 @@ public enum ControlMessage: Equatable, Sendable {
     case agentInfo(AgentInfo)
     /// The reply to `shutdown`: the guest is powering off.
     case shutdownAcknowledged
+    /// The reply to `dialBack`: the agent has connected to the host and queued the nonce on
+    /// that connection.
+    case dialedBack
     /// A request failed, or the connection is being closed because of a protocol error.
     case error(AgentError)
 
@@ -47,6 +55,7 @@ public enum ControlMessage: Equatable, Sendable {
         case .exec: "exec"
         case .info: "info"
         case .shutdown: "shutdown"
+        case .dialBack: "dialBack"
         case .stdinEOF: "stdinEOF"
         case .signal: "signal"
         case .resize: "resize"
@@ -54,6 +63,7 @@ public enum ControlMessage: Equatable, Sendable {
         case .exited: "exited"
         case .agentInfo: "agentInfo"
         case .shutdownAcknowledged: "shutdownAcknowledged"
+        case .dialedBack: "dialedBack"
         case .error: "error"
         }
     }
@@ -253,6 +263,9 @@ public struct AgentError: Codable, Equatable, Sendable, CustomStringConvertible 
         case busy
         /// The requested user, or the default user that `/etc/maw.conf` names, does not exist.
         case userNotFound
+        /// The agent could not connect to the host in reply to `dialBack`: no source port
+        /// below 1024 was free, or the connection failed or timed out.
+        case dialBackFailed
     }
 
     public var code: Code
@@ -379,6 +392,10 @@ extension ControlMessage: Codable {
         var name: Signal
     }
 
+    private struct DialBackFields: Codable {
+        var nonce: String
+    }
+
     private struct StartedFields: Codable {
         var pid: Int32
     }
@@ -394,8 +411,10 @@ extension ControlMessage: Codable {
         switch self {
         case .exec(let request):
             try container.encode(request, forKey: key)
-        case .info, .shutdown, .stdinEOF, .shutdownAcknowledged:
+        case .info, .shutdown, .stdinEOF, .shutdownAcknowledged, .dialedBack:
             try container.encode(Empty(), forKey: key)
+        case .dialBack(let nonce):
+            try container.encode(DialBackFields(nonce: nonce.hexadecimal), forKey: key)
         case .signal(let signal):
             try container.encode(SignalFields(name: signal), forKey: key)
         case .resize(let size):
@@ -430,6 +449,20 @@ extension ControlMessage: Codable {
         case "shutdown":
             _ = try container.decode(Empty.self, forKey: key)
             self = .shutdown
+        case "dialBack":
+            let text = try container.decode(DialBackFields.self, forKey: key).nonce
+            guard let nonce = DialBackNonce(hexadecimal: text) else {
+                throw DecodingError.dataCorrupted(
+                    .init(
+                        codingPath: decoder.codingPath + [key],
+                        debugDescription: "the nonce is not "
+                            + "\(AgentProtocol.dialBackNonceSize * 2) lowercase hexadecimal digits"
+                    ))
+            }
+            self = .dialBack(nonce)
+        case "dialedBack":
+            _ = try container.decode(Empty.self, forKey: key)
+            self = .dialedBack
         case "stdinEOF":
             _ = try container.decode(Empty.self, forKey: key)
             self = .stdinEOF

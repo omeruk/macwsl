@@ -294,7 +294,7 @@ public final class GuestProcess: @unchecked Sendable {
                                 + "\(unconsumedInput) were outstanding")
                     }
                     unconsumedInput -= Int(bytes)
-                case .version, .stdin:
+                case .version, .stdin, .dialBackNonce:
                     throw .frame(.unexpectedType(frame.type.rawValue, expected: "output"))
                 }
             }

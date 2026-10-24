@@ -10,6 +10,11 @@ public enum FrameType: UInt8, Sendable, CaseIterable {
     /// to the host's input window. A frame type of its own rather than a control message: it
     /// arrives for every 256 KiB of input, and decoding JSON that often costs throughput.
     case stdinConsumed = 0x03
+    /// The nonce of a `dialBack` request, the first frame on the connection that the agent
+    /// dials in reply (guest to host): exactly `AgentProtocol.dialBackNonceSize` bytes. A frame
+    /// type of its own, with a fixed size that the decoder checks from the header, so that the
+    /// host can read it before anything else and leave the rest of the connection unread.
+    case dialBackNonce = 0x04
     /// Raw bytes for the process's standard input (host to guest).
     case stdin = 0x10
     /// Raw bytes from the process's standard output, or from its terminal (guest to host).
@@ -95,6 +100,23 @@ public struct Frame: Equatable, Sendable {
         return payload.reduce(0) { $0 << 8 | UInt32($1) }
     }
 
+    // MARK: Dial-back nonces
+
+    public static func dialBackNonce(_ nonce: DialBackNonce) -> Frame {
+        Frame(type: .dialBackNonce, payload: nonce.bytes)
+    }
+
+    /// The nonce a `dialBackNonce` frame carries.
+    public func dialBackNonce() throws(FrameError) -> DialBackNonce {
+        guard type == .dialBackNonce else {
+            throw .unexpectedType(type.rawValue, expected: "dialBackNonce")
+        }
+        guard let nonce = DialBackNonce(bytes: payload) else {
+            throw .malformedDialBackNonce(size: payload.count)
+        }
+        return nonce
+    }
+
     // MARK: Control frames
 
     public static func control(_ message: ControlMessage) -> Frame {
@@ -122,6 +144,8 @@ public enum FrameError: Error, Equatable, Sendable, CustomStringConvertible {
     case malformedVersion(size: Int)
     /// A `stdinConsumed` frame whose payload is not 4 bytes.
     case malformedStdinConsumed(size: Int)
+    /// A `dialBackNonce` frame whose payload is not `AgentProtocol.dialBackNonceSize` bytes.
+    case malformedDialBackNonce(size: Int)
     /// A control frame whose payload is not a valid `ControlMessage`.
     case malformedControl(String)
     /// A frame of a known type that is not valid at this point of the conversation.
@@ -140,6 +164,8 @@ public enum FrameError: Error, Equatable, Sendable, CustomStringConvertible {
             "a version frame has \(size) bytes instead of 4"
         case .malformedStdinConsumed(let size):
             "a stdinConsumed frame has \(size) bytes instead of 4"
+        case .malformedDialBackNonce(let size):
+            "a dialBackNonce frame has \(size) bytes instead of \(AgentProtocol.dialBackNonceSize)"
         case .malformedControl(let reason):
             "a control message could not be decoded: \(reason)"
         case .unexpectedType(let type, let expected):
@@ -187,6 +213,10 @@ public struct FrameDecoder: Sendable {
         }
         guard let type = FrameType(rawValue: buffer[start + 4]) else {
             throw .unknownType(buffer[start + 4])
+        }
+        // A nonce frame has one size; any other is rejected before its payload arrives.
+        guard type != .dialBackNonce || length == AgentProtocol.dialBackNonceSize else {
+            throw .malformedDialBackNonce(size: Int(length))
         }
         let end = start + Frame.headerSize + Int(length)
         guard buffer.count >= end else { return nil }

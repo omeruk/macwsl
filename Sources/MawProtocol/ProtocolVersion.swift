@@ -4,7 +4,7 @@
 /// versions differ, so that a host and a guest agent from different builds never misread each
 /// other. Any change to the messages in `ControlMessage` increments the version.
 public enum ProtocolVersion {
-    public static let current: UInt32 = 2
+    public static let current: UInt32 = 3
 }
 
 /// Constants of the wire protocol.
@@ -20,4 +20,8 @@ public enum AgentProtocol {
     /// agent not yet reported with `stdinConsumed`. It bounds the agent's backlog, so that the
     /// agent can always read the connection and act on `signal` and `resize` at once.
     public static let inputWindow = 1 << 20
+    /// The host's vsock port that the agent dials in reply to `dialBack`. 0x4D58 is "MX".
+    public static let dialBackPort: UInt32 = 0x4D58
+    /// The size of a `DialBackNonce` and of a `dialBackNonce` frame's payload.
+    public static let dialBackNonceSize = 32
 }

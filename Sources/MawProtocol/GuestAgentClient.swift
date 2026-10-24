@@ -166,7 +166,7 @@ public struct GuestAgentClient: Sendable {
                 return .guestCommandNotStarted(command: command, reason: agentError.message)
             case .userNotFound:
                 return .userNotFound(agentError.user ?? "", distribution: guestName)
-            case .protocolViolation, .shutdownFailed, .busy:
+            case .protocolViolation, .shutdownFailed, .busy, .dialBackFailed:
                 return .guestAgentFailed(reason: "\(request): \(agentError.message)")
             }
         case .timedOut(let what):
