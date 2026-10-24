@@ -4,16 +4,21 @@ import MawProtocol
 /// What a shell or command session runs, and where, derived from an `Action` before anything
 /// connects to the daemon.
 struct SessionPlan: Equatable, Sendable {
-    /// Until phase 05 there is no login shell to look up; the initramfs has busybox `sh`.
-    static let shell = "/bin/sh"
+    /// The machine to run on; `nil` means the default distribution's.
+    var machine: MachineID?
+    var program: ExecProgram
+    /// The user to run as; `nil` means the distribution's default user.
+    var user: String?
+    /// The working directory; `nil` means the user's home directory.
+    var workingDirectory: String?
 
-    var machine: MachineID
-    var argv: [String]
-    var workingDirectory: String
-
-    init(machine: MachineID, argv: [String], workingDirectory: String) {
+    init(
+        machine: MachineID?, program: ExecProgram, user: String? = nil,
+        workingDirectory: String? = nil
+    ) {
         self.machine = machine
-        self.argv = argv
+        self.program = program
+        self.user = user
         self.workingDirectory = workingDirectory
     }
 
@@ -23,28 +28,26 @@ struct SessionPlan: Equatable, Sendable {
         switch action {
         case .shell(let selected):
             session = selected
-            argv = [Self.shell, "-l"]
+            program = .loginShell
         case .run(let command, let selected):
             session = selected
-            argv = Self.shellCommand(command)
+            program = Self.shellCommand(command)
         case .exec(let command, let selected):
             session = selected
-            argv = command
+            program = .argv(command)
         default:
             throw .notImplemented(feature: action.displayName, phase: action.phase)
         }
-        if session.user != nil {
-            throw .notImplemented(feature: CLIOption.user.displayName, phase: "05")
-        }
+        user = session.user
         workingDirectory = try Self.workingDirectory(session.directory)
-        machine = try MachineResolver.machine(for: session.distro)
+        machine = MachineResolver.machine(for: session.distro)
     }
 
-    /// `maw <command> [<argument>...]` passes its arguments to the shell as one command line,
-    /// joined with spaces, as `wsl.exe` does. The Mac's shell has already removed any quoting,
-    /// so `maw echo "a  b"` prints `a b`; `-e` passes arguments unchanged.
-    static func shellCommand(_ arguments: [String]) -> [String] {
-        [shell, "-c", arguments.joined(separator: " ")]
+    /// `maw <command> [<argument>...]` passes its arguments to the user's shell as one command
+    /// line, joined with spaces, as `wsl.exe` does. The Mac's shell has already removed any
+    /// quoting, so `maw echo "a  b"` prints `a b`; `-e` passes arguments unchanged.
+    static func shellCommand(_ arguments: [String]) -> ExecProgram {
+        .shellCommand(arguments.joined(separator: " "))
     }
 
     /// Top-level directories that exist on macOS but not in a Linux distribution. A `--cd`
@@ -53,9 +56,10 @@ struct SessionPlan: Equatable, Sendable {
         "/Users", "/Volumes", "/Applications", "/Library", "/System", "/private",
     ]
 
-    /// `/` by default; otherwise `directory`, which must be an absolute Linux path.
-    static func workingDirectory(_ directory: String?) throws(MawError) -> String {
-        guard let directory else { return "/" }
+    /// `nil` (the home directory) by default; otherwise `directory`, which must be an absolute
+    /// Linux path.
+    static func workingDirectory(_ directory: String?) throws(MawError) -> String? {
+        guard let directory else { return nil }
         let isMacOSPath = macOSDirectories.contains {
             directory == $0 || directory.hasPrefix($0 + "/")
         }
@@ -68,16 +72,10 @@ struct SessionPlan: Equatable, Sendable {
 
 /// Chooses the machine for a session.
 enum MachineResolver {
-    /// The machine for `distro`, or for the default distribution when it is `nil`.
-    ///
-    /// PHASE 05: No distribution can be installed yet, so `-d` always fails and the default
-    /// falls back to the initramfs machine. Phase 05 resolves installed distributions here,
-    /// and replaces the fallback with a "no distribution installed" error.
-    static func machine(for distro: DistroName?) throws(MawError) -> MachineID {
-        if let distro {
-            throw .distributionNotInstalled(distro)
-        }
-        return .initramfs
+    /// The machine of `distro`, or `nil` for the default distribution's, which the daemon
+    /// resolves. The daemon also reports a distribution that is not installed, or that none is.
+    static func machine(for distro: DistroName?) -> MachineID? {
+        distro.map { .distribution($0) }
     }
 }
 

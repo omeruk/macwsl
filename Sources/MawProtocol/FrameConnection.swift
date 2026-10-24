@@ -106,7 +106,8 @@ public final class FrameConnection: @unchecked Sendable {
                 switch errno {
                 case EINTR: continue
                 case EAGAIN, EWOULDBLOCK: return false
-                case EPIPE, ECONNRESET: throw .closed
+                // macOS reports ENOTCONN instead of EPIPE when the send races the peer's close.
+                case EPIPE, ECONNRESET, ENOTCONN: throw .closed
                 default: throw .system(SystemError("send"))
                 }
             }

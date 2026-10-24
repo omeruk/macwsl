@@ -15,6 +15,7 @@ import Testing
         .clientSignatureRejected(identifier: "maw-5555"),
         .machineStopped(machine: "initramfs", reason: "maw --shutdown was run"),
         .launchAgentFailed(reason: "launchctl bootstrap failed"),
+        .launchctlTimedOut(command: "launchctl bootout gui/501/dev.maw.mawd", seconds: 60),
         .guestCommandNotFound(command: "nope", reason: "not in PATH"),
         .virtualizationEntitlementMissing,
     ]
@@ -70,6 +71,52 @@ import Testing
         #expect(error.recoverySuggestion?.contains("mawd install") == true)
     }
 
+    /// A host and guest files from different builds fail at the handshake with the fix named.
+    @Test func namesTheGuestFilesFixOnAProtocolMismatch() {
+        let error = MawError.guestAgentVersionMismatch(host: 3, guest: 2)
+        #expect(
+            error.errorDescription
+                == "The guest agent speaks protocol version 2, but this build of maw speaks "
+                + "version 3.")
+        #expect(
+            error.recoverySuggestion
+                == "The guest files come from another build of maw. Install guest files built "
+                + "from the same commit: fetch them with scripts/fetch-guest.sh, or rebuild them "
+                + "as Guest/README.md describes.")
+    }
+
+    @Test func namesTheCauseAndAFixOfAFailedDialBack() {
+        let failed = MawError.sessionDialBackFailed(reason: "no source port below 1024 is free")
+        #expect(
+            failed.errorDescription
+                == "The guest agent could not connect to maw for the session: no source port "
+                + "below 1024 is free.")
+        #expect(
+            failed.recoverySuggestion
+                == "Run the command again. If it fails again, restart the virtual machines with "
+                + "maw --shutdown; the console log in ~/Library/Logs/maw has the agent's warning.")
+
+        let missing = MawError.sessionDialBackMissing(milliseconds: 5000)
+        #expect(
+            missing.errorDescription
+                == "The guest agent reported that it connected to maw for the session, but no "
+                + "connection with the session's nonce arrived within 5000 ms.")
+        #expect(
+            missing.recoverySuggestion
+                == "Run the command again. If it fails again, restart the virtual machines with "
+                + "maw --shutdown; the virtual machine's console log in ~/Library/Logs/maw lists "
+                + "the connections that were refused.")
+
+        let busy = MawError.sessionDialBackBusy(limit: 64)
+        #expect(
+            busy.errorDescription
+                == "64 sessions are already waiting for a connection from this virtual machine's "
+                + "agent.")
+        #expect(
+            busy.recoverySuggestion
+                == "Wait for other sessions to start, then run the command again.")
+    }
+
     @Test func namesTheSigningScriptForARejectedSignature() {
         let error = MawError.clientSignatureRejected(identifier: "maw-5555")
         #expect(error.recoverySuggestion?.contains("scripts/sign-dev.sh") == true)
@@ -91,6 +138,16 @@ import Testing
             error.errorDescription
                 == "The session ended because the virtual machine initramfs stopped: "
                 + "maw --shutdown was run.")
+    }
+
+    @Test func endsAMessageWithOnePeriod() {
+        let error = MawError.fileNotAccessible(
+            path: "/tmp/distro.json",
+            reason: "The data couldn’t be read because it isn’t in the correct format.")
+        #expect(
+            error.errorDescription
+                == "The file /tmp/distro.json cannot be used: The data couldn’t be read because "
+                + "it isn’t in the correct format.")
     }
 }
 

@@ -8,9 +8,10 @@ import MawProtocol
 /// session code through a `socketpair`. It exercises everything but the transport: the
 /// handshake, `info`, pipe mode with `true`, and terminal mode with `tty`.
 public enum SelfTest {
-    /// Runs the checks. Returns a description of each failure; empty means success.
-    public static func run() async -> [String] {
-        let server = AgentServer(configuration: AgentConfiguration(powerOff: {}))
+    /// Runs the checks against `system`'s accounts. Returns a description of each failure;
+    /// empty means success.
+    public static func run(system: GuestSystem = .live) async -> [String] {
+        let server = AgentServer(configuration: AgentConfiguration(system: system, powerOff: {}))
         let client = GuestAgentClient { () throws(MawError) -> OwnedDescriptor in
             var fds: [Int32] = [-1, -1]
             let error = maw_socketpair(&fds)

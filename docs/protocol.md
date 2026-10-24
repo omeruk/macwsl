@@ -1,19 +1,31 @@
 # Host and guest agent protocol
 
 The host (`mawd`, and the client library in `MawProtocol`) talks to the guest agent,
-`maw-agent`, over vsock. This document specifies protocol version **1**. The code is in
-`Sources/MawProtocol` (both sides) and `Sources/MawAgentKit` (the agent).
+`maw-agent`, over vsock. This document specifies protocol version **3**. The code is in
+`Sources/MawProtocol` (both sides) and `Sources/MawAgentKit` (the agent). Version 2 added the
+user a session runs as, its program (a command, a shell command line, or a login shell), its
+locale, and the input window, with which `signal` and `resize` overtake queued standard input
+([0016](decisions/0016-input-window.md)). Version 3 adds the dial-back: the `dialBack`
+request, its `dialedBack` reply, the `dialBackNonce` frame, and the `dialBackFailed` error.
+Every session runs on a connection that the agent dials.
 
 ## Transport
 
-- The agent listens on vsock port **19799** (`0x4D57`, "MW" in ASCII) for any context ID.
-  `AgentProtocol.vsockPort` defines it.
+- The agent listens on vsock port **19799** (`0x4D57`, "MW" in ASCII).
+  `AgentProtocol.vsockPort` defines it. It accepts connections only from the host, context ID
+  2, and closes any other before reading from it (docs/security.md).
 - Each request uses a connection of its own. An exec session holds its connection until the
-  process ends. `info` and `shutdown` each use a short connection that the agent closes after
-  replying.
-- The host connects with `VirtualMachine.connectToAgent(timeout:)`, which retries every 20 ms
-  while the agent is not listening yet, until the deadline. The descriptor it returns is a
-  plain connected stream socket, independent of the `VirtualMachine` object.
+  process ends. `info`, `shutdown`, and `dialBack` each use a short connection that the agent
+  closes after replying.
+- In reply to `dialBack`, the agent connects to the host's vsock port **19800** (`0x4D58`,
+  `AgentProtocol.dialBackPort`); see [Dial-back](#dial-back).
+- The host opens connections with `VirtualMachine.connectToAgent(timeout:)`, which retries
+  every 20 ms while the agent is not listening yet, until the deadline. It uses them only for
+  `info`, `shutdown`, and `dialBack`, whose replies are small. Every exec session, in `maw`,
+  in provisioning, and in `mawd debug-boot`, runs on a connection that the agent dials:
+  `VirtualMachine.openSessionConnection(connectTimeout:)` sends `dialBack` and returns the
+  dialed connection. Either descriptor is a plain connected stream socket, independent of the
+  `VirtualMachine` object.
 
 ## Framing
 
@@ -34,6 +46,8 @@ as soon as the five header bytes have arrived, before reading the payload.
 |------|------|-----------|---------|
 | `0x01` | `version` | both | the sender's protocol version, 4 bytes, big-endian |
 | `0x02` | `control` | both | a control message, JSON, UTF-8 |
+| `0x03` | `stdinConsumed` | guest to host | standard input the agent has written to the process, or discarded, since its last `stdinConsumed` frame: a byte count, 4 bytes, big-endian |
+| `0x04` | `dialBackNonce` | guest to host | the nonce of a `dialBack` request, exactly 32 bytes; the first frame on a connection the agent dials. A header that declares any other size is a protocol error as soon as it arrives. |
 | `0x10` | `stdin` | host to guest | raw bytes for the process's standard input |
 | `0x11` | `stdout` | guest to host | raw bytes from standard output, or from the terminal |
 | `0x12` | `stderr` | guest to host | raw bytes from standard error (pipe mode only) |
@@ -49,8 +63,9 @@ An empty data frame is valid and has no effect.
 3. If the versions differ, the agent sends an `error` control message with code
    `versionMismatch`, `hostVersion`, and `guestVersion`, and closes the connection. The host
    reports `MawError.guestAgentVersionMismatch(host:guest:)`, whose suggested fix is to
-   update the guest files with `scripts/fetch-guest.sh`.
-4. Otherwise the host sends one request: `exec`, `info`, or `shutdown`.
+   install guest files built from the same commit, with `scripts/fetch-guest.sh` or by
+   rebuilding them.
+4. Otherwise the host sends one request: `exec`, `info`, `shutdown`, or `dialBack`.
 
 The agent closes a connection that has not completed the handshake and sent its request
 within 10 seconds.
@@ -71,17 +86,18 @@ names, missing required fields, and wrong types are protocol errors.
 
 | Message | Fields | Reply |
 |---------|--------|-------|
-| `exec` | `argv`: [string], required, not empty. `environment`: {string: string}, default `{}`. `workingDirectory`: string, default `"/"`. `terminal`: `{"rows": u16, "columns": u16}`, absent for pipe mode. | `started`, then the session; or `error` |
+| `exec` | `program`: one of `{"argv": [string]}`, `{"shellCommand": string}`, `{"loginShell": {}}`, required. `user`: string, default: the distribution's default user. `locale`: string, the host's preferred locale, optional. `environment`: {string: string}, default `{}`. `workingDirectory`: string, default: the user's home directory. `terminal`: `{"rows": u16, "columns": u16}`, absent for pipe mode. | `started`, then the session; or `error` |
 | `info` | none | `agentInfo` |
 | `shutdown` | none | `shutdownAcknowledged`, or `error` (`shutdownFailed`) |
+| `dialBack` | `nonce`: 64 lowercase hexadecimal digits, the 32 bytes of the nonce | `dialedBack`, or `error` (`dialBackFailed`); see [Dial-back](#dial-back) |
 
 ### During an exec session (host to guest)
 
 | Message | Fields | Effect |
 |---------|--------|--------|
-| `stdinEOF` | none | Pipe mode: closes the process's standard input once the queued input is written. Terminal mode: writes the terminal's end-of-file character (VEOF, normally Ctrl-D), as ssh does. |
-| `signal` | `name`: signal name without `SIG`, such as `"INT"` | Sends the signal. Pipe mode: to the process group. Terminal mode: to the terminal's foreground process group. |
-| `resize` | `rows`, `columns`: u16 | Terminal mode: sets the window size, and the kernel sends SIGWINCH. Pipe mode: ignored. |
+| `stdinEOF` | none | Pipe mode: closes the process's standard input once the queued input is written. Terminal mode: writes the terminal's end-of-file character (VEOF, normally Ctrl-D), as ssh does. `stdin` frames after it are discarded, and a second `stdinEOF` has no effect. |
+| `signal` | `name`: signal name without `SIG`, such as `"INT"` | Sends the signal at once. Pipe mode: to the process group. Terminal mode: to the terminal's foreground process group. |
+| `resize` | `rows`, `columns`: u16 | Terminal mode: sets the window size at once, and the kernel sends SIGWINCH. Pipe mode: ignored. |
 
 Signals travel by name because macOS and Linux number several of them differently. The names
 are `HUP INT QUIT ILL TRAP ABRT BUS FPE KILL USR1 SEGV USR2 PIPE ALRM TERM CHLD CONT STOP
@@ -95,7 +111,8 @@ TSTP TTIN TTOU URG XCPU XFSZ VTALRM PROF WINCH IO SYS`.
 | `exited` | `code`: i32 (0 to 255), or `signal`: i32 | The process ended. Exactly one field is present. `signal` is the Linux signal number. The last message of a session. |
 | `agentInfo` | `agentVersion`: string, `protocolVersion`: u32, `kernelRelease`: string, `uptimeMilliseconds`: u64 | Reply to `info`. |
 | `shutdownAcknowledged` | none | The agent has asked `init` to power off. The VM stops shortly after. |
-| `error` | `code`: string, `message`: string, optional `hostVersion`, `guestVersion`: u32 | A request failed, or the agent is closing the connection because of a protocol error. |
+| `dialedBack` | none | Reply to `dialBack`: the agent has connected to the host and sends the nonce first on that connection. |
+| `error` | `code`: string, `message`: string, optional `hostVersion`, `guestVersion`: u32, optional `user`: string | A request failed, or the agent is closing the connection because of a protocol error. |
 
 Error codes:
 
@@ -108,6 +125,53 @@ Error codes:
 | `spawnFailed` | Another failure to start, such as a missing working directory. | `guestCommandNotStarted` (126) |
 | `shutdownFailed` | The agent could not signal `init`. | `guestAgentFailed` |
 | `busy` | The agent is serving its maximum of 64 connections. It sends its `version` frame and this error without acting on the request. | `guestAgentFailed` |
+| `userNotFound` | The requested user, or the default user that `/etc/maw.conf` names, is not in `/etc/passwd`. `user` names it. | `userNotFound` |
+| `dialBackFailed` | The agent could not connect to the host for `dialBack`: no source port below 1024 was free, binding one failed, or the connection failed or did not complete within 2 seconds. The message says which. | `sessionDialBackFailed` |
+
+## Dial-back
+
+`dialBack` asks the agent to open a connection to the host. The design keeps a session's
+traffic off connections that the host opens, which stop the machine's vsock traffic while
+the host does not read them (see [Flow control and ordering](#flow-control-and-ordering)).
+
+```
+host                                    agent
+ | version                     version  |          request connection
+ | control dialBack{nonce}  ----------> |  bind a source port, connect to 19800
+ |  <---------------- control dialedBack|  then closes the request connection
+ |
+ |  <------------------- dialBackNonce  |          dialed connection
+ | version                     version  |
+ | control exec/info/shutdown --------> |  as on any new connection
+```
+
+1. The agent accepts `dialBack` only as the request of a connection that the host opened:
+   the agent's listener closes connections from any other context ID before reading
+   (docs/security.md). On a connection that the agent dialed, `dialBack` is a protocol
+   violation, and so it is during an exec session.
+2. The agent binds the highest free source port below 1024, counting down from 1023 and
+   skipping ports in use, and connects to the host's port 19800 with a timeout of 2 seconds.
+   If no port is free, binding fails for another reason, or the connection fails or times out,
+   it replies `error` with code `dialBackFailed` and closes the request connection.
+3. Otherwise it queues a `dialBackNonce` frame with the request's nonce as the first frame of
+   the dialed connection, replies `dialedBack`, and closes the request connection. It then
+   serves the dialed connection like a new one, in the same connection slot: the version
+   exchange, then one request.
+4. The host's listener on port 19800, one per machine while it runs, refuses at once,
+   before reading anything, a connection from a source port of 1024 or above, any connection
+   while no session of that machine waits for one, and any connection beyond 4 that have not
+   yet sent their nonce. It reads exactly the 37 bytes of the nonce frame from an accepted
+   connection, within 2 seconds, and nothing more, so that the rest is left for whoever runs
+   the session. A connection whose frame does not arrive in time, is malformed, or carries a
+   nonce that no session waits for is closed (`DialBackGate`).
+5. The host keeps a session's nonce for 5 seconds from the request, and for at most 64
+   sessions per machine, the agent's connection limit. A nonce is used once, compared in
+   constant time, and never logged. Refusals go to the machine's console log, at most 5 in
+   10 seconds.
+6. If the agent replies `dialBackFailed`, or replies `dialedBack` but no connection with the
+   nonce arrives within the 5 seconds, the session fails with `sessionDialBackFailed` or
+   `sessionDialBackMissing`. The host never falls back to running the session on a
+   connection that it opened.
 
 ## Exec sessions
 
@@ -119,7 +183,7 @@ host                                   agent
  | stdin, control stdinEOF/signal/      |
  |   resize  ------------------------> |
  |  <---------------------- stdout,     |
- |                          stderr     |
+ |                stderr, stdinConsumed |
  |  <------------------ control exited |  then closes
 ```
 
@@ -129,46 +193,102 @@ host                                   agent
   size. The process leads a new session whose controlling terminal it is (`setsid`,
   `TIOCSCTTY`). Standard input, output, and error are the terminal, so all output arrives in
   `stdout` frames.
-- **Program lookup**: an `argv[0]` without `/` is searched for in the session's PATH, in
-  order, as `execvp` does.
-- **Environment**: the process does not inherit the agent's environment. It gets these
-  defaults, with the request's `environment` applied on top:
+- **User**: the request's `user`, or `[user] default` in the guest's `/etc/maw.conf`, or root.
+  The agent reads the account from `/etc/passwd` and its supplementary groups from
+  `/etc/group`. Unless the account is the agent's own (root), the child process sets the
+  groups, the group ID, and the user ID, in that order, before it changes to the working
+  directory and executes the program.
+- **Program**:
+  - `argv`: run as given. An `argv[0]` without `/` is searched for in the session's PATH, in
+    order, as `execvp` does.
+  - `shellCommand`: run by the user's shell from `/etc/passwd` (`/bin/sh` if it names none),
+    as `<shell> -c <command>`.
+  - `loginShell`: the user's shell as a login shell. Under systemd, with no `workingDirectory`,
+    the agent starts it through `runuser -l <user>`, whose PAM stack includes `pam_systemd`, so
+    that `systemd-logind` registers the session and `XDG_RUNTIME_DIR` and `systemctl --user`
+    work. Right after boot it first waits up to 2 seconds for the system bus's socket. Otherwise
+    the agent starts the shell itself, with `-<shell name>` as `argv[0]`.
+- **Environment**: the process does not inherit the agent's environment. It gets a login
+  environment, as ssh builds one, with the request's `environment` applied on top:
 
-  ```
-  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-  HOME=/root
-  SHELL=/bin/sh
-  ```
+  | Variable | Value |
+  |----------|-------|
+  | `HOME`, `SHELL` | from `/etc/passwd` |
+  | `USER`, `LOGNAME` | the user's name |
+  | `PATH` | `ENV_SUPATH` for root and `ENV_PATH` for other users, from `/etc/login.defs`, as `su -l` and `runuser -l` use them |
+  | `LANG` | the request's `locale` if the guest has it (in `/usr/lib/locale`), and `C.UTF-8` otherwise |
+  | `XDG_RUNTIME_DIR` | `/run/user/<uid>`, if it exists |
 
-  `debug-boot` adds `LANG` from the host, and `TERM` in terminal mode. Commands run as root
-  until phase 05.
+  `maw` adds `TERM` from the host, or `xterm-256color` in terminal mode.
+- **Working directory**: the request's `workingDirectory`, or the user's home directory, or `/`
+  if the home directory does not exist.
 - **Signals**: the process starts with default dispositions and an empty signal mask, even
   though the agent ignores SIGPIPE.
 - **End of the session**: the agent sends `exited` once the process has been reaped and its
   output has reached end-of-file, or 250 ms after the exit if a descendant keeps the output
   open. It then closes the connection. The host must read until `exited` even after a write
-  fails, because the agent may already have closed its side.
+  fails, because the agent may already have closed its side. A write to a closed connection
+  fails with EPIPE or ECONNRESET, or on macOS with ENOTCONN when it races the close; the host
+  treats all three as the agent having closed its side.
 - **Exit status**: as in ssh, the status is the exit code, or 128 plus the signal number if a
   signal ended the process. SIGINT gives 130.
 - **Host disconnect**: if the host closes the connection before `exited`, the agent sends
   SIGHUP to the process (the foreground process group in terminal mode), as sshd does, and
   SIGKILL two seconds later if it is still running.
 
-## Back-pressure and limits
+## Flow control and ordering
 
-Neither side buffers without bound:
+Neither side buffers without bound, and a control message never waits behind input that the
+process does not read. [Decision record 0016](decisions/0016-input-window.md) explains the
+design and the alternatives.
 
-- The agent reads frames from the connection only while less than 256 KiB of input waits to
-  be written to the process. When the process stops reading, the agent stops reading the
-  socket, and the host's writes block.
-- The agent reads the process's output only while less than 64 KiB waits to be sent. When
-  the host stops reading, the process's writes block.
-- The host client blocks callers of `GuestProcess.write` while 256 KiB of input is queued,
-  and reads from the connection only as fast as its output handler accepts data.
+- **The input window.** The host never has more than **1 MiB** (`AgentProtocol.inputWindow`)
+  of `stdin` payload outstanding: sent, and not yet returned by a `stdinConsumed` frame. The
+  agent sends one once it has written to the process, or discarded, at least 256 KiB since the
+  last (input that arrives after `stdinEOF`, or after the process has closed its standard
+  input, is discarded). The input waiting in the agent is therefore never more than the
+  window, plus the terminal's end-of-file character, and the agent reads the connection at all
+  times. Input beyond the window is a protocol violation, and so is a `stdinConsumed` frame
+  that returns more than is outstanding.
+- **Order.** `stdin` frames and `stdinEOF` arrive in the order the host queued them. `signal`
+  and `resize` overtake the input that the host has not sent yet, and the agent acts on them as
+  they arrive. A signal therefore reaches the process however much input waits for it, for
+  example Ctrl-C in `yes | maw -e sleep 1000`. The host queues each signal once, as a process's
+  pending signals are, and only the latest window size.
+- **Input on the host.** `GuestProcess.write` blocks its caller while 256 KiB of input is
+  queued and not yet sent.
+- **Output.** The agent reads the process's output only while less than 64 KiB waits to be
+  sent. When the host stops reading, the process's writes block. The host hands output to its
+  output handler on a thread of its own, and stops reading the connection while 256 KiB
+  (`GuestProcess.outputLimit`) waits for the handler. The thread that sends never waits for
+  the handler, so a signal or a window size is sent while a write to the Mac's standard
+  output blocks, for example SIGINT sent to `maw -e yes` while nobody reads its standard
+  output.
+- **A full connection stops the machine's vsock traffic.** Over vsock, the signal in that
+  example is sent but does not arrive. Virtualization.framework's vsock device writes the
+  guest's data to the host's socket on one serial queue, and once the host stops reading a
+  connection and its socket is full, the device blocks in that write. Until the host reads
+  again, no vsock connection of the machine carries data in either direction, and no new
+  connection opens. A sample of the machine's process showed the queue
+  `com.apple.virtualization.virtio.vsock-device:0` in `writev` for 3 s out of 3 s. The
+  host's descriptor is one end of a Unix stream socket pair whose other end the machine's
+  process holds, and the device blocks once 8192 bytes wait in it: the default send buffer of
+  a Unix stream socket (`net.local.stream.sendspace`), with a low-water mark of 2048 bytes, so
+  it may block from 6145 bytes on. `SO_RCVBUF` on the host's descriptor is accepted but does
+  not change this, in the daemon and in a process that the descriptor was handed to alike
+  (`scripts/measure-vsock-buffer.sh`). This applies to connections that the host opens
+  (`VZVirtioSocketDevice.connect(toPort:)`). On a connection that the guest opens to a
+  `VZVirtioSocketListener`, the host's socket fills in the same way, but only the guest's
+  writer blocks, after 256 KiB; the machine's other connections, new connections in both
+  directions, and the console go on working, also through a 60-second stall and while the
+  process holding the descriptor is stopped (`scripts/measure-vsock-buffer.sh
+  --guest-initiated`). Sessions therefore run on connections that the agent dials (see
+  [Dial-back](#dial-back)); the connections that the host opens carry only short requests
+  with small replies.
 - A receiver holds at most one maximal frame plus one read in its buffer.
 
-A consequence: a control message queued behind a large amount of unwritten input is delayed
-with it. In terminal mode this does not arise in practice, because typed input is small.
+In terminal mode, Ctrl-C typed on the Mac is a byte of input, as in ssh: the guest's terminal
+turns it into SIGINT when it reads it, after the input queued before it.
 
 ## Robustness
 

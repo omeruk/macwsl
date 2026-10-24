@@ -4,6 +4,12 @@ import Testing
 
 @testable import MawAgentKit
 
+#if canImport(Darwin)
+    import Darwin
+#elseif canImport(Glibc)
+    import Glibc
+#endif
+
 /// `GuestAgentClient` against the agent's session code over socket pairs.
 @Suite struct ExecSessionTests {
     let agent = TestAgent()
@@ -45,7 +51,7 @@ import Testing
     }
 
     /// A reader slower than the connection, such as a decompressor, keeps the agent's input
-    /// backlog full, so that the agent must stop reading the connection and resume as the
+    /// backlog full, so that the client must wait for the input window and resume as the
     /// process drains its pipe.
     @Test(.timeLimit(.minutes(1)))
     func relaysLargeInputToASlowReader() async throws {
@@ -86,19 +92,20 @@ import Testing
         #expect(output.standardOutput.split(separator: "\n").contains("usr"))
     }
 
-    @Test func appliesTheRequestEnvironmentOnTopOfTheDefaults() async throws {
+    @Test func startsFromALoginEnvironmentWithTheRequestsVariablesOnTop() async throws {
         let output = Output()
         let process = try await agent.client.exec(
-            ExecRequest(argv: ["env"], environment: ["HOME": "/home/test", "LANG": "C.UTF-8"]),
+            ExecRequest(argv: ["env"], environment: ["HOME": "/home/test", "TERM": "vt100"]),
             output: output.handler)
         #expect(try await process.waitForExit() == .exited(code: 0))
         let variables = Set(output.standardOutput.split(separator: "\n").map(String.init))
-        #expect(variables.contains("PATH=\(AgentEnvironment.defaults["PATH"]!)"))
-        #expect(variables.contains("SHELL=/bin/sh"))
-        #expect(variables.contains("HOME=/home/test"))
-        #expect(variables.contains("LANG=C.UTF-8"))
-        // Nothing from the agent's own environment leaks in.
-        #expect(variables.count == 4)
+        // The test guest's root is the account running the tests, not user ID 0, so it gets the
+        // PATH of other users.
+        #expect(
+            variables == [
+                "PATH=\(LoginDefinitions.defaultUserPath)", "SHELL=/bin/sh", "HOME=/home/test",
+                "USER=root", "LOGNAME=root", "LANG=C.UTF-8", "TERM=vt100",
+            ])
     }
 
     @Test func runsInTheRequestedWorkingDirectory() async throws {
@@ -128,13 +135,119 @@ import Testing
         #expect(ContinuousClock.now - started < .seconds(10))
     }
 
+    // MARK: Control messages ahead of unread input
+
+    /// Ctrl-C reaches a process that never reads its standard input, however much input waits
+    /// for it. Before the input window, the agent stopped reading the connection once 256 KiB
+    /// waited, and the signal stayed behind the rest for good.
+    @Test(.timeLimit(.minutes(1)), arguments: [nil, TerminalSize(rows: 24, columns: 80)])
+    func deliversASignalAheadOfUnreadInput(terminal: TerminalSize?) async throws {
+        let process = try await agent.client.exec(
+            ExecRequest(argv: ["sleep", "1000"], terminal: terminal), output: Output().handler)
+        let flood = InputFlood(process)
+        let queued = await flood.waitUntilBlocked()
+        #expect(queued >= AgentProtocol.inputWindow)
+
+        let sent = ContinuousClock.now
+        process.send(.int)
+        let status = await exitStatus(of: process, within: .seconds(5))
+        let delay = ContinuousClock.now - sent
+        #expect(status == .signaled(signal: Signal.int.linuxNumber))
+        #expect(delay < .seconds(1), "the signal took \(delay)")
+    }
+
+    /// Ctrl-C reaches a process whose output nobody reads within 100 ms. The output handler
+    /// blocks, as `maw`'s write to a standard output that nobody reads does; before, it blocked
+    /// the client's I/O thread, and the signal was never sent. The process's trap creates a
+    /// file, so that the test sees the signal arrive without reading any output.
+    @Test(.timeLimit(.minutes(1)), arguments: [nil, TerminalSize(rows: 24, columns: 80)])
+    func deliversASignalWhileTheOutputIsNotRead(terminal: TerminalSize?) async throws {
+        let marker = "/tmp/maw-test-signal-\(getpid())-\(UInt32.random(in: 0...UInt32.max))"
+        defer { unlink(marker) }
+        let output = UnreadOutput()
+        let process = try await agent.client.exec(
+            ExecRequest(
+                argv: ["/bin/sh", "-c", "trap 'touch \"$0\"; exit 130' INT; yes", marker],
+                terminal: terminal),
+            output: output.handler)
+        #expect(await output.waitUntilBlocked())
+        // Long enough for every buffer on the way to fill.
+        try await Task.sleep(for: .milliseconds(300))
+
+        let sent = ContinuousClock.now
+        process.send(.int)
+        while access(marker, F_OK) != 0 && ContinuousClock.now - sent < .seconds(5) {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        let delay = ContinuousClock.now - sent
+        #expect(access(marker, F_OK) == 0, "the signal did not arrive")
+        #expect(delay < .milliseconds(100), "the signal took \(delay)")
+
+        output.release()
+        #expect(await exitStatus(of: process, within: .seconds(5)) == .exited(code: 130))
+    }
+
+    /// A resize reaches a terminal whose process reads none of a large paste.
+    @Test(.timeLimit(.minutes(1)))
+    func resizesATerminalAheadOfUnreadInput() async throws {
+        let output = Output()
+        let process = try await agent.client.exec(
+            ExecRequest(
+                argv: [
+                    "/bin/sh", "-c",
+                    "trap 'stty size' WINCH; echo ready; while :; do sleep 0.02; done",
+                ],
+                terminal: TerminalSize(rows: 24, columns: 80)),
+            output: output.handler)
+        #expect(await output.waitForOutput(containing: "ready"))
+        let flood = InputFlood(process)
+        #expect(await flood.waitUntilBlocked() >= AgentProtocol.inputWindow)
+
+        process.resize(TerminalSize(rows: 30, columns: 100))
+        #expect(await output.waitForOutput(containing: "30 100", timeout: .seconds(1)))
+        process.send(.kill)
+        _ = await exitStatus(of: process, within: .seconds(5))
+    }
+
+    /// A host that sends more input than the window allows is closed with a protocol error.
+    @Test func closesAConnectionThatExceedsTheInputWindow() throws {
+        let connection = try FrameConnection(try agent.connect())
+        let deadline = ContinuousClock.now + .seconds(10)
+        #expect(try connection.exchangeVersions(until: deadline) == ProtocolVersion.current)
+        connection.enqueue(.control(.exec(ExecRequest(argv: ["sleep", "1000"]))))
+        try connection.flush(until: deadline)
+        guard case .started = try connection.receiveControl(until: deadline, expecting: "started")
+        else {
+            Issue.record("the process did not start")
+            return
+        }
+        // Twice the window, without waiting for `stdinConsumed`: the process's pipe takes at
+        // most 64 KiB of it.
+        let chunk = [UInt8](repeating: 0x79, count: AgentProtocol.maximumDataChunkSize)
+        for _ in 0..<(2 * AgentProtocol.inputWindow / chunk.count) {
+            connection.enqueue(Frame(type: .stdin, payload: chunk))
+        }
+        try connection.flush(until: deadline)
+        var frame = try connection.receiveFrame(until: deadline, expecting: "an error")
+        while frame.type == .stdinConsumed {
+            frame = try connection.receiveFrame(until: deadline, expecting: "an error")
+        }
+        let reply = try frame.controlMessage()
+        guard case .error(let error) = reply else {
+            Issue.record("expected an error, received \(reply.name)")
+            return
+        }
+        #expect(error.code == .protocolViolation)
+        #expect(error.message.contains("window"))
+    }
+
     // MARK: Failures to start
 
     @Test func reportsACommandThatDoesNotExist() async throws {
         await #expect(
             throws: MawError.guestCommandNotFound(
                 command: "no-such-command",
-                reason: "no-such-command: not found in PATH \(AgentEnvironment.defaults["PATH"]!)")
+                reason: "no-such-command: not found in PATH \(LoginDefinitions.defaultUserPath)")
         ) {
             _ = try await agent.client.exec(
                 ExecRequest(argv: ["no-such-command"]), output: Output().handler)
@@ -241,7 +354,7 @@ import Testing
     }
 
     @Test func passesTheSelfTest() async {
-        let failures = await SelfTest.run()
+        let failures = await SelfTest.run(system: .testing())
         #expect(failures.isEmpty, "\(failures)")
     }
 }
@@ -259,14 +372,6 @@ import Testing
         ) {
             try ChildProcess.resolve("nope", searchPath: "/bin")
         }
-    }
-
-    @Test func mergesTheEnvironment() {
-        let merged = AgentEnvironment.merged(["HOME": "/x", "TERM": "vt100"])
-        #expect(merged["HOME"] == "/x")
-        #expect(merged["TERM"] == "vt100")
-        #expect(merged["SHELL"] == "/bin/sh")
-        #expect(merged["PATH"] == "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
     }
 
     @Test func decodesWaitStatuses() {

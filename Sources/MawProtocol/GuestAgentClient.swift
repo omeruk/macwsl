@@ -14,19 +14,27 @@ public struct GuestAgentClient: Sendable {
         case stderr
     }
 
-    /// Receives a process's output on the client's I/O thread. It may block; while it does,
-    /// the client stops reading from the guest, which applies back-pressure to the process.
+    /// Receives a process's output, in order, on a thread of the client's own. It may block;
+    /// once `GuestProcess.outputLimit` bytes wait for it, the client stops reading the
+    /// process's output from the guest, which applies back-pressure to the process. Signals and
+    /// resizes still reach the guest while it blocks.
     public typealias OutputHandler = @Sendable (OutputStream, UnsafeRawBufferPointer) -> Void
 
     private let connect: Connector
     private let replyTimeout: Duration
+    private let guestName: String
 
     /// - Parameters:
-    ///   - connect: Opens a new connection to the agent.
     ///   - replyTimeout: How long to wait for the handshake and for each reply to a request.
-    public init(replyTimeout: Duration = .seconds(10), connect: @escaping Connector) {
+    ///   - guestName: What errors call the guest, such as the distribution's name.
+    ///   - connect: Opens a new connection to the agent.
+    public init(
+        replyTimeout: Duration = .seconds(10), guestName: String = "the guest",
+        connect: @escaping Connector
+    ) {
         self.connect = connect
         self.replyTimeout = replyTimeout
+        self.guestName = guestName
     }
 
     /// Asks the agent for its version, the kernel release, and the uptime.
@@ -67,15 +75,42 @@ public struct GuestAgentClient: Sendable {
         }
     }
 
+    /// Asks the agent to open a connection to the host's dial-back port that starts with
+    /// `nonce`. Returns once the agent reports that it connected; the host's listener receives
+    /// the connection.
+    public func dialBack(_ nonce: DialBackNonce) async throws(MawError) {
+        let descriptor = try await connect()
+        let timeout = replyTimeout
+        try await runOnDedicatedThread { () throws(MawError) in
+            try Self.mapErrors(during: "dialBack") { () throws(ConnectionError) in
+                let connection = try Self.open(descriptor, timeout: timeout)
+                connection.enqueue(.control(.dialBack(nonce)))
+                switch try Self.reply(on: connection, timeout: timeout, to: "dialBack") {
+                case .dialedBack:
+                    return
+                case let other:
+                    throw .unexpectedMessage("expected dialedBack, received \(other.name)")
+                }
+            }
+        }
+    }
+
     /// Starts a command. Returns once the agent reports it started.
     public func exec(
         _ request: ExecRequest, output: @escaping OutputHandler
     ) async throws(MawError) -> GuestProcess {
         let descriptor = try await connect()
         let timeout = replyTimeout
-        let command = request.argv.first ?? ""
+        let command: String
+        switch request.program {
+        case .argv(let argv): command = argv.first ?? ""
+        case .shellCommand, .loginShell: command = request.program.description
+        }
+        let guestName = self.guestName
         return try await runOnDedicatedThread { () throws(MawError) -> GuestProcess in
-            let (connection, pid) = try Self.mapErrors(during: "exec", command: command) {
+            let (connection, pid) = try Self.mapErrors(
+                during: "exec", command: command, guestName: guestName
+            ) {
                 () throws(ConnectionError) -> (FrameConnection, Int32) in
                 let connection = try Self.open(descriptor, timeout: timeout)
                 connection.enqueue(.control(.exec(request)))
@@ -122,19 +157,20 @@ public struct GuestAgentClient: Sendable {
 
     /// Runs one conversation and turns its errors into `MawError`s.
     static func mapErrors<Result>(
-        during request: String, command: String = "",
+        during request: String, command: String = "", guestName: String = "the guest",
         _ body: () throws(ConnectionError) -> Result
     ) throws(MawError) -> Result {
         do {
             return try body()
         } catch {
-            throw map(error, during: request, command: command)
+            throw map(error, during: request, command: command, guestName: guestName)
         }
     }
 
-    static func map(_ error: ConnectionError, during request: String, command: String = "")
-        -> MawError
-    {
+    static func map(
+        _ error: ConnectionError, during request: String, command: String = "",
+        guestName: String = "the guest"
+    ) -> MawError {
         switch error {
         case .versionMismatch(let local, let remote):
             return .guestAgentVersionMismatch(host: local, guest: remote)
@@ -148,6 +184,10 @@ public struct GuestAgentClient: Sendable {
                 return .guestCommandNotFound(command: command, reason: agentError.message)
             case .permissionDenied, .spawnFailed:
                 return .guestCommandNotStarted(command: command, reason: agentError.message)
+            case .userNotFound:
+                return .userNotFound(agentError.user ?? "", distribution: guestName)
+            case .dialBackFailed:
+                return .sessionDialBackFailed(reason: agentError.message)
             case .protocolViolation, .shutdownFailed, .busy:
                 return .guestAgentFailed(reason: "\(request): \(agentError.message)")
             }

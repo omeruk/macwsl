@@ -25,6 +25,42 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case distributionNotInstalled(DistroName)
     /// `--cd` names a directory that maw cannot use yet: a relative or macOS path.
     case unsupportedDirectory(String)
+    /// A session needs a distribution, and none is installed.
+    case noDistributionInstalled
+    /// `-u` names a user that does not exist in the distribution.
+    case userNotFound(String, distribution: String)
+
+    // MARK: Installation
+
+    /// `--install` names a distribution that the catalog does not have.
+    case unknownDistribution(String)
+    /// `--install` names a distribution that is already installed.
+    case distributionAlreadyInstalled(DistroName)
+    /// Another `maw --install` is installing the same distribution.
+    case installationInProgress(DistroName)
+    /// A user name failed Ubuntu's rules. `reason` explains which.
+    case invalidUserName(String, reason: String)
+    /// The password is empty, or the two entries differ, or standard input had none.
+    case invalidPassword(reason: String)
+    /// `--install` without `--user` must ask for the user, but standard input is not a
+    /// terminal.
+    case installNeedsTerminal
+    /// The Mac has no network connection, or the server cannot be reached.
+    case networkUnavailable(host: String, reason: String)
+    /// The download failed for another reason, such as an HTTP error.
+    case downloadFailed(url: String, reason: String)
+    /// A downloaded image is shorter or longer than the catalog says.
+    case imageSizeMismatch(path: String, expected: UInt64, actual: UInt64)
+    /// A downloaded image does not have the SHA-256 that the catalog pins.
+    case imageChecksumMismatch(path: String, expected: String, actual: String)
+    /// A downloaded image that should be in the cache is not there.
+    case imageMissing(path: String)
+    /// The Mac's volume has less free space than the installation needs.
+    case insufficientDiskSpace(required: UInt64, available: UInt64, volume: String)
+    /// A provisioning step failed. `step` names it.
+    case provisioningFailed(step: String, reason: String)
+    /// The installation was cancelled, because its client went away or the daemon stopped.
+    case installationCancelled(DistroName)
 
     // MARK: Daemon
 
@@ -45,6 +81,9 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case machineStopped(machine: String, reason: String)
     /// The LaunchAgent could not be installed or removed.
     case launchAgentFailed(reason: String)
+    /// A `launchctl` command did not finish within `seconds` and was killed. `command` is the
+    /// command line.
+    case launchctlTimedOut(command: String, seconds: Int)
 
     // MARK: Guest files
 
@@ -76,6 +115,11 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case sparseFilesUnsupported(path: String)
     /// Creating a disk image failed.
     case diskImageCreationFailed(path: String, reason: String)
+    /// Another virtual machine holds the disk image.
+    case diskImageInUse(path: String)
+    /// One of maw's own files cannot be read or written, such as a distribution's
+    /// `distro.json`.
+    case fileNotAccessible(path: String, reason: String)
 
     // MARK: Console and terminal
 
@@ -94,6 +138,14 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case guestAgentVersionMismatch(host: UInt32, guest: UInt32)
     /// A conversation with the guest agent failed partway through.
     case guestAgentFailed(reason: String)
+    /// The guest agent could not open a session's connection to the host (protocol version 3's
+    /// `dialBack`), and reported why.
+    case sessionDialBackFailed(reason: String)
+    /// The guest agent reported that it opened a session's connection to the host, but no
+    /// connection with the session's nonce arrived within `milliseconds`.
+    case sessionDialBackMissing(milliseconds: Int)
+    /// `limit` sessions are already waiting for their connections from one machine's agent.
+    case sessionDialBackBusy(limit: Int)
     /// The command to run in the guest does not exist there. Shells report this as 127.
     case guestCommandNotFound(command: String, reason: String)
     /// The command exists in the guest but could not be started. Shells report this as 126.
@@ -102,6 +154,13 @@ public enum MawError: Error, Equatable, Sendable, Codable {
 
 extension MawError: LocalizedError {
     public var errorDescription: String? {
+        // A reason from Foundation, such as a URLError's description, ends with a period of
+        // its own.
+        guard let message, message.hasSuffix("..") else { return message }
+        return String(message.dropLast())
+    }
+
+    private var message: String? {
         switch self {
         case .invalidDistroName(let name, let reason):
             "'\(name)' is not a valid distribution name: \(reason)."
@@ -113,6 +172,42 @@ extension MawError: LocalizedError {
             "No distribution named '\(name)' is installed."
         case .unsupportedDirectory(let path):
             "--cd needs an absolute Linux path, such as /root, but '\(path)' is not one."
+        case .noDistributionInstalled:
+            "No Linux distribution is installed."
+        case .userNotFound(let user, let distribution):
+            "There is no user named '\(user)' in \(distribution)."
+        case .unknownDistribution(let name):
+            "There is no distribution named '\(name)' that maw can install."
+        case .distributionAlreadyInstalled(let name):
+            "\(name) is already installed."
+        case .installationInProgress(let name):
+            "\(name) is being installed by another maw --install."
+        case .invalidUserName(let name, let reason):
+            "'\(name)' cannot be the user name: \(reason)."
+        case .invalidPassword(let reason):
+            "The password cannot be used: \(reason)."
+        case .installNeedsTerminal:
+            "maw --install asks for a user name and a password, but standard input is not a "
+                + "terminal."
+        case .networkUnavailable(let host, let reason):
+            "Cannot reach \(host): \(reason)."
+        case .downloadFailed(let url, let reason):
+            "The download of \(url) failed: \(reason)."
+        case .imageSizeMismatch(let path, let expected, let actual):
+            "The downloaded image \(path) has \(actual) bytes, but it should have \(expected)."
+        case .imageChecksumMismatch(let path, let expected, let actual):
+            "The downloaded image \(path) is not the expected file: its SHA-256 is \(actual), "
+                + "but it should be \(expected)."
+        case .imageMissing(let path):
+            "The downloaded image \(path) is missing."
+        case .insufficientDiskSpace(let required, let available, let volume):
+            "The installation needs \(ByteSize(bytes: required).approximateDescription) of free "
+                + "space on \(volume), but only \(ByteSize(bytes: available).approximateDescription) "
+                + "is available."
+        case .provisioningFailed(let step, let reason):
+            "The installation failed while \(step): \(reason)."
+        case .installationCancelled(let name):
+            "The installation of \(name) was cancelled."
         case .daemonNotInstalled(let label):
             "The maw daemon is not installed: launchd has no LaunchAgent named \(label)."
         case .daemonUnreachable(let reason):
@@ -130,6 +225,8 @@ extension MawError: LocalizedError {
             "The session ended because the virtual machine \(machine) stopped: \(reason)."
         case .launchAgentFailed(let reason):
             "The maw LaunchAgent could not be changed: \(reason)."
+        case .launchctlTimedOut(let command, let seconds):
+            "\(command) did not finish within \(seconds) seconds and was stopped."
         case .kernelNotFound(let path):
             "The guest kernel files are missing: \(path) does not exist."
         case .virtualizationEntitlementMissing:
@@ -153,6 +250,10 @@ extension MawError: LocalizedError {
             "The volume that contains \(path) does not support sparse files."
         case .diskImageCreationFailed(let path, let reason):
             "Could not create the disk image \(path): \(reason)."
+        case .diskImageInUse(let path):
+            "The disk image \(path) is in use by another virtual machine."
+        case .fileNotAccessible(let path, let reason):
+            "The file \(path) cannot be used: \(reason)."
         case .consoleLogFailed(let path, let reason):
             "Could not write the console log \(path): \(reason)."
         case .notATerminal(let option, let stream):
@@ -166,6 +267,14 @@ extension MawError: LocalizedError {
                 + "version \(host)."
         case .guestAgentFailed(let reason):
             "The connection to the guest agent failed: \(reason)."
+        case .sessionDialBackFailed(let reason):
+            "The guest agent could not connect to maw for the session: \(reason)."
+        case .sessionDialBackMissing(let milliseconds):
+            "The guest agent reported that it connected to maw for the session, but no "
+                + "connection with the session's nonce arrived within \(milliseconds) ms."
+        case .sessionDialBackBusy(let limit):
+            "\(limit) sessions are already waiting for a connection from this virtual "
+                + "machine's agent."
         case .guestCommandNotFound(let command, let reason):
             "\(command): command not found in the guest (\(reason))."
         case .guestCommandNotStarted(let command, let reason):
@@ -187,6 +296,44 @@ extension MawError: LocalizedError {
         case .unsupportedDirectory:
             "Translating relative and macOS paths arrives in phase 07. Until then, give an "
                 + "absolute path inside Linux."
+        case .noDistributionInstalled:
+            "Install Ubuntu with maw --install."
+        case .userNotFound:
+            "Check the name, or create the user in the distribution with sudo adduser."
+        case .unknownDistribution:
+            "maw --list --online shows the distributions that can be installed."
+        case .distributionAlreadyInstalled(let name):
+            "Use it with maw -d \(name). The README explains how to remove a distribution."
+        case .installationInProgress:
+            "Wait for the other installation to finish."
+        case .invalidUserName:
+            "Choose another name: 1 to \(UserName.maximumLength) lowercase letters, digits, '-' or "
+                + "'_', starting with a letter, and not one the distribution already uses, for "
+                + "example 'ayse'."
+        case .invalidPassword:
+            "Type the same non-empty password twice. With --user, give it as the first line of "
+                + "standard input."
+        case .installNeedsTerminal:
+            "Run it in a terminal, or give the user with --user <name> and the password as the "
+                + "first line of standard input."
+        case .networkUnavailable:
+            "Check the Mac's internet connection and run maw --install again; the download "
+                + "resumes where it stopped."
+        case .downloadFailed:
+            "Run maw --install again; the download resumes where it stopped."
+        case .imageSizeMismatch, .imageChecksumMismatch:
+            "The file was removed. Run maw --install again to download it again; if this "
+                + "happens again, the download is being altered on its way to this Mac."
+        case .imageMissing:
+            "Run maw --install again to download it again."
+        case .insufficientDiskSpace:
+            "Free up space on the volume, then run maw --install again."
+        case .provisioningFailed:
+            "Nothing was installed. The installation's console log in ~/Library/Logs/maw has "
+                + "details."
+        case .installationCancelled:
+            "Nothing was installed. Run maw --install to start again; an interrupted download "
+                + "resumes where it stopped."
         case .daemonNotInstalled:
             "Register the daemon with mawd install."
         case .daemonUnreachable, .daemonConnectionLost, .daemonProtocolError:
@@ -199,6 +346,9 @@ extension MawError: LocalizedError {
             "Run the command again to start a new virtual machine."
         case .launchAgentFailed:
             nil
+        case .launchctlTimedOut:
+            "launchd did not answer in time. Run the command again; if it still does not "
+                + "finish, log out and back in, which restarts your launchd session."
         case .kernelNotFound:
             "Install the guest kernel and initramfs with scripts/fetch-guest.sh."
         case .virtualizationEntitlementMissing:
@@ -218,6 +368,12 @@ extension MawError: LocalizedError {
             "Create the disk image on an APFS volume."
         case .diskImageCreationFailed:
             nil
+        case .diskImageInUse:
+            "A virtual machine of a daemon that stopped may still be exiting; run the command "
+                + "again in a moment. Otherwise another process runs it."
+        case .fileNotAccessible:
+            "Check the file's permissions and the free space on its volume. A damaged "
+                + "distro.json can be restored from a backup."
         case .consoleLogFailed:
             "Check that ~/Library/Logs/maw is writable."
         case .notATerminal(let option, _):
@@ -228,9 +384,21 @@ extension MawError: LocalizedError {
             "Check the console log. Guest files from before the agent existed have no agent; "
                 + "update them with scripts/fetch-guest.sh."
         case .guestAgentVersionMismatch:
-            "Update the guest files with scripts/fetch-guest.sh."
+            "The guest files come from another build of maw. Install guest files built from "
+                + "the same commit: fetch them with scripts/fetch-guest.sh, or rebuild them as "
+                + "Guest/README.md describes."
         case .guestAgentFailed:
             "The console log may contain details."
+        case .sessionDialBackFailed:
+            "Run the command again. If it fails again, restart the virtual machines with "
+                + "maw --shutdown; the console log in ~/Library/Logs/maw has the agent's "
+                + "warning."
+        case .sessionDialBackMissing:
+            "Run the command again. If it fails again, restart the virtual machines with "
+                + "maw --shutdown; the virtual machine's console log in ~/Library/Logs/maw "
+                + "lists the connections that were refused."
+        case .sessionDialBackBusy:
+            "Wait for other sessions to start, then run the command again."
         case .guestCommandNotFound:
             "Check the command's name, or give its full path."
         case .guestCommandNotStarted:

@@ -91,6 +91,8 @@ let package = Package(
             ]
         ),
 
+        // Helpers for the test targets that run processes. Not part of any product.
+        .target(name: "MawTestSupport", path: "Tests/MawTestSupport"),
         .testTarget(name: "MawCoreTests", dependencies: ["MawCore"]),
         .testTarget(
             name: "MawProtocolTests",
@@ -107,13 +109,15 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
-        .testTarget(name: "MawVirtualizationTests", dependencies: ["MawVirtualization"]),
+        .testTarget(
+            name: "MawVirtualizationTests", dependencies: ["MawVirtualization", "MawTestSupport"]),
         .testTarget(
             name: "MawTerminalIOTests", dependencies: ["MawTerminalIO", "MawCore", "MawProtocol"]),
         .testTarget(
             name: "MawDaemonKitTests",
             dependencies: [
                 "MawDaemonKit", "MawClient", "MawXPC", "MawCore", "MawProtocol", "CMawSystem",
+                "MawTestSupport",
             ]
         ),
         .testTarget(
@@ -136,6 +140,7 @@ let package = Package(
                 "MawCore",
                 "MawProtocol",
                 "MawVirtualization",
+                "MawTestSupport",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),

@@ -118,11 +118,54 @@ import Virtualization
         #expect(
             built.memoryBalloonDevices.first is VZVirtioTraditionalMemoryBalloonDeviceConfiguration)
         #expect(built.socketDevices.first is VZVirtioSocketDeviceConfiguration)
-        let readOnly = built.storageDevices.map {
-            (($0 as? VZVirtioBlockDeviceConfiguration)?.attachment
-                as? VZDiskImageStorageDeviceAttachment)?.isReadOnly
+        let attachments = built.storageDevices.map {
+            ($0 as? VZVirtioBlockDeviceConfiguration)?.attachment
+                as? VZDiskImageStorageDeviceAttachment
         }
-        #expect(readOnly == [false, true])
+        #expect(attachments.map { $0?.isReadOnly } == [false, true])
+        #expect(attachments.map { $0?.synchronizationMode } == [.full, .full])
+        #expect(attachments.map { $0?.cachingMode } == [.automatic, .automatic])
+        #expect(built.networkDevices.isEmpty)
+    }
+
+    @Test func attachesANATNetworkDeviceWithAFixedAddress() throws {
+        let directory = try TemporaryDirectory()
+        var configuration = configuration()
+        configuration.kernelURL = directory.file("Image")
+        configuration.initramfsURL = directory.file("initramfs.cpio.gz")
+        for url in [configuration.kernelURL, configuration.initramfsURL] {
+            FileManager.default.createFile(
+                atPath: url.path(percentEncoded: false), contents: Data())
+        }
+        configuration.network = .nat(macAddress: "02:6d:61:77:00:01")
+        let built = try configuration.makeVirtualizationConfiguration(
+            consoleAttachment: VZFileHandleSerialPortAttachment(
+                fileHandleForReading: nil, fileHandleForWriting: nil),
+            validate: false)
+        let device = try #require(built.networkDevices.first as? VZVirtioNetworkDeviceConfiguration)
+        #expect(device.attachment is VZNATNetworkDeviceAttachment)
+        #expect(device.macAddress.string == "02:6d:61:77:00:01")
+
+        configuration.network = .nat(macAddress: "not a MAC address")
+        #expect(
+            throws: MawError.invalidVMConfiguration(
+                reason: "'not a MAC address' is not a MAC address")
+        ) {
+            try configuration.makeVirtualizationConfiguration(
+                consoleAttachment: VZFileHandleSerialPortAttachment(
+                    fileHandleForReading: nil, fileHandleForWriting: nil),
+                validate: false)
+        }
+    }
+
+    @Test func givesADistributionEveryCPUAndHalfTheMemory() {
+        let resources = VMConfiguration.distributionResources(
+            hostCPUCount: 8, hostMemory: 16 << 30)
+        #expect(resources.cpuCount == 8)
+        #expect(resources.memorySize == .gibibytes(8))
+        #expect(
+            VMConfiguration.distributionResources(hostCPUCount: 10, hostMemory: (24 << 30) + 3)
+                .memorySize == .gibibytes(12))
     }
 
     @Test func reportsAMissingKernel() throws {

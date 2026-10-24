@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import MawTestSupport
 import Testing
 import os
 
@@ -20,7 +21,9 @@ private let integrationEnabled = ProcessInfo.processInfo.environment["MAW_INTEGR
     .enabled(
         if: integrationEnabled,
         "Integration tests boot a real virtual machine; run scripts/integration-test.sh."),
-    .serialized
+    .serialized,
+    // Bounds each test as a whole; every wait in it also has a time limit of its own.
+    .timeLimit(.minutes(10))
 )
 struct IntegrationTests {
     let mawd: URL
@@ -75,6 +78,26 @@ struct IntegrationTests {
             })
         #expect(
             lastShutdown.contains("shutdown: clean") || lastShutdown.contains("shutdown: forced"))
+    }
+
+    /// A debug-boot that is killed leaves no virtual machine process behind: the machine's
+    /// XPC service process exits when its client does.
+    @Test func leavesNoMachineProcessWhenKilled() async throws {
+        let before = Self.virtualMachineProcesses()
+        let run = try DebugBootProcess(mawd, ["--timeout", "120"])
+        let bannerSeen = await run.waitForLine(where: Self.isBanner, timeout: .seconds(60))
+        try #require(bannerSeen, "The banner did not appear: \(run.output)")
+        let machines = Self.virtualMachineProcesses().subtracting(before)
+        #expect(!machines.isEmpty, "No virtual machine process appeared.")
+
+        let killed = ContinuousClock.now
+        run.signal(SIGKILL)
+        let remaining = await Self.virtualMachineProcesses(machines, exitWithin: .seconds(5))
+        #expect(remaining.isEmpty, "Still running 5 s after mawd was killed: \(remaining)")
+        MawIntegration.report(
+            "machine process gone after SIGKILL to mawd debug-boot, polled every 100 ms",
+            [(ContinuousClock.now - killed).fractionalMilliseconds])
+        #expect(await run.waitForExit(timeout: .seconds(10)).status != -1)
     }
 
     @Test func attachesASparseDisk() async throws {
@@ -174,6 +197,37 @@ struct IntegrationTests {
         #expect(session.terminalIsRestored, "The terminal attributes differ after the session.")
     }
 
+    /// The process IDs of Virtualization.framework's virtual machine processes. Each machine
+    /// runs in an XPC service process of its own, which launchd starts on behalf of mawd.
+    static func virtualMachineProcesses() -> Set<pid_t> {
+        var pids = [pid_t](repeating: 0, count: 8192)
+        let count = pids.withUnsafeMutableBytes {
+            proc_listallpids($0.baseAddress, Int32($0.count))
+        }
+        var path = [UInt8](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        return Set(
+            pids.prefix(max(0, Int(count))).filter { pid in
+                let length = proc_pidpath(pid, &path, UInt32(path.count))
+                return length > 0
+                    && String(decoding: path.prefix(Int(length)), as: UTF8.self)
+                        .hasSuffix("/com.apple.Virtualization.VirtualMachine")
+            })
+    }
+
+    /// Waits until none of `pids` is a running virtual machine process. Returns those that
+    /// still are after `timeout`.
+    static func virtualMachineProcesses(
+        _ pids: Set<pid_t>, exitWithin timeout: Duration
+    ) async -> Set<pid_t> {
+        let deadline = ContinuousClock.now + timeout
+        var remaining = pids.intersection(virtualMachineProcesses())
+        while !remaining.isEmpty && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+            remaining = pids.intersection(virtualMachineProcesses())
+        }
+        return remaining
+    }
+
     static func isBanner(_ line: String) -> Bool {
         line.hasPrefix("maw-initramfs ") && line.contains(" kernel=")
     }
@@ -186,8 +240,10 @@ struct IntegrationTests {
         codesign.standardOutput = output
         codesign.standardError = output
         guard (try? codesign.run()) != nil else { return false }
+        let watchdog = codesign.terminate(after: .seconds(30))
+        defer { watchdog.cancel() }
         let data = output.fileHandleForReading.readDataToEndOfFile()
-        codesign.waitUntilExit()
+        guard codesign.waitForExitSynchronously(within: .seconds(30)) else { return false }
         return String(decoding: data, as: UTF8.self).contains("com.apple.security.virtualization")
     }
 }
@@ -215,6 +271,7 @@ final class DebugBootProcess: @unchecked Sendable {
     }
 
     private let process = Process()
+    private let exitTime = OSAllocatedUnfairLock<ContinuousClock.Instant?>(initialState: nil)
     private let collected = OSAllocatedUnfairLock(initialState: Data())
     private let collectedError = OSAllocatedUnfairLock(initialState: Data())
 
@@ -228,11 +285,14 @@ final class DebugBootProcess: @unchecked Sendable {
             separateStandardError: separateStandardError, environment: environment)
     }
 
-    /// Runs any executable, such as `maw`. Its standard input is `standardInputFile`, or a
-    /// pipe that receives `standardInput` before this returns, or nothing.
+    /// Runs any executable, such as `maw`. Its standard input is `standardInputFile`, or
+    /// `standardInputPipe`, or a pipe that receives `standardInput` before this returns, or
+    /// nothing. Its standard output is collected, or goes to `standardOutputPipe`, which the
+    /// caller may leave unread.
     init(
         executable: URL, arguments: [String], standardInput: Data? = nil,
-        standardInputFile: URL? = nil, separateStandardError: Bool = false,
+        standardInputFile: URL? = nil, standardInputPipe: Pipe? = nil,
+        standardOutputPipe: Pipe? = nil, separateStandardError: Bool = false,
         environment: [String: String]? = nil
     ) throws {
         let pipe = Pipe()
@@ -241,9 +301,14 @@ final class DebugBootProcess: @unchecked Sendable {
         if let environment {
             process.environment = environment
         }
-        process.standardOutput = pipe
+        process.standardOutput = standardOutputPipe ?? pipe
         pipe.fileHandleForReading.readabilityHandler = { [collected] handle in
             let data = handle.availableData
+            // At end-of-file the handler would be called again at once, for ever, and spin a
+            // CPU for every finished process.
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+            }
             collected.withLock { $0.append(data) }
         }
         if separateStandardError {
@@ -251,6 +316,9 @@ final class DebugBootProcess: @unchecked Sendable {
             process.standardError = errorPipe
             errorPipe.fileHandleForReading.readabilityHandler = { [collectedError] handle in
                 let data = handle.availableData
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
+                }
                 collectedError.withLock { $0.append(data) }
             }
         } else {
@@ -259,8 +327,13 @@ final class DebugBootProcess: @unchecked Sendable {
         let inputPipe = standardInput.map { _ in Pipe() }
         if let standardInputFile {
             process.standardInput = try FileHandle(forReadingFrom: standardInputFile)
+        } else if let standardInputPipe {
+            process.standardInput = standardInputPipe
         } else {
             process.standardInput = inputPipe ?? FileHandle.nullDevice
+        }
+        process.terminationHandler = { [exitTime] _ in
+            exitTime.withLock { $0 = .now }
         }
         try process.run()
         if let inputPipe, let standardInput {
@@ -282,6 +355,11 @@ final class DebugBootProcess: @unchecked Sendable {
     }
 
     var isRunning: Bool { process.isRunning }
+
+    var processIdentifier: pid_t { process.processIdentifier }
+
+    /// When the process exited, as its termination handler observed it.
+    var exitedAt: ContinuousClock.Instant? { exitTime.withLock { $0 } }
 
     /// Waits until a line of output satisfies `predicate`. Returns whether one did.
     func waitForLine(where predicate: (String) -> Bool, timeout: Duration) async -> Bool {
@@ -320,9 +398,7 @@ final class DebugBootProcess: @unchecked Sendable {
         while process.isRunning && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(50))
         }
-        if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-            process.waitUntilExit()
+        if !(await process.waitForExit(within: .zero)) {
             return Result(status: -1, output: output + "\n[test] killed after the timeout\n")
         }
         // Collect output written just before the exit.
@@ -352,10 +428,12 @@ final class InteractiveSession: @unchecked Sendable {
             columns: columns)
     }
 
-    /// Runs any executable on the pseudo-terminal, such as `maw`.
+    /// Runs any executable on the pseudo-terminal, such as `maw`. Without `collectsOutput`,
+    /// nothing reads the terminal, as when a user presses Ctrl-S or a terminal window stops
+    /// responding, until the caller reads `primaryDescriptor` itself.
     init(
         executable: URL, arguments: [String], environment: [String: String]? = nil,
-        rows: UInt16 = 0, columns: UInt16 = 0
+        rows: UInt16 = 0, columns: UInt16 = 0, collectsOutput: Bool = true
     ) throws {
         var primary: Int32 = -1
         var secondary: Int32 = -1
@@ -379,18 +457,20 @@ final class InteractiveSession: @unchecked Sendable {
         process.standardOutput = terminal
         process.standardError = terminal
         primaryHandle = FileHandle(fileDescriptor: primary, closeOnDealloc: false)
-        primaryHandle.readabilityHandler = { [collected] handle in
-            let data = handle.availableData
-            collected.withLock { $0.append(data) }
+        if collectsOutput {
+            primaryHandle.readabilityHandler = { [collected] handle in
+                let data = handle.availableData
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
+                }
+                collected.withLock { $0.append(data) }
+            }
         }
         try process.run()
     }
 
     deinit {
-        if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-            process.waitUntilExit()
-        }
+        process.waitForExitSynchronously(within: .zero)
         primaryHandle.readabilityHandler = nil
         close(primary)
         close(secondary)
@@ -401,6 +481,9 @@ final class InteractiveSession: @unchecked Sendable {
     }
 
     var isRunning: Bool { process.isRunning }
+
+    /// The terminal's primary side, from which the program's output is read.
+    var primaryDescriptor: Int32 { primary }
 
     /// Changes the terminal's window size and sends SIGWINCH to debug-boot, as a terminal
     /// emulator does. The pseudo-terminal is not debug-boot's controlling terminal, so the

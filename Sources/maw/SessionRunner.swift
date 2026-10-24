@@ -36,7 +36,10 @@ struct SessionRunner {
         let events = EventRelay(client.events)
         let session = try await client.openSession(on: plan.machine)
         let request = ExecRequest(
-            argv: plan.argv,
+            program: plan.program, user: plan.user,
+            locale: GuestLocale.preferred(
+                languageCode: Locale.current.language.languageCode?.identifier,
+                regionCode: Locale.current.region?.identifier),
             environment: mode.environment(host: ProcessInfo.processInfo.environment),
             workingDirectory: plan.workingDirectory,
             terminal: mode == .terminal
@@ -49,7 +52,7 @@ struct SessionRunner {
         case .terminal:
             ending = try await runOnTerminal(request, session: session, events: events)
         }
-        return try await status(after: ending, events: events)
+        return try await status(after: ending, events: events, machine: session.info.machine)
     }
 
     // MARK: Modes
@@ -99,18 +102,20 @@ struct SessionRunner {
     // MARK: Ending
 
     /// The exit status for `ending`, or the error that explains it.
-    private func status(after ending: Ending, events: EventRelay) async throws -> Int32 {
+    private func status(after ending: Ending, events: EventRelay, machine: MachineID) async throws
+        -> Int32
+    {
         switch ending {
         case .exited(.success(let status)):
             return status.shellStatus
         case .exited(.failure(let error)):
             // The guest connection broke. The daemon usually knows why.
             if let event = await events.next(within: Self.endingReasonTimeout) {
-                throw Self.error(for: event, machine: plan.machine)
+                throw Self.error(for: event, machine: machine)
             }
             throw error
         case .daemon(let event):
-            throw Self.error(for: event, machine: plan.machine)
+            throw Self.error(for: event, machine: machine)
         case .signal(let number):
             return 128 + number
         }
@@ -122,6 +127,9 @@ struct SessionRunner {
             .machineStopped(machine: ended.machine.name, reason: ended.reason)
         case .connectionLost:
             .daemonConnectionLost(during: "the session on \(machine.name)")
+        case .installProgress:
+            // A session's connection never installs; EventRelay drops these.
+            .daemonProtocolError(reason: "installation progress arrived during a session")
         }
     }
 
@@ -209,6 +217,7 @@ final class EventRelay: Sendable {
     init(_ events: AsyncStream<DaemonClient.Event>) {
         Task { [self] in
             for await event in events {
+                if case .installProgress = event { continue }
                 settle(event)
             }
             settle(nil)

@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -53,6 +54,10 @@ int maw_set_nonblocking(int fd) {
         return errno;
     }
     return 0;
+}
+
+int maw_duplicate(int fd) {
+    return fcntl(fd, F_DUPFD_CLOEXEC, 0);
 }
 
 int maw_suppress_sigpipe(int fd) {
@@ -251,6 +256,17 @@ __attribute__((noreturn)) static void spawn_child(const maw_spawn_options *optio
     }
 #endif
 
+    // Groups first, then the group, then the user: once the user ID is not root, the other
+    // two can no longer be changed. The working directory is entered as the new user, so
+    // that its permissions apply.
+    if (options->set_credentials) {
+        failure.stage = MAW_SPAWN_STAGE_CREDENTIALS;
+        if (setgroups(options->group_count, options->groups) < 0 || setgid(options->gid) < 0 ||
+            setuid(options->uid) < 0) {
+            goto fail;
+        }
+    }
+
     failure.stage = MAW_SPAWN_STAGE_WORKING_DIRECTORY;
     if (options->working_directory != NULL && chdir(options->working_directory) < 0) {
         goto fail;
@@ -367,15 +383,73 @@ int maw_vsock_listen(uint32_t port, int backlog) {
 #endif
 }
 
-int maw_accept(int fd) {
+int maw_vsock_accept_host(int fd, uint32_t *peer_cid) {
 #if defined(__linux__)
-    return accept4(fd, NULL, NULL, SOCK_CLOEXEC);
-#else
-    int connection = accept(fd, NULL, NULL);
-    if (connection >= 0) {
-        set_cloexec(connection);
-        maw_suppress_sigpipe(connection);
+    struct sockaddr_vm address;
+    socklen_t length = sizeof address;
+    memset(&address, 0, sizeof address);
+    int connection = accept4(fd, (struct sockaddr *)&address, &length, SOCK_CLOEXEC);
+    if (connection < 0) {
+        return -1;
+    }
+    *peer_cid = address.svm_cid;
+    if (address.svm_family != AF_VSOCK || address.svm_cid != VMADDR_CID_HOST) {
+        close(connection);
+        errno = EPERM;
+        return -1;
     }
     return connection;
+#else
+    (void)fd;
+    *peer_cid = 0;
+    errno = ENOSYS;
+    return -1;
 #endif
+}
+
+int maw_vsock_socket(void) {
+#if defined(__linux__)
+    return socket(AF_VSOCK, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+int maw_vsock_bind(int fd, uint32_t port) {
+#if defined(__linux__)
+    struct sockaddr_vm address;
+    memset(&address, 0, sizeof address);
+    address.svm_family = AF_VSOCK;
+    address.svm_port = port;
+    address.svm_cid = VMADDR_CID_ANY;
+    return bind(fd, (struct sockaddr *)&address, sizeof address) == 0 ? 0 : errno;
+#else
+    (void)fd;
+    (void)port;
+    return ENOSYS;
+#endif
+}
+
+int maw_vsock_connect(int fd, uint32_t cid, uint32_t port) {
+#if defined(__linux__)
+    struct sockaddr_vm address;
+    memset(&address, 0, sizeof address);
+    address.svm_family = AF_VSOCK;
+    address.svm_port = port;
+    address.svm_cid = cid;
+    // Not retried on EINTR: a repeated connect would report EALREADY. The agent's sockets
+    // are non-blocking, so connect does not wait and is not interrupted.
+    return connect(fd, (struct sockaddr *)&address, sizeof address) == 0 ? 0 : errno;
+#else
+    (void)fd;
+    (void)cid;
+    (void)port;
+    return ENOSYS;
+#endif
+}
+
+int maw_socket_error(int fd, int *error) {
+    socklen_t length = sizeof *error;
+    return getsockopt(fd, SOL_SOCKET, SO_ERROR, error, &length) == 0 ? 0 : errno;
 }

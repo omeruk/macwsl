@@ -9,10 +9,19 @@
 #    and CI use this.
 # 5. With maw.test=agent, runs the guest agent's self-test, which prints
 #    "maw-agent self-test: ok" on success, and powers off. The QEMU smoke test uses this.
-# 6. Otherwise, writes /etc/inittab and executes busybox init, which becomes PID 1 and
+# 6. With maw.root=<device>, boots the distribution on that disk: checks and mounts it,
+#    provides the guest agent to it as a runtime systemd unit, and switches to its systemd.
+#    docs/decisions/0013-systemd-and-the-agent.md describes this path.
+# 7. Otherwise, writes /etc/inittab and executes busybox init, which becomes PID 1 and
 #    supervises the guest agent. With maw.debug=shell, init also runs a shell on /dev/hvc0.
+#    This is the initramfs machine, which provisions distributions and serves
+#    `mawd debug-boot`.
 #
-# docs/decisions/0005-init-supervises-the-agent.md explains why init, not the agent, is PID 1.
+# With maw.clock=<seconds since 1970>, the clock is set first: the virtual machine has no
+# real-time clock, and its clock otherwise starts at 1970.
+#
+# docs/decisions/0005-init-supervises-the-agent.md explains why init, not the agent, is PID 1
+# on the initramfs machine.
 
 export PATH=/sbin:/bin:/usr/sbin:/usr/bin
 
@@ -26,6 +35,75 @@ mountpoint -q /run || mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs /run
 echo "maw-initramfs $(cat /etc/maw-initramfs-version) kernel=$(uname -r)"
 
 cmdline=" $(cat /proc/cmdline) "
+
+# The value of a maw.<name>=<value> argument, or nothing.
+argument() {
+    for word in $cmdline; do
+        case $word in
+        "$1="*) echo "${word#*=}" ;;
+        esac
+    done
+}
+
+clock=$(argument maw.clock)
+if [ -n "$clock" ]; then
+    date -u -s "@$clock" > /dev/null || echo "maw-initramfs: could not set the clock to $clock" >&2
+fi
+
+# Prints a reason on the console and powers off: without its root file system, the machine
+# has nothing to run.
+fail_boot() {
+    echo "maw-initramfs: $*" >&2
+    echo "maw-initramfs: powering off" >&2
+    poweroff -f
+}
+
+# Boots the distribution on $1. Does not return.
+boot_distribution() {
+    root_device=$1
+    # e2fsck -p: 0 means clean, 1 that errors were corrected; anything else needs a person.
+    e2fsck -p "$root_device"
+    status=$?
+    if [ "$status" -gt 1 ]; then
+        fail_boot "the file system on $root_device has errors that e2fsck -p cannot repair (exit status $status)"
+    fi
+    mkdir -p /sysroot
+    mount -t ext4 -o rw "$root_device" /sysroot || fail_boot "cannot mount $root_device"
+    [ -x /sysroot/sbin/init ] || fail_boot "the distribution on $root_device has no /sbin/init"
+
+    # systemd keeps a /run that is already mounted and reads runtime units from
+    # /run/systemd/system, so the agent runs without being installed in the distribution.
+    mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs /sysroot/run || fail_boot "cannot mount /run"
+    mkdir -p /sysroot/run/maw /sysroot/run/systemd/system/sysinit.target.wants
+    cp /sbin/maw-agent /sysroot/run/maw/maw-agent
+    cat > /sysroot/run/systemd/system/maw-agent.service << 'UNIT'
+[Unit]
+Description=maw guest agent
+Documentation=https://github.com/omeruk/macwsl/blob/main/docs/distributions.md
+# Starts as soon as systemd does, and stays until the final kill at power-off, so that the
+# host can open sessions while other units start and can request the shutdown.
+DefaultDependencies=no
+
+[Service]
+ExecStart=/run/maw/maw-agent
+# On the console as well, as on the initramfs machine, so that the console log shows when the
+# agent became ready.
+StandardOutput=journal+console
+StandardError=journal+console
+Restart=always
+RestartSec=100ms
+# A restarted agent must not take its sessions with it.
+KillMode=process
+OOMScoreAdjust=-900
+UNIT
+    ln -s ../maw-agent.service /sysroot/run/systemd/system/sysinit.target.wants/maw-agent.service
+
+    echo "maw-initramfs: starting systemd at $(cut -d ' ' -f 1 /proc/uptime) s"
+    for directory in dev proc sys; do
+        mount --move "/$directory" "/sysroot/$directory" || fail_boot "cannot move /$directory"
+    done
+    exec switch_root /sysroot /sbin/init
+}
 
 case $cmdline in
 *" maw.test=lsblk "*)
@@ -47,6 +125,14 @@ case $cmdline in
     poweroff -f
     ;;
 esac
+
+root_device=$(argument maw.root)
+if [ -n "$root_device" ]; then
+    if [ ! -x /sbin/maw-agent ]; then
+        fail_boot "this initramfs has no guest agent, so it cannot boot a distribution"
+    fi
+    boot_distribution "$root_device"
+fi
 
 # busybox init reads /etc/inittab. Each line is <tty>::<action>:<command>; an empty <tty>
 # means the console.

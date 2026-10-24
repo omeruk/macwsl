@@ -31,7 +31,8 @@ import Testing
         .resize(TerminalSize(rows: 10, columns: 10)), .exec(ExecRequest(argv: ["true"])),
         .exec(ExecRequest(argv: ["cat"])),
         .exec(ExecRequest(argv: ["cat"], terminal: TerminalSize(rows: 5, columns: 5))),
-        .started(pid: 1), .exited(.exited(code: 0)), .shutdownAcknowledged,
+        .started(pid: 1), .exited(.exited(code: 0)),
+        .shutdownAcknowledged,
     ]
 
     static func randomFrame(using random: inout Generator) -> [UInt8] {
