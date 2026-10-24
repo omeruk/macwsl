@@ -18,6 +18,11 @@
 # an APFS clone of the verified images in ~/Library/Caches/maw/images, so that only a run
 # without a cached image downloads it; a downloaded image is cloned back for the next run.
 #
+# On exit the script also checks that nothing the run started outlives it: the test daemon, a
+# `mawd debug-boot`, a virtual machine's process, or a test distribution. Virtual machine
+# processes that were already running when the run started are not counted. Anything left
+# behind makes the run fail.
+#
 # Requires an Apple silicon Mac that is not itself a virtual machine, the guest files from
 # scripts/fetch-guest.sh, and a network connection for apt and, on a first run, the download.
 #
@@ -43,6 +48,56 @@ test_distribution="$prefix-shared"
 test_user=maw
 test_password="maw-integration-$$"
 
+# The process IDs of Virtualization.framework's virtual machine processes, one per line.
+virtual_machine_processes() {
+    pgrep -f 'com[.]apple[.]Virtualization[.]VirtualMachine' || true
+}
+machines_before=" $(virtual_machine_processes | tr '\n' ' ') "
+
+# Prints what the run left behind, after waiting up to ten seconds for it to go. Returns
+# non-zero if anything is left.
+check_nothing_left() {
+    attempt=0
+    while :; do
+        left=""
+        if launchctl print "gui/$(id -u)/$label" > /dev/null 2>&1; then
+            left="$left the daemon $label is still loaded;"
+        fi
+        daemons=$(pgrep -f -- "--label $label" | tr '\n' ' ' || true)
+        if [ -n "$daemons" ]; then
+            left="$left test daemon processes: $daemons;"
+        fi
+        boots=$(pgrep -f -- "mawd debug-boot" | tr '\n' ' ' || true)
+        if [ -n "$boots" ]; then
+            left="$left debug-boot processes: $boots;"
+        fi
+        machines=""
+        for pid in $(virtual_machine_processes); do
+            case "$machines_before" in
+                *" $pid "*) ;;
+                *) machines="$machines $pid" ;;
+            esac
+        done
+        if [ -n "$machines" ]; then
+            left="$left virtual machine processes:$machines;"
+        fi
+        for directory in "$distros/$prefix"* "$distros/.staging-$prefix"*; do
+            if [ -e "$directory" ]; then
+                left="$left $directory;"
+            fi
+        done
+        if [ -z "$left" ]; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        if [ "$attempt" -ge 20 ]; then
+            echo "integration-test.sh: the run left behind:$left" >&2
+            return 1
+        fi
+        sleep 0.5
+    done
+}
+
 cleanup() {
     MAW_DAEMON_LABEL="$label" "$bin_path/maw" --shutdown > /dev/null 2>&1 || true
     "$bin_path/mawd" uninstall --label "$label" > /dev/null 2>&1 || true
@@ -59,6 +114,10 @@ cleanup() {
         fi
     done
     rm -rf "$log_directory"
+    if ! check_nothing_left; then
+        exit 1
+    fi
+    echo "integration-test.sh: nothing was left behind."
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM

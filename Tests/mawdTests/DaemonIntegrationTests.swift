@@ -283,11 +283,25 @@ struct DaemonIntegrationTests {
         #expect(session.terminalIsRestored, "The terminal attributes differ after the session.")
     }
 
+    /// The session ends with an error, the machine's process exits, and launchd starts a new
+    /// daemon on the next request.
     @Test func survivesTheDaemonBeingKilled() async throws {
+        // Start from a stopped machine, so that its process is the only new one.
+        #expect(try await maw.run(["--shutdown"]).status == 0)
+        let before = IntegrationTests.virtualMachineProcesses()
         let session = try maw.start(["-d", distribution, "-e", "sleep", "100"])
         try await waitForSessions(1)
+        let machines = IntegrationTests.virtualMachineProcesses().subtracting(before)
+        #expect(!machines.isEmpty, "No virtual machine process appeared.")
         let daemon = try await daemonProcessID()
+        let killed = ContinuousClock.now
         kill(daemon, SIGKILL)
+        let remaining = await IntegrationTests.virtualMachineProcesses(
+            machines, exitWithin: .seconds(5))
+        #expect(remaining.isEmpty, "Still running 5 s after mawd was killed: \(remaining)")
+        MawIntegration.report(
+            "machine process gone after SIGKILL to the daemon, polled every 100 ms",
+            [(ContinuousClock.now - killed).fractionalMilliseconds])
 
         let result = await session.waitForExit(timeout: .seconds(30))
         #expect(result.status == 1)

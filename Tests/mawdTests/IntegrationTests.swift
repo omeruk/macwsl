@@ -80,6 +80,26 @@ struct IntegrationTests {
             lastShutdown.contains("shutdown: clean") || lastShutdown.contains("shutdown: forced"))
     }
 
+    /// A debug-boot that is killed leaves no virtual machine process behind: the machine's
+    /// XPC service process exits when its client does.
+    @Test func leavesNoMachineProcessWhenKilled() async throws {
+        let before = Self.virtualMachineProcesses()
+        let run = try DebugBootProcess(mawd, ["--timeout", "120"])
+        let bannerSeen = await run.waitForLine(where: Self.isBanner, timeout: .seconds(60))
+        try #require(bannerSeen, "The banner did not appear: \(run.output)")
+        let machines = Self.virtualMachineProcesses().subtracting(before)
+        #expect(!machines.isEmpty, "No virtual machine process appeared.")
+
+        let killed = ContinuousClock.now
+        run.signal(SIGKILL)
+        let remaining = await Self.virtualMachineProcesses(machines, exitWithin: .seconds(5))
+        #expect(remaining.isEmpty, "Still running 5 s after mawd was killed: \(remaining)")
+        MawIntegration.report(
+            "machine process gone after SIGKILL to mawd debug-boot, polled every 100 ms",
+            [(ContinuousClock.now - killed).fractionalMilliseconds])
+        #expect(await run.waitForExit(timeout: .seconds(10)).status != -1)
+    }
+
     @Test func attachesASparseDisk() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "maw-integration-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -175,6 +195,37 @@ struct IntegrationTests {
         let status = await session.waitForExit(timeout: .seconds(30))
         #expect(status == 0, "\(session.output)")
         #expect(session.terminalIsRestored, "The terminal attributes differ after the session.")
+    }
+
+    /// The process IDs of Virtualization.framework's virtual machine processes. Each machine
+    /// runs in an XPC service process of its own, which launchd starts on behalf of mawd.
+    static func virtualMachineProcesses() -> Set<pid_t> {
+        var pids = [pid_t](repeating: 0, count: 8192)
+        let count = pids.withUnsafeMutableBytes {
+            proc_listallpids($0.baseAddress, Int32($0.count))
+        }
+        var path = [UInt8](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        return Set(
+            pids.prefix(max(0, Int(count))).filter { pid in
+                let length = proc_pidpath(pid, &path, UInt32(path.count))
+                return length > 0
+                    && String(decoding: path.prefix(Int(length)), as: UTF8.self)
+                        .hasSuffix("/com.apple.Virtualization.VirtualMachine")
+            })
+    }
+
+    /// Waits until none of `pids` is a running virtual machine process. Returns those that
+    /// still are after `timeout`.
+    static func virtualMachineProcesses(
+        _ pids: Set<pid_t>, exitWithin timeout: Duration
+    ) async -> Set<pid_t> {
+        let deadline = ContinuousClock.now + timeout
+        var remaining = pids.intersection(virtualMachineProcesses())
+        while !remaining.isEmpty && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+            remaining = pids.intersection(virtualMachineProcesses())
+        }
+        return remaining
     }
 
     static func isBanner(_ line: String) -> Bool {
