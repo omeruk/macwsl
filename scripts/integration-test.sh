@@ -23,10 +23,16 @@
 # processes that were already running when the run started are not counted. Anything left
 # behind makes the run fail.
 #
-# When a test fails, the script saves the agent's journal from the test distribution into the
-# test daemon's log directory, keeps that directory (the daemon's log and every console log,
-# without the image cache), and prints where it is. It also keeps the directory when the run
-# left something behind. Otherwise it deletes it.
+# It also fails the run if the guest agent started more than once during one boot of any
+# machine, according to the console logs: the test daemon's, and what `mawd debug-boot` added
+# to its own during the run. Each boot starts the agent once, from busybox init on the
+# initramfs machine and from systemd on a distribution machine, and each start prints
+# "maw-agent ready". A second start means the agent exited, which ends every session it served.
+#
+# When a test fails or the check above finds a restart, the script saves the agent's journal
+# from the test distribution into the test daemon's log directory, keeps that directory (the
+# daemon's log and every console log, without the image cache), and prints where it is. It
+# also keeps the directory when the run left something behind. Otherwise it deletes it.
 #
 # Requires an Apple silicon Mac that is not itself a virtual machine, the guest files from
 # scripts/fetch-guest.sh, and a network connection for apt and, on a first run, the download.
@@ -59,6 +65,9 @@ virtual_machine_processes() {
 }
 machines_before=" $(virtual_machine_processes | tr '\n' ' ') "
 
+debug_boot_log="$HOME/Library/Logs/maw/debug-boot-console.log"
+debug_boot_log_start=$(wc -c < "$debug_boot_log" 2> /dev/null || echo 0)
+
 # Runs a command, and kills it after $1 seconds. Returns its status.
 run_with_time_limit() {
     limit=$1
@@ -72,6 +81,47 @@ run_with_time_limit() {
     kill "$watchdog_pid" 2> /dev/null || true
     wait "$watchdog_pid" 2> /dev/null || true
     return "$command_status"
+}
+
+# Prints each boot in the console log on standard input that started the agent more than once,
+# with its start lines; $1 names the log. A boot begins at mawd's "starting" note. Returns
+# non-zero if there is one.
+check_agent_starts_in() {
+    awk -v log_name="$1" '
+        function finish() {
+            if (starts > 1) {
+                printf "integration-test.sh: in %s, the boot from line %d", log_name, boot_line
+                printf " started the agent %d times:\n%s", starts, lines
+                found = 1
+            }
+        }
+        /^\[mawd\] [^ ]+ starting / { finish(); boot_line = NR; starts = 0; lines = "" }
+        /maw-agent ready / { starts++; lines = lines "  line " NR ": " $0 "\n" }
+        END { finish(); exit found }
+    '
+}
+
+# Checks every console log of the run. Returns non-zero if a boot started the agent twice.
+check_agent_starts() {
+    restarted=0
+    for console_log in "$log_directory"/*.log; do
+        case "$console_log" in
+            */mawd.log) continue ;;
+        esac
+        [ -f "$console_log" ] || continue
+        check_agent_starts_in "$(basename "$console_log")" < "$console_log" || restarted=1
+    done
+    if [ -f "$debug_boot_log" ]; then
+        size=$(wc -c < "$debug_boot_log")
+        # A log rotated during the run is read from its start.
+        start=$debug_boot_log_start
+        if [ "$size" -lt "$start" ]; then
+            start=0
+        fi
+        tail -c "+$((start + 1))" "$debug_boot_log" |
+            check_agent_starts_in "debug-boot-console.log (this run)" || restarted=1
+    fi
+    return "$restarted"
 }
 
 # Saves the agent's journal from the test distribution into the log directory.
@@ -133,6 +183,16 @@ cleanup() {
         save_agent_journal
     fi
     MAW_DAEMON_LABEL="$label" "$bin_path/maw" --shutdown > /dev/null 2>&1 || true
+    # With every machine stopped, the console logs are complete.
+    if ! check_agent_starts; then
+        echo "integration-test.sh: the guest agent restarted during the run." >&2
+        if [ "$keep_logs" = false ]; then
+            keep_logs=true
+            save_agent_journal
+            MAW_DAEMON_LABEL="$label" "$bin_path/maw" --shutdown > /dev/null 2>&1 || true
+        fi
+        exit_status=1
+    fi
     "$bin_path/mawd" uninstall --label "$label" > /dev/null 2>&1 || true
     for directory in "$distros/$prefix"* "$distros/.staging-$prefix"*; do
         if [ -e "$directory" ]; then
