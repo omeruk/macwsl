@@ -121,6 +121,78 @@ struct FreezeIntegrationTests {
         try await expectSessionEnded()
     }
 
+    // MARK: Concurrency
+
+    static let burstLimitPending: Comment =
+        "The gate refuses the agent's own dials beyond four without a nonce in a burst."
+
+    /// Every dial-back in a burst must be admitted: the gate admits at most four connections
+    /// that have not yet sent their nonce, and the agent's listening socket has a backlog of 64.
+    ///
+    /// Disabled until the limit is decided: in a burst, more than four of the agent's own dials
+    /// can be waiting to have their nonce read, and the gate refuses the rest
+    /// (`DialBackGate.Refusal.tooManyUnauthenticated`).
+    @Test(.disabled(Self.burstLimitPending))
+    func opensThirtyTwoSessionsAtOnce() async throws {
+        // Boot the machine first, so that the burst measures sessions rather than the boot.
+        #expect(try await maw.session(["-e", "true"]).status == 0)
+
+        let started = ContinuousClock.now
+        let sessions = try (0..<32).map { _ in
+            try maw.start(["-d", distribution, "-e", "true"])
+        }
+        var failures: [String] = []
+        for (index, session) in sessions.enumerated() {
+            let result = await session.waitForExit(timeout: .seconds(60))
+            if result.status != 0 {
+                failures.append(
+                    "session \(index): status \(result.status): \(result.standardError)")
+            }
+        }
+        let lastExit = sessions.compactMap(\.exitedAt).max() ?? .now
+        MawIntegration.report(
+            "32 parallel maw -e true, from the first start to the last exit",
+            [(lastExit - started).fractionalMilliseconds])
+        #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
+    }
+
+    @Test(.disabled(Self.burstLimitPending))
+    func opensThirtyTwoTerminalSessionsAtOnce() async throws {
+        #expect(try await maw.session(["-e", "true"]).status == 0)
+        let host = maw.hostname(of: distribution)
+
+        let started = ContinuousClock.now
+        let shells = try (0..<32).map { _ in try maw.interactive(["-d", distribution]) }
+        var failures: [String] = []
+        for (index, shell) in shells.enumerated() {
+            // A shell whose session failed has exited; the wait ends for it at once.
+            _ = await maw.eventually(within: .seconds(60)) {
+                shell.promptCount(user: maw.user, host: host) > 0 || !shell.isRunning
+            }
+            if shell.promptCount(user: maw.user, host: host) == 0 {
+                failures.append(
+                    "shell \(index): no prompt; running: \(shell.isRunning); output: "
+                        + String(shell.plainOutput.suffix(300)))
+            }
+        }
+        MawIntegration.report(
+            "32 login shells started at once, to the last prompt",
+            [(ContinuousClock.now - started).fractionalMilliseconds])
+        #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
+        // All of them at the same time.
+        let row = try await maw.machineRow()
+        #expect(row.hasSuffix(" 32"), "\(row)")
+
+        for shell in shells {
+            shell.type("exit 0\r")
+        }
+        for (index, shell) in shells.enumerated() {
+            let status = await shell.waitForExit(timeout: .seconds(30))
+            #expect(status == 0, "shell \(index): \(shell.plainOutput.suffix(300))")
+        }
+        try await maw.waitForSessions(0)
+    }
+
     // MARK: Helpers
 
     /// Five `maw -e true` and one interactive command on the machine, each within the latency
