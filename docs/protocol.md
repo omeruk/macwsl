@@ -212,9 +212,14 @@ design and the alternatives.
   connection and its socket is full, the device blocks in that write. Until the host reads
   again, no vsock connection of the machine carries data in either direction, and no new
   connection opens. A sample of the machine's process showed the queue
-  `com.apple.virtualization.virtio.vsock-device:0` in `writev` for 3 s out of 3 s. The host
-  therefore must not stop reading a connection for long; this is not yet the case (see the
-  pull request for phase 05).
+  `com.apple.virtualization.virtio.vsock-device:0` in `writev` for 3 s out of 3 s. The
+  host's descriptor is one end of a Unix stream socket pair whose other end the machine's
+  process holds, and the device blocks once 8192 bytes wait in it: the default send buffer of
+  a Unix stream socket (`net.local.stream.sendspace`), with a low-water mark of 2048 bytes, so
+  it may block from 6145 bytes on. `SO_RCVBUF` on the host's descriptor is accepted but does
+  not change this, in the daemon and in a process that the descriptor was handed to alike
+  (`scripts/measure-vsock-buffer.sh`). The host therefore must not stop reading a connection
+  for long; this is not yet the case (see the pull request for phase 05).
 - A receiver holds at most one maximal frame plus one read in its buffer.
 
 In terminal mode, Ctrl-C typed on the Mac is a byte of input, as in ssh: the guest's terminal
