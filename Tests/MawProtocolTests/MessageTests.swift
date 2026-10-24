@@ -173,9 +173,50 @@ import Testing
         }
     }
 
+    /// The comparison reads every byte of both nonces even when the first bytes differ, so that
+    /// its duration does not depend on where the first difference is.
+    @Test(arguments: [0, 1, 31])
+    func readsEveryByteWhateverTheFirstDifference(differingAt index: Int) {
+        let bytes = (0..<32).map { UInt8($0) }
+        var other = bytes
+        other[index] ^= 0xFF
+        let left = CountingBytes(bytes)
+        let right = CountingBytes(other)
+        #expect(!DialBackNonce.constantTimeEqual(left, right))
+        #expect(left.reads.value == 32)
+        #expect(right.reads.value == 32)
+    }
+
+    @Test func findsByteSequencesOfDifferentLengthsUnequal() {
+        #expect(!DialBackNonce.constantTimeEqual([1, 2, 3], [1, 2]))
+        #expect(DialBackNonce.constantTimeEqual([1, 2, 3], [1, 2, 3]))
+    }
+
     @Test func neverPrintsANonce() {
         let nonce = DialBackNonce.random()
         #expect("\(nonce)" == "<nonce>")
         #expect(!"\(ControlMessage.dialBack(nonce))".contains(nonce.hexadecimal))
+    }
+}
+
+/// Bytes that count how often they are read.
+private struct CountingBytes: RandomAccessCollection {
+    final class Counter: @unchecked Sendable {
+        var value = 0
+    }
+
+    let bytes: [UInt8]
+    let reads = Counter()
+
+    init(_ bytes: [UInt8]) {
+        self.bytes = bytes
+    }
+
+    var startIndex: Int { bytes.startIndex }
+    var endIndex: Int { bytes.endIndex }
+
+    subscript(position: Int) -> UInt8 {
+        reads.value += 1
+        return bytes[position]
     }
 }

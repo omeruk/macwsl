@@ -26,12 +26,20 @@ public struct DialBackNonce: Sendable, Hashable, CustomStringConvertible {
         return DialBackNonce(bytes: bytes)!
     }
 
-    /// Compares every byte, whatever the first difference, so that the time taken does not
-    /// tell how much of a guess was right.
+    /// Compares in constant time (`constantTimeEqual`).
     public static func == (lhs: DialBackNonce, rhs: DialBackNonce) -> Bool {
+        constantTimeEqual(lhs.bytes, rhs.bytes)
+    }
+
+    /// Compares every byte, whatever the first difference, so that the time taken does not
+    /// tell how much of a guess was right. Byte sequences of different lengths are unequal.
+    static func constantTimeEqual<Bytes: RandomAccessCollection<UInt8>>(
+        _ lhs: Bytes, _ rhs: Bytes
+    ) -> Bool {
+        guard lhs.count == rhs.count else { return false }
         var difference: UInt8 = 0
-        for index in 0..<AgentProtocol.dialBackNonceSize {
-            difference |= lhs.bytes[index] ^ rhs.bytes[index]
+        for (left, right) in zip(lhs, rhs) {
+            difference |= left ^ right
         }
         return difference == 0
     }
