@@ -30,7 +30,7 @@ extension DebugBoot {
             return
         }
 
-        let client = machine.agentClient(connectTimeout: .seconds(5))
+        let client = machine.sessionClient(connectTimeout: .seconds(5))
         // debug-boot runs in / as root, as it has since phase 04, rather than in root's home.
         let request = ExecRequest(
             argv: command, environment: Self.hostEnvironment(terminal: false),
@@ -141,7 +141,7 @@ extension DebugBoot {
 
         let process: GuestProcess
         do throws(MawError) {
-            process = try await machine.agentClient(connectTimeout: .seconds(5))
+            process = try await machine.sessionClient(connectTimeout: .seconds(5))
                 .exec(request, output: Self.writeOutput)
         } catch {
             try await finish(machine, after: .processExited(.failure(error)), started: started) {
