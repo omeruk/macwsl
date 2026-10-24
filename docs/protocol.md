@@ -206,6 +206,15 @@ design and the alternatives.
   the handler, so a signal or a window size is sent while a write to the Mac's standard
   output blocks, for example SIGINT sent to `maw -e yes` while nobody reads its standard
   output.
+- **A full connection stops the machine's vsock traffic.** Over vsock, the signal in that
+  example is sent but does not arrive. Virtualization.framework's vsock device writes the
+  guest's data to the host's socket on one serial queue, and once the host stops reading a
+  connection and its socket is full, the device blocks in that write. Until the host reads
+  again, no vsock connection of the machine carries data in either direction, and no new
+  connection opens. A sample of the machine's process showed the queue
+  `com.apple.virtualization.virtio.vsock-device:0` in `writev` for 3 s out of 3 s. The host
+  therefore must not stop reading a connection for long; this is not yet the case (see the
+  pull request for phase 05).
 - A receiver holds at most one maximal frame plus one read in its buffer.
 
 In terminal mode, Ctrl-C typed on the Mac is a byte of input, as in ssh: the guest's terminal
