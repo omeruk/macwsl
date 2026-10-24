@@ -97,11 +97,11 @@ struct DaemonIntegrationTests {
 
     @Test func passesSIGINTToTheCommandAndKeepsTheMachine() async throws {
         let session = try maw.start(["-d", distribution, "-e", "sleep", "100"])
-        try await waitForSessions(1)
+        try await maw.waitForSessions(1)
         session.signal(SIGINT)
         let result = await session.waitForExit(timeout: .seconds(30))
         #expect(result.status == 130, "\(result.output)")
-        #expect(try await machineRow().contains("Running"))
+        #expect(try await maw.machineRow().contains("Running"))
     }
 
     /// Ctrl-C reaches a command that reads none of its endless input, `yes | maw -e sleep 1000`:
@@ -140,7 +140,7 @@ struct DaemonIntegrationTests {
             executable: maw.maw, arguments: ["-d", distribution, "-e", "sleep", "1000"],
             standardInputPipe: standardInput, separateStandardError: true,
             environment: maw.mawEnvironment)
-        try await waitForSessions(1)
+        try await maw.waitForSessions(1)
         // Long enough for every buffer on the way to fill.
         try await Task.sleep(for: .seconds(1))
 
@@ -148,7 +148,7 @@ struct DaemonIntegrationTests {
         session.signal(SIGINT)
         let result = await session.waitForExit(timeout: .seconds(10))
         #expect(result.status == 130, "\(result.standardError)")
-        try await waitForSessions(0)
+        try await maw.waitForSessions(0)
         return session.exitedAt.map { ($0 - sent).fractionalMilliseconds }
     }
 
@@ -180,7 +180,7 @@ struct DaemonIntegrationTests {
                 ],
                 standardOutputPipe: Pipe(), separateStandardError: true,
                 environment: maw.mawEnvironment)
-            try await waitForSessions(2)
+            try await maw.waitForSessions(2)
             // Long enough for every buffer on the way to fill.
             try await Task.sleep(for: .seconds(1))
 
@@ -195,7 +195,7 @@ struct DaemonIntegrationTests {
             #expect(session.isRunning)
             session.signal(SIGKILL)
             _ = await session.waitForExit(timeout: .seconds(10))
-            try await waitForSessions(0)
+            try await maw.waitForSessions(0)
         }
         _ = try await maw.session(["-e", "rm", "-f"] + markers)
         let median = MawIntegration.report(
@@ -219,7 +219,7 @@ struct DaemonIntegrationTests {
     @Test func twoSessionsShareOneMachine() async throws {
         let first = try maw.start(["-d", distribution, "-e", "sleep", "2"])
         let second = try maw.start(["-d", distribution, "-e", "sleep", "2"])
-        try await waitForSessions(2)
+        try await maw.waitForSessions(2)
         let status = try await maw.run(["--status"])
         let rows = status.lines.filter { $0.hasPrefix("  \(distribution) ") }
         #expect(rows.count == 1, "\(status.output)")
@@ -241,7 +241,7 @@ struct DaemonIntegrationTests {
 
     @Test func shutdownEndsAnActiveSession() async throws {
         let session = try maw.start(["-d", distribution, "-e", "sleep", "100"])
-        try await waitForSessions(1)
+        try await maw.waitForSessions(1)
         let shutdown = try await maw.run(["--shutdown"])
         #expect(shutdown.status == 0, "\(shutdown.standardError)")
 
@@ -299,7 +299,7 @@ struct DaemonIntegrationTests {
         #expect(try await maw.run(["--shutdown"]).status == 0)
         let before = IntegrationTests.virtualMachineProcesses()
         let session = try maw.start(["-d", distribution, "-e", "sleep", "100"])
-        try await waitForSessions(1)
+        try await maw.waitForSessions(1)
         let machines = IntegrationTests.virtualMachineProcesses().subtracting(before)
         #expect(!machines.isEmpty, "No virtual machine process appeared.")
         let daemon = try await daemonProcessID()
@@ -326,20 +326,6 @@ struct DaemonIntegrationTests {
     }
 
     // MARK: Helpers
-
-    /// The test distribution's row in `--status`, or an empty string.
-    func machineRow() async throws -> String {
-        let status = try await maw.run(["--status"])
-        return status.lines.first { $0.hasPrefix("  \(distribution) ") } ?? ""
-    }
-
-    /// Waits until `--status` shows `count` sessions on the test distribution's machine.
-    func waitForSessions(_ count: Int) async throws {
-        let reached = await maw.eventually(within: .seconds(30)) {
-            (try? await machineRow())?.hasSuffix(" \(count)") == true
-        }
-        try #require(reached, "--status never showed \(count) sessions.")
-    }
 
     /// The daemon's process ID, from the first line of `--status`.
     func daemonProcessID() async throws -> pid_t {

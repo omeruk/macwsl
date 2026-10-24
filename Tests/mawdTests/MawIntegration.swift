@@ -131,6 +131,23 @@ struct MawIntegration: Sendable {
         return entries.filter { $0 == name || $0.hasPrefix("\(MawPaths.stagingPrefix)\(name)-") }
     }
 
+    /// The test distribution's row in `--status`, or an empty string.
+    func machineRow() async throws -> String {
+        let status = try await run(["--status"])
+        return status.lines.first { $0.hasPrefix("  \(distribution) ") } ?? ""
+    }
+
+    /// Waits until `--status` shows `count` sessions on the test distribution's machine.
+    func waitForSessions(
+        _ count: Int, sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws {
+        let reached = await eventually(within: .seconds(30)) {
+            (try? await machineRow())?.hasSuffix(" \(count)") == true
+        }
+        try #require(
+            reached, "--status never showed \(count) sessions.", sourceLocation: sourceLocation)
+    }
+
     func eventually(within timeout: Duration, _ condition: () async -> Bool) async -> Bool {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
