@@ -1,9 +1,9 @@
 # The maw daemon
 
 `mawd` owns every virtual machine. `maw`, and from phase 11b the terminal app, are its clients.
-They talk to it over XPC. For a session, the daemon connects to the guest agent over vsock and
-hands that connection's descriptor to the client, which runs the guest protocol
-(`docs/protocol.md`) itself, so terminal bytes never pass through the daemon.
+They talk to it over XPC. For a session, the daemon has the guest agent open a vsock
+connection to it and hands that connection's descriptor to the client, which runs the guest
+protocol (`docs/protocol.md`) itself, so terminal bytes never pass through the daemon.
 
 The code is in `Sources/MawXPC` (the interface and the XPC wrapper), `Sources/MawDaemonKit`
 (the daemon), `Sources/MawClient` (the client library), and `Sources/mawd/Serve.swift`.
@@ -50,6 +50,43 @@ stopped ──openSession──▶ starting ──agent answers info──▶ ru
   `distro.json`. Its kernel command line carries `maw.root=/dev/vda` and `maw.clock=<seconds>`.
   The initramfs machine keeps the defaults of phase 03: the smaller of 4 and the number of host
   CPUs, and 2 GiB of memory.
+- **The dial-back listener.** When a machine reaches the running state, the daemon sets a
+  `VZVirtioSocketListener` on its vsock port 19800 (`AgentProtocol.dialBackPort`). When the
+  machine stops, it removes the listener and ends the wait of every session that has not
+  received its connection yet. The listener exists only inside the daemon's process; only the
+  machine's guest can reach it (docs/security.md).
+
+### Opening a session
+
+Every session, whether `maw`'s, the installer's, or `mawd debug-boot`'s, runs on a connection
+that the guest agent dials ([decision record 0017](decisions/0017-dial-back-for-sessions.md)):
+
+1. The daemon registers a new 32-byte nonce with the machine's `DialBackGate`. It is valid for
+   5 seconds; at most 64 sessions of a machine wait at once.
+2. It opens a connection to the agent (port 19799), exchanges versions, and sends `dialBack`
+   with the nonce.
+3. The agent binds a source port below 1024, connects to port 19800 within 2 seconds, sends
+   the nonce first, replies `dialedBack`, and closes the request connection.
+4. The listener admits the connection, reads exactly its 37-byte nonce frame within 2 seconds,
+   and gives the connection to the session whose nonce it carries. Connections from a source
+   port of 1024 or above, connections while no session waits, connections beyond the waiting
+   sessions plus 4 that have not sent their nonce, and connections with any other nonce are
+   refused or closed; the console log records each refusal, at most 5 in 10 seconds.
+5. The daemon hands the connection's descriptor, positioned after the nonce frame, to the
+   client in `sessionOpened`.
+
+The connections that the daemon opens itself carry only `info`, `shutdown`, and `dialBack`,
+whose replies it reads in full at once. A session's output on such a connection could stop the
+machine's vsock device while the client did not read it (docs/protocol.md, "Flow control and
+ordering").
+
+A dial-back can fail in three ways, each with its own error:
+
+| Error | Situation | Suggested fix |
+|-------|-----------|---------------|
+| `sessionDialBackFailed` | The agent replied `dialBackFailed`: no source port below 1024 was free, binding one failed, or its connection was refused or did not complete within 2 seconds. The message gives the agent's reason. | Run the command again. If it fails again, restart the virtual machines with `maw --shutdown`; the console log in `~/Library/Logs/maw` has the agent's warning. |
+| `sessionDialBackMissing` | The agent replied `dialedBack`, but no connection with the session's nonce arrived within the nonce's 5 seconds. | Run the command again. If it fails again, restart the virtual machines with `maw --shutdown`; the virtual machine's console log in `~/Library/Logs/maw` lists the connections that were refused. |
+| `sessionDialBackBusy` | 64 sessions of the machine were already waiting for their connections. | Wait for other sessions to start, then run the command again. |
 
 ### Console logs
 
@@ -117,7 +154,7 @@ there is no negotiation.
 | Request | Reply | Meaning |
 |---------|-------|---------|
 | `hello(clientVersion)` | `welcome(DaemonInfo)` | The first request on every connection. `DaemonInfo` holds the daemon's maw version, process ID, and interface version. |
-| `openSession(MachineID?)` | `sessionOpened(SessionInfo)` plus `descriptor` | Starts the machine if needed and connects to its guest agent; `nil` is the default distribution's machine. The client owns the descriptor and runs the guest protocol over it with `GuestAgentClient`. `SessionInfo` names the machine. |
+| `openSession(MachineID?)` | `sessionOpened(SessionInfo)` plus `descriptor` | Starts the machine if needed and has its guest agent dial a connection (see "Opening a session"); `nil` is the default distribution's machine. The client owns the descriptor and runs the guest protocol over it with `GuestAgentClient`. `SessionInfo` names the machine. |
 | `status` | `status(DaemonStatus)` | The daemon's version, process ID, and uptime, whether it may run virtual machines, and each machine with its state, uptime, CPUs, memory, and session count. |
 | `shutdown` | `shutdownComplete(ShutdownSummary)` | Stops every machine and ends its sessions. Returns once they have stopped. |
 | `install(InstallRequest)` | `installed(InstallSummary)` | Installs a distribution. The reply comes when the installation has finished; meanwhile the daemon sends `installProgress` events. `InstallRequest` holds the catalog name, an optional name to install under, the user, the password as a `Secret`, and the Mac's locale. |
