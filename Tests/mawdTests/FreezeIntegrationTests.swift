@@ -123,54 +123,59 @@ struct FreezeIntegrationTests {
 
     // MARK: Concurrency
 
-    static let burstLimitPending: Comment =
-        "The gate refuses the agent's own dials beyond four without a nonce in a burst."
+    /// Every dial in a burst must be admitted. The gate admits one connection without a nonce
+    /// for each waiting session and 4 more, and the agent's listening socket has a backlog of
+    /// 64.
+    @Test func opensThirtyTwoSessionsAtOnce() async throws {
+        try await expectBurst(of: 32)
+    }
 
-    /// Every dial-back in a burst must be admitted: the gate admits at most four connections
-    /// that have not yet sent their nonce, and the agent's listening socket has a backlog of 64.
-    ///
-    /// Disabled until the limit is decided: in a burst, more than four of the agent's own dials
-    /// can be waiting to have their nonce read, and the gate refuses the rest
-    /// (`DialBackGate.Refusal.tooManyUnauthenticated`).
-    @Test(.disabled(Self.burstLimitPending))
-    func opensThirtyTwoSessionsAtOnce() async throws {
+    /// 64 sessions are also the agent's own limit of connections served at once, beyond which
+    /// it replies `busy`; that limit is separate from the gate's, and is counted separately.
+    @Test func opensSixtyFourSessionsAtOnce() async throws {
+        try await expectBurst(of: 64)
+    }
+
+    func expectBurst(of count: Int) async throws {
         // Boot the machine first, so that the burst measures sessions rather than the boot.
         #expect(try await maw.session(["-e", "true"]).status == 0)
+        let logStart = consoleLogSize()
 
         let started = ContinuousClock.now
-        let sessions = try (0..<32).map { _ in
+        let sessions = try (0..<count).map { _ in
             try maw.start(["-d", distribution, "-e", "true"])
         }
-        var failures: [String] = []
+        var failures = BurstFailures()
         for (index, session) in sessions.enumerated() {
             let result = await session.waitForExit(timeout: .seconds(60))
             if result.status != 0 {
-                failures.append(
-                    "session \(index): status \(result.status): \(result.standardError)")
+                failures.add("session \(index): status \(result.status): \(result.standardError)")
             }
         }
         let lastExit = sessions.compactMap(\.exitedAt).max() ?? .now
         MawIntegration.report(
-            "32 parallel maw -e true, from the first start to the last exit",
+            "\(count) parallel maw -e true, from the first start to the last exit",
             [(lastExit - started).fractionalMilliseconds])
-        #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
+        failures.read(consoleLog(from: logStart))
+        print("burst: \(count) parallel maw -e true: \(failures)")
+        #expect(failures.isEmpty, "\(failures.details)")
     }
 
-    @Test(.disabled(Self.burstLimitPending))
-    func opensThirtyTwoTerminalSessionsAtOnce() async throws {
+    @Test func opensThirtyTwoTerminalSessionsAtOnce() async throws {
         #expect(try await maw.session(["-e", "true"]).status == 0)
         let host = maw.hostname(of: distribution)
+        let logStart = consoleLogSize()
 
         let started = ContinuousClock.now
         let shells = try (0..<32).map { _ in try maw.interactive(["-d", distribution]) }
-        var failures: [String] = []
+        var failures = BurstFailures()
         for (index, shell) in shells.enumerated() {
             // A shell whose session failed has exited; the wait ends for it at once.
             _ = await maw.eventually(within: .seconds(60)) {
                 shell.promptCount(user: maw.user, host: host) > 0 || !shell.isRunning
             }
             if shell.promptCount(user: maw.user, host: host) == 0 {
-                failures.append(
+                failures.add(
                     "shell \(index): no prompt; running: \(shell.isRunning); output: "
                         + String(shell.plainOutput.suffix(300)))
             }
@@ -178,7 +183,9 @@ struct FreezeIntegrationTests {
         MawIntegration.report(
             "32 login shells started at once, to the last prompt",
             [(ContinuousClock.now - started).fractionalMilliseconds])
-        #expect(failures.isEmpty, "\(failures.joined(separator: "\n"))")
+        failures.read(consoleLog(from: logStart))
+        print("burst: 32 login shells: \(failures)")
+        #expect(failures.isEmpty, "\(failures.details)")
         // All of them at the same time.
         let row = try await maw.machineRow()
         #expect(row.hasSuffix(" 32"), "\(row)")
@@ -191,6 +198,75 @@ struct FreezeIntegrationTests {
             #expect(status == 0, "shell \(index): \(shell.plainOutput.suffix(300))")
         }
         try await maw.waitForSessions(0)
+    }
+
+    /// The sessions of a burst that failed, by cause, and what the machine's console log
+    /// recorded meanwhile: the gate's refusals by reason, and the agent's `busy` refusals.
+    struct BurstFailures: CustomStringConvertible {
+        /// The agent's dial was reset: the gate refused it before reading.
+        var refusedByTheGate = 0
+        /// The agent dialed, but no connection with the nonce reached the session.
+        var dialBackMissing = 0
+        /// The agent was serving its limit of connections.
+        var agentBusy = 0
+        var other = 0
+        var details: [String] = []
+        /// Gate refusals in the console log, by reason. The gate logs at most 5 per 10 s and
+        /// later reports how many it left out.
+        var loggedGateRefusals: [String: Int] = [:]
+        var unloggedGateRefusals = 0
+        /// The agent's "refusing a connection" warnings in the console log.
+        var loggedAgentRefusals = 0
+
+        var isEmpty: Bool { details.isEmpty && loggedGateRefusals.isEmpty }
+
+        mutating func add(_ failure: String) {
+            details.append(failure)
+            if failure.contains("the agent is serving") {
+                agentBusy += 1
+            } else if failure.contains("could not connect to maw for the session"),
+                failure.contains("Connection reset by peer")
+            {
+                refusedByTheGate += 1
+            } else if failure.contains("no connection with the session's nonce arrived") {
+                dialBackMissing += 1
+            } else {
+                other += 1
+            }
+        }
+
+        mutating func read(_ log: String) {
+            for line in DebugBootProcess.lines(of: log) {
+                if let match = line.firstMatch(
+                    of:
+                        /dial-back: (?:(\d+) further refusals were not logged; )?refused a dial-back connection: (.*)$/
+                ) {
+                    unloggedGateRefusals += match.1.flatMap { Int($0) } ?? 0
+                    loggedGateRefusals[String(match.2), default: 0] += 1
+                } else if line.contains("refusing a connection:") {
+                    loggedAgentRefusals += 1
+                }
+            }
+        }
+
+        var description: String {
+            "\(details.count) failed: \(refusedByTheGate) refused by the gate, "
+                + "\(dialBackMissing) dial-backs missing, \(agentBusy) agent busy, \(other) other; "
+                + "console log: gate refusals \(loggedGateRefusals) and \(unloggedGateRefusals) not "
+                + "logged, \(loggedAgentRefusals) agent busy refusals"
+        }
+    }
+
+    func consoleLogSize() -> Int {
+        (try? Data(contentsOf: maw.logDirectory.appending(path: "\(distribution).log")))?.count
+            ?? 0
+    }
+
+    func consoleLog(from start: Int) -> String {
+        let data =
+            (try? Data(contentsOf: maw.logDirectory.appending(path: "\(distribution).log")))
+            ?? Data()
+        return String(decoding: data.dropFirst(start), as: UTF8.self)
     }
 
     // MARK: Helpers
