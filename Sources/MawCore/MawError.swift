@@ -81,6 +81,9 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case machineStopped(machine: String, reason: String)
     /// The LaunchAgent could not be installed or removed.
     case launchAgentFailed(reason: String)
+    /// A `launchctl` command did not finish within `seconds` and was killed. `command` is the
+    /// command line.
+    case launchctlTimedOut(command: String, seconds: Int)
 
     // MARK: Guest files
 
@@ -214,6 +217,8 @@ extension MawError: LocalizedError {
             "The session ended because the virtual machine \(machine) stopped: \(reason)."
         case .launchAgentFailed(let reason):
             "The maw LaunchAgent could not be changed: \(reason)."
+        case .launchctlTimedOut(let command, let seconds):
+            "\(command) did not finish within \(seconds) seconds and was stopped."
         case .kernelNotFound(let path):
             "The guest kernel files are missing: \(path) does not exist."
         case .virtualizationEntitlementMissing:
@@ -325,6 +330,9 @@ extension MawError: LocalizedError {
             "Run the command again to start a new virtual machine."
         case .launchAgentFailed:
             nil
+        case .launchctlTimedOut:
+            "launchd did not answer in time. Run the command again; if it still does not "
+                + "finish, log out and back in, which restarts your launchd session."
         case .kernelNotFound:
             "Install the guest kernel and initramfs with scripts/fetch-guest.sh."
         case .virtualizationEntitlementMissing:

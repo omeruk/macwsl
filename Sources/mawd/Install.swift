@@ -54,7 +54,7 @@ struct Install: AsyncParsableCommand {
                 reason: "\(plist.path(percentEncoded: false)) could not be written: \(error)")
         }
 
-        let replaced = Launchctl.isLoaded(settings.label)
+        let replaced = try Launchctl.isLoaded(settings.label)
         if replaced {
             // The daemon receives SIGTERM and stops its machines cleanly first.
             try Launchctl.bootout(settings.label)
@@ -108,7 +108,7 @@ struct Uninstall: AsyncParsableCommand {
     func run() async throws {
         let paths = MawPaths()
         let plist = paths.launchAgentFile(label: label)
-        let loaded = Launchctl.isLoaded(label)
+        let loaded = try Launchctl.isLoaded(label)
         let exists = FileManager.default.fileExists(atPath: plist.path(percentEncoded: false))
         guard loaded || exists else {
             print("\(label) is not installed.")

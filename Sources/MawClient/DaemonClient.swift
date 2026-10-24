@@ -132,8 +132,13 @@
         /// loaded, or launchd refused the connection.
         static func unavailable(label: String, paths: MawPaths) -> MawError {
             let plist = paths.launchAgentFile(label: label).path(percentEncoded: false)
-            guard FileManager.default.fileExists(atPath: plist), Launchctl.isLoaded(label) else {
-                return .daemonNotInstalled(label: label)
+            do throws(MawError) {
+                guard FileManager.default.fileExists(atPath: plist), try Launchctl.isLoaded(label)
+                else {
+                    return .daemonNotInstalled(label: label)
+                }
+            } catch {
+                return error
             }
             return .daemonUnreachable(reason: "launchd refused the connection to \(label)")
         }

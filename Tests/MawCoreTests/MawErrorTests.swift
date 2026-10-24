@@ -15,6 +15,7 @@ import Testing
         .clientSignatureRejected(identifier: "maw-5555"),
         .machineStopped(machine: "initramfs", reason: "maw --shutdown was run"),
         .launchAgentFailed(reason: "launchctl bootstrap failed"),
+        .launchctlTimedOut(command: "launchctl bootout gui/501/dev.maw.mawd", seconds: 60),
         .guestCommandNotFound(command: "nope", reason: "not in PATH"),
         .virtualizationEntitlementMissing,
     ]
