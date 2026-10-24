@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import MawCore
+import MawTestSupport
 import Testing
 
 /// What scripts/integration-test.sh sets up for the tests that run `maw`: a daemon of its own,
@@ -140,11 +141,13 @@ struct MawIntegration: Sendable {
     }
 
     /// Runs maw with its output discarded and returns its status and the wall-clock time
-    /// from starting it to its exit, in milliseconds.
+    /// from starting it to its exit, in milliseconds. Kills it after `timeout`.
     ///
-    /// `posix_spawn` and `waitpid` rather than `Process`: `Process.waitUntilExit()` waits on a
+    /// `posix_spawn` and a kqueue rather than `Process`: `Process.waitUntilExit()` waits on a
     /// run loop and adds tens of milliseconds, more than the latency being measured.
-    func timed(_ arguments: [String]) throws -> (status: Int32, milliseconds: Double) {
+    func timed(_ arguments: [String], timeout: Duration = .seconds(60)) throws
+        -> (status: Int32, milliseconds: Double)
+    {
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
@@ -164,11 +167,36 @@ struct MawIntegration: Sendable {
         let start = ContinuousClock.now
         let error = posix_spawn(&pid, argv[0], &actions, nil, argv, envp)
         try #require(error == 0, "posix_spawn failed with error \(error)")
+        let status = Self.reap(pid, within: timeout)
+        let elapsed = ContinuousClock.now - start
+        let exited = try #require(status, "maw \(arguments) did not exit within \(timeout).")
+        // WEXITSTATUS, which Swift does not import.
+        return ((exited >> 8) & 0xFF, elapsed.fractionalMilliseconds)
+    }
+
+    /// Waits for the child `pid` to exit, at most `timeout`, and returns its wait status. After
+    /// `timeout`, kills it and returns `nil`.
+    static func reap(_ pid: pid_t, within timeout: Duration) -> Int32? {
+        let queue = kqueue()
+        defer { close(queue) }
+        var change = kevent(
+            ident: UInt(pid), filter: Int16(EVFILT_PROC), flags: UInt16(EV_ADD | EV_ONESHOT),
+            fflags: NOTE_EXIT, data: 0, udata: nil)
+        var event = kevent()
+        var limit = timespec(
+            tv_sec: Int(timeout.components.seconds),
+            tv_nsec: Int(timeout.components.attoseconds / 1_000_000_000))
+        // A child that has already exited makes the registration fail, which also returns.
+        var ready: Int32
+        repeat {
+            ready = kevent(queue, &change, 1, &event, 1, &limit)
+        } while ready < 0 && errno == EINTR
+        if ready == 0 {
+            kill(pid, SIGKILL)
+        }
         var status: Int32 = 0
         while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
-        let elapsed = ContinuousClock.now - start
-        // WEXITSTATUS, which Swift does not import.
-        return ((status >> 8) & 0xFF, elapsed.fractionalMilliseconds)
+        return ready == 0 ? nil : status
     }
 
     /// `measurement: <what>, 5 runs: 1, 2, 3, 4, 5 ms; median 3 ms, slowest 5 ms`, which the
@@ -244,6 +272,8 @@ struct PaxEntry: Equatable {
         tar.standardOutput = output
         tar.standardError = FileHandle.nullDevice
         try tar.run()
+        let watchdog = tar.terminate(after: .seconds(300))
+        defer { watchdog.cancel() }
         let reader = BlockReader(output.fileHandleForReading)
         var entries: [PaxEntry] = []
         var pending: [String: Data] = [:]
@@ -283,7 +313,7 @@ struct PaxEntry: Equatable {
             }
         }
         tar.terminate()
-        tar.waitUntilExit()
+        tar.waitForExitSynchronously(within: .seconds(10))
         return entries
     }
 

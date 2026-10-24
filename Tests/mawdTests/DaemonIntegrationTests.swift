@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import MawTestSupport
 import Testing
 
 /// `maw` against a real daemon, which boots real virtual machines, in the test distribution
@@ -11,7 +12,9 @@ import Testing
     .enabled(
         if: MawIntegration.isEnabled,
         "Integration tests boot a real virtual machine; run scripts/integration-test.sh."),
-    .serialized
+    .serialized,
+    // Bounds each test as a whole; every wait in it also has a time limit of its own.
+    .timeLimit(.minutes(10))
 )
 struct DaemonIntegrationTests {
     let maw: MawIntegration
@@ -112,31 +115,41 @@ struct DaemonIntegrationTests {
             let pipe = Pipe()
             yes.standardOutput = pipe
             try yes.run()
-            defer {
-                yes.terminate()
-                yes.waitUntilExit()
+            let delay: Result<Double?, any Error>
+            do {
+                delay = .success(try await sigintDelay(standardInput: pipe))
+            } catch {
+                delay = .failure(error)
             }
-            let session = try DebugBootProcess(
-                executable: maw.maw, arguments: ["-d", distribution, "-e", "sleep", "1000"],
-                standardInputPipe: pipe, separateStandardError: true,
-                environment: maw.mawEnvironment)
-            try await waitForSessions(1)
-            // Long enough for every buffer on the way to fill.
-            try await Task.sleep(for: .seconds(1))
-
-            let sent = ContinuousClock.now
-            session.signal(SIGINT)
-            let result = await session.waitForExit(timeout: .seconds(10))
-            #expect(result.status == 130, "\(result.standardError)")
-            if let exitedAt = session.exitedAt {
-                delays.append((exitedAt - sent).fractionalMilliseconds)
+            yes.terminate()
+            #expect(await yes.waitForExit(within: .seconds(10)), "yes did not exit.")
+            if let delay = try delay.get() {
+                delays.append(delay)
             }
-            try await waitForSessions(0)
         }
         let median = MawIntegration.report(
             "SIGINT to the exit of yes | maw -e sleep 1000", delays)
         #expect(delays.count == 5)
         #expect(median < 100)
+    }
+
+    /// `maw -e sleep 1000` with `standardInput` as its input: the time from SIGINT to maw's
+    /// exit, in milliseconds.
+    func sigintDelay(standardInput: Pipe) async throws -> Double? {
+        let session = try DebugBootProcess(
+            executable: maw.maw, arguments: ["-d", distribution, "-e", "sleep", "1000"],
+            standardInputPipe: standardInput, separateStandardError: true,
+            environment: maw.mawEnvironment)
+        try await waitForSessions(1)
+        // Long enough for every buffer on the way to fill.
+        try await Task.sleep(for: .seconds(1))
+
+        let sent = ContinuousClock.now
+        session.signal(SIGINT)
+        let result = await session.waitForExit(timeout: .seconds(10))
+        #expect(result.status == 130, "\(result.standardError)")
+        try await waitForSessions(0)
+        return session.exitedAt.map { ($0 - sent).fractionalMilliseconds }
     }
 
     @Test func reportsADistributionThatIsNotInstalled() async throws {

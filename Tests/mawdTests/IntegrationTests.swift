@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import MawTestSupport
 import Testing
 import os
 
@@ -20,7 +21,9 @@ private let integrationEnabled = ProcessInfo.processInfo.environment["MAW_INTEGR
     .enabled(
         if: integrationEnabled,
         "Integration tests boot a real virtual machine; run scripts/integration-test.sh."),
-    .serialized
+    .serialized,
+    // Bounds each test as a whole; every wait in it also has a time limit of its own.
+    .timeLimit(.minutes(10))
 )
 struct IntegrationTests {
     let mawd: URL
@@ -186,8 +189,10 @@ struct IntegrationTests {
         codesign.standardOutput = output
         codesign.standardError = output
         guard (try? codesign.run()) != nil else { return false }
+        let watchdog = codesign.terminate(after: .seconds(30))
+        defer { watchdog.cancel() }
         let data = output.fileHandleForReading.readDataToEndOfFile()
-        codesign.waitUntilExit()
+        guard codesign.waitForExitSynchronously(within: .seconds(30)) else { return false }
         return String(decoding: data, as: UTF8.self).contains("com.apple.security.virtualization")
     }
 }
@@ -338,9 +343,7 @@ final class DebugBootProcess: @unchecked Sendable {
         while process.isRunning && ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(50))
         }
-        if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-            process.waitUntilExit()
+        if !(await process.waitForExit(within: .zero)) {
             return Result(status: -1, output: output + "\n[test] killed after the timeout\n")
         }
         // Collect output written just before the exit.
@@ -408,10 +411,7 @@ final class InteractiveSession: @unchecked Sendable {
     }
 
     deinit {
-        if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-            process.waitUntilExit()
-        }
+        process.waitForExitSynchronously(within: .zero)
         primaryHandle.readabilityHandler = nil
         close(primary)
         close(secondary)

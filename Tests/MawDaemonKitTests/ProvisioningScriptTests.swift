@@ -1,5 +1,6 @@
 import Foundation
 import MawCore
+import MawTestSupport
 import MawXPC
 import Testing
 
@@ -14,7 +15,7 @@ import Testing
             locale: locale)
     }
 
-    @Test func isValidShell() throws {
+    @Test func isValidShell() async throws {
         let script = FileManager.default.temporaryDirectory.appending(
             path: "maw-provision-\(UUID().uuidString).sh")
         try ProvisioningScript.text.write(to: script, atomically: true, encoding: .utf8)
@@ -23,7 +24,7 @@ import Testing
         shell.executableURL = URL(filePath: "/bin/sh")
         shell.arguments = ["-n", script.path(percentEncoded: false)]
         try shell.run()
-        shell.waitUntilExit()
+        try #require(await shell.waitForExit(within: .seconds(30)))
         #expect(shell.terminationStatus == 0)
     }
 

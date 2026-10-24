@@ -13,7 +13,9 @@ import Testing
     .enabled(
         if: MawIntegration.isEnabled,
         "Integration tests boot a real virtual machine; run scripts/integration-test.sh."),
-    .serialized
+    .serialized,
+    // Bounds each test as a whole; every wait in it also has a time limit of its own.
+    .timeLimit(.minutes(40))
 )
 struct DistributionIntegrationTests {
     let maw: MawIntegration

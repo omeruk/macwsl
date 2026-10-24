@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import MawCore
+import MawTestSupport
 import Testing
 
 @testable import MawVirtualization
@@ -58,7 +59,7 @@ import Testing
         try input.fileHandleForWriting.close()
         try await waiting.value
         #expect(!DiskImage.isLocked(image))
-        holder.waitUntilExit()
+        #expect(await holder.waitForExit(within: .seconds(10)))
     }
 
     @Test func refusesToOverwriteAnExistingFile() throws {
