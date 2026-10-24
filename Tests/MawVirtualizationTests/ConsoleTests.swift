@@ -81,6 +81,20 @@ import Testing
         console.closeGuestSide()
     }
 
+    /// The guest's console carries its boot messages and anything written to /dev/console; no
+    /// program that the daemon starts may inherit either pipe.
+    @Test func closesItsPipesOnExec() throws {
+        let directory = try TemporaryDirectory()
+        let console = try Console(logURL: directory.file("test-console.log"))
+        for handle in [
+            console.fromGuest.fileHandleForReading, console.fromGuest.fileHandleForWriting,
+            console.toGuest.fileHandleForReading, console.toGuest.fileHandleForWriting,
+        ] {
+            #expect(fcntl(handle.fileDescriptor, F_GETFD) & FD_CLOEXEC != 0)
+        }
+        console.closeGuestSide()
+    }
+
     // MARK: Log file
 
     @Test func appendsToAnExistingLogAndMarksHostNotes() throws {
