@@ -85,6 +85,38 @@ import Testing
                 + "as Guest/README.md describes.")
     }
 
+    @Test func namesTheCauseAndAFixOfAFailedDialBack() {
+        let failed = MawError.sessionDialBackFailed(reason: "no source port below 1024 is free")
+        #expect(
+            failed.errorDescription
+                == "The guest agent could not connect to maw for the session: no source port "
+                + "below 1024 is free.")
+        #expect(
+            failed.recoverySuggestion
+                == "Run the command again. If it fails again, restart the virtual machines with "
+                + "maw --shutdown; the console log in ~/Library/Logs/maw has the agent's warning.")
+
+        let missing = MawError.sessionDialBackMissing(milliseconds: 5000)
+        #expect(
+            missing.errorDescription
+                == "The guest agent reported that it connected to maw for the session, but no "
+                + "connection with the session's nonce arrived within 5000 ms.")
+        #expect(
+            missing.recoverySuggestion
+                == "Run the command again. If it fails again, restart the virtual machines with "
+                + "maw --shutdown; the virtual machine's console log in ~/Library/Logs/maw lists "
+                + "the connections that were refused.")
+
+        let busy = MawError.sessionDialBackBusy(limit: 64)
+        #expect(
+            busy.errorDescription
+                == "64 sessions are already waiting for a connection from this virtual machine's "
+                + "agent.")
+        #expect(
+            busy.recoverySuggestion
+                == "Wait for other sessions to start, then run the command again.")
+    }
+
     @Test func namesTheSigningScriptForARejectedSignature() {
         let error = MawError.clientSignatureRejected(identifier: "maw-5555")
         #expect(error.recoverySuggestion?.contains("scripts/sign-dev.sh") == true)

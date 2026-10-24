@@ -138,6 +138,14 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case guestAgentVersionMismatch(host: UInt32, guest: UInt32)
     /// A conversation with the guest agent failed partway through.
     case guestAgentFailed(reason: String)
+    /// The guest agent could not open a session's connection to the host (protocol version 3's
+    /// `dialBack`), and reported why.
+    case sessionDialBackFailed(reason: String)
+    /// The guest agent reported that it opened a session's connection to the host, but no
+    /// connection with the session's nonce arrived within `milliseconds`.
+    case sessionDialBackMissing(milliseconds: Int)
+    /// `limit` sessions are already waiting for their connections from one machine's agent.
+    case sessionDialBackBusy(limit: Int)
     /// The command to run in the guest does not exist there. Shells report this as 127.
     case guestCommandNotFound(command: String, reason: String)
     /// The command exists in the guest but could not be started. Shells report this as 126.
@@ -259,6 +267,14 @@ extension MawError: LocalizedError {
                 + "version \(host)."
         case .guestAgentFailed(let reason):
             "The connection to the guest agent failed: \(reason)."
+        case .sessionDialBackFailed(let reason):
+            "The guest agent could not connect to maw for the session: \(reason)."
+        case .sessionDialBackMissing(let milliseconds):
+            "The guest agent reported that it connected to maw for the session, but no "
+                + "connection with the session's nonce arrived within \(milliseconds) ms."
+        case .sessionDialBackBusy(let limit):
+            "\(limit) sessions are already waiting for a connection from this virtual "
+                + "machine's agent."
         case .guestCommandNotFound(let command, let reason):
             "\(command): command not found in the guest (\(reason))."
         case .guestCommandNotStarted(let command, let reason):
@@ -373,6 +389,16 @@ extension MawError: LocalizedError {
                 + "Guest/README.md describes."
         case .guestAgentFailed:
             "The console log may contain details."
+        case .sessionDialBackFailed:
+            "Run the command again. If it fails again, restart the virtual machines with "
+                + "maw --shutdown; the console log in ~/Library/Logs/maw has the agent's "
+                + "warning."
+        case .sessionDialBackMissing:
+            "Run the command again. If it fails again, restart the virtual machines with "
+                + "maw --shutdown; the virtual machine's console log in ~/Library/Logs/maw "
+                + "lists the connections that were refused."
+        case .sessionDialBackBusy:
+            "Wait for other sessions to start, then run the command again."
         case .guestCommandNotFound:
             "Check the command's name, or give its full path."
         case .guestCommandNotStarted:
