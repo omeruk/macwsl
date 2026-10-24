@@ -24,4 +24,7 @@ public enum AgentProtocol {
     public static let dialBackPort: UInt32 = 0x4D58
     /// The size of a `DialBackNonce` and of a `dialBackNonce` frame's payload.
     public static let dialBackNonceSize = 32
+    /// The connections the agent serves at once. The host keeps at most this many `dialBack`
+    /// requests pending per machine.
+    public static let maximumConnections = 64
 }

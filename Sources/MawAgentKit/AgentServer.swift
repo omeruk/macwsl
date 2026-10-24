@@ -30,7 +30,7 @@ public struct AgentConfiguration: Sendable {
     public var dialBack: @Sendable () throws(DialBackError) -> OwnedDescriptor
 
     public init(
-        maximumConnections: Int = 64,
+        maximumConnections: Int = AgentProtocol.maximumConnections,
         requestTimeout: Duration = .seconds(10),
         system: GuestSystem = .live,
         systemBusTimeout: Duration = .seconds(2),
