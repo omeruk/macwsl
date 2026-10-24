@@ -55,7 +55,9 @@ Without that variable, `swift test` skips the integration tests. They need an Ap
 Mac that is not itself a virtual machine, the guest files from `scripts/fetch-guest.sh`, and a
 network connection. They install test distributions named `maw-it-<time>-...` with a daemon of
 their own, remove them at the end, and download the Ubuntu image only if
-`~/Library/Caches/maw/images` does not have it yet.
+`~/Library/Caches/maw/images` does not have it yet. The script fails the run if the guest
+agent started more than once in one boot of a machine. When a test fails, it keeps the test
+daemon's logs and the agent's journal and prints where they are.
 
 ### Running tests with only the Command Line Tools
 

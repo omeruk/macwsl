@@ -297,6 +297,13 @@ directory, and a machine idle timeout of 3 seconds. It sets `MAW_DAEMON_LABEL` s
 `maw` processes of the tests connect to it, and removes the agent when it exits, also when a
 test fails or the script is interrupted. `MAW_DAEMON_LABEL` is not meant for users.
 
+The script fails the run if a boot of any machine started the guest agent more than once,
+according to the console logs: each boot starts it once, and a second start means that it
+exited and ended every session it served. When a test fails, the agent restarted, or the run
+left something behind, the script saves the agent's journal from the test distribution into
+the test daemon's log directory, keeps that directory with the daemon's log and every console
+log, and prints its path. Otherwise it deletes it.
+
 ## Known limitations
 
 - A connection that arrives while an idle daemon is exiting is interrupted, and the command
