@@ -23,6 +23,11 @@
 # processes that were already running when the run started are not counted. Anything left
 # behind makes the run fail.
 #
+# When a test fails, the script saves the agent's journal from the test distribution into the
+# test daemon's log directory, keeps that directory (the daemon's log and every console log,
+# without the image cache), and prints where it is. It also keeps the directory when the run
+# left something behind. Otherwise it deletes it.
+#
 # Requires an Apple silicon Mac that is not itself a virtual machine, the guest files from
 # scripts/fetch-guest.sh, and a network connection for apt and, on a first run, the download.
 #
@@ -53,6 +58,28 @@ virtual_machine_processes() {
     pgrep -f 'com[.]apple[.]Virtualization[.]VirtualMachine' || true
 }
 machines_before=" $(virtual_machine_processes | tr '\n' ' ') "
+
+# Runs a command, and kills it after $1 seconds. Returns its status.
+run_with_time_limit() {
+    limit=$1
+    shift
+    "$@" &
+    command_pid=$!
+    (sleep "$limit" && kill "$command_pid" 2> /dev/null) &
+    watchdog_pid=$!
+    command_status=0
+    wait "$command_pid" || command_status=$?
+    kill "$watchdog_pid" 2> /dev/null || true
+    wait "$watchdog_pid" 2> /dev/null || true
+    return "$command_status"
+}
+
+# Saves the agent's journal from the test distribution into the log directory.
+save_agent_journal() {
+    run_with_time_limit 60 env MAW_DAEMON_LABEL="$label" "$bin_path/maw" -d "$test_distribution" \
+        -u root -e journalctl --no-pager -o short-precise -u maw-agent.service \
+        > "$log_directory/agent-journal-$test_distribution.txt" 2>&1 || true
+}
 
 # Prints what the run left behind, after waiting up to ten seconds for it to go. Returns
 # non-zero if anything is left.
@@ -99,6 +126,12 @@ check_nothing_left() {
 }
 
 cleanup() {
+    exit_status=$?
+    keep_logs=false
+    if [ "$exit_status" -ne 0 ]; then
+        keep_logs=true
+        save_agent_journal
+    fi
     MAW_DAEMON_LABEL="$label" "$bin_path/maw" --shutdown > /dev/null 2>&1 || true
     "$bin_path/mawd" uninstall --label "$label" > /dev/null 2>&1 || true
     for directory in "$distros/$prefix"* "$distros/.staging-$prefix"*; do
@@ -113,11 +146,24 @@ cleanup() {
             cp -c "$image" "$owner_cache/"
         fi
     done
-    rm -rf "$log_directory"
+    # The image cache is not a log, and an image this run downloaded was copied above.
+    rm -rf "$image_cache"
+    nothing_left=true
     if ! check_nothing_left; then
-        exit 1
+        nothing_left=false
+        keep_logs=true
+        exit_status=1
     fi
-    echo "integration-test.sh: nothing was left behind."
+    if [ "$keep_logs" = true ]; then
+        echo "integration-test.sh: kept the daemon's log, the console logs, and the agent's" \
+            "journal in $log_directory" >&2
+    else
+        rm -rf "$log_directory"
+    fi
+    if [ "$nothing_left" = true ]; then
+        echo "integration-test.sh: nothing was left behind."
+    fi
+    exit "$exit_status"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
