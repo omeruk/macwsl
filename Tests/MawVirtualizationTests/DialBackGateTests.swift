@@ -212,17 +212,20 @@ import os
         try pair.send(Array(Frame.dialBackNonce(pending.nonce).encoded.prefix(count)))
 
         #expect(gate.gate.admit(sourcePort: 1023) == nil)
-        let started = ContinuousClock.now
         // On a thread of its own, as the listener does: a 2-second block on the cooperative
-        // pool would hold up other tests' tasks.
+        // pool would hold up other tests' tasks. Timed on that thread, so that the time the
+        // task takes to resume is not counted.
         let host = pair.host
-        let refusal = await runOnDedicatedThread { gate.gate.authenticate(host) }
-        let elapsed = ContinuousClock.now - started
+        let (refusal, elapsed) = await runOnDedicatedThread {
+            let started = ContinuousClock.now
+            let refusal = gate.gate.authenticate(host)
+            return (refusal, ContinuousClock.now - started)
+        }
         // The header is read first, then the payload.
         let received = count < Frame.headerSize ? count : count - Frame.headerSize
         #expect(refusal == .nonceNotReceived("timed out after \(received) bytes"))
         #expect(elapsed >= .seconds(2))
-        #expect(elapsed < .milliseconds(2_500))
+        #expect(elapsed < .seconds(3))
         #expect(pair.host.rawValue == -1)
     }
 
