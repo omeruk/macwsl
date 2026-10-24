@@ -7,7 +7,7 @@ user a session runs as, its program (a command, a shell command line, or a login
 locale, and the input window, with which `signal` and `resize` overtake queued standard input
 ([0016](decisions/0016-input-window.md)). Version 3 adds the dial-back: the `dialBack`
 request, its `dialedBack` reply, the `dialBackNonce` frame, and the `dialBackFailed` error.
-The agent implements it; the host does not send `dialBack` yet.
+Every session runs on a connection that the agent dials.
 
 ## Transport
 
@@ -15,13 +15,17 @@ The agent implements it; the host does not send `dialBack` yet.
   `AgentProtocol.vsockPort` defines it. It accepts connections only from the host, context ID
   2, and closes any other before reading from it (docs/security.md).
 - Each request uses a connection of its own. An exec session holds its connection until the
-  process ends. `info` and `shutdown` each use a short connection that the agent closes after
-  replying.
+  process ends. `info`, `shutdown`, and `dialBack` each use a short connection that the agent
+  closes after replying.
 - In reply to `dialBack`, the agent connects to the host's vsock port **19800** (`0x4D58`,
   `AgentProtocol.dialBackPort`); see [Dial-back](#dial-back).
-- The host connects with `VirtualMachine.connectToAgent(timeout:)`, which retries every 20 ms
-  while the agent is not listening yet, until the deadline. The descriptor it returns is a
-  plain connected stream socket, independent of the `VirtualMachine` object.
+- The host opens connections with `VirtualMachine.connectToAgent(timeout:)`, which retries
+  every 20 ms while the agent is not listening yet, until the deadline. It uses them only for
+  `info`, `shutdown`, and `dialBack`, whose replies are small. Every exec session, in `maw`,
+  in provisioning, and in `mawd debug-boot`, runs on a connection that the agent dials:
+  `VirtualMachine.openSessionConnection(connectTimeout:)` sends `dialBack` and returns the
+  dialed connection. Either descriptor is a plain connected stream socket, independent of the
+  `VirtualMachine` object.
 
 ## Framing
 
@@ -122,7 +126,7 @@ Error codes:
 | `shutdownFailed` | The agent could not signal `init`. | `guestAgentFailed` |
 | `busy` | The agent is serving its maximum of 64 connections. It sends its `version` frame and this error without acting on the request. | `guestAgentFailed` |
 | `userNotFound` | The requested user, or the default user that `/etc/maw.conf` names, is not in `/etc/passwd`. `user` names it. | `userNotFound` |
-| `dialBackFailed` | The agent could not connect to the host for `dialBack`: no source port below 1024 was free, binding one failed, or the connection failed or did not complete within 2 seconds. The message says which. | `guestAgentFailed` |
+| `dialBackFailed` | The agent could not connect to the host for `dialBack`: no source port below 1024 was free, binding one failed, or the connection failed or did not complete within 2 seconds. The message says which. | `sessionDialBackFailed` |
 
 ## Dial-back
 
@@ -153,9 +157,21 @@ host                                    agent
    the dialed connection, replies `dialedBack`, and closes the request connection. It then
    serves the dialed connection like a new one, in the same connection slot: the version
    exchange, then one request.
-4. The host is to read exactly the 37 bytes of the nonce frame from the dialed connection,
-   and nothing more, so that the rest is left for whoever runs the session. The host side is
-   not implemented yet.
+4. The host's listener on port 19800, one per machine while it runs, refuses at once,
+   before reading anything, a connection from a source port of 1024 or above, any connection
+   while no session of that machine waits for one, and any connection beyond 4 that have not
+   yet sent their nonce. It reads exactly the 37 bytes of the nonce frame from an accepted
+   connection, within 2 seconds, and nothing more, so that the rest is left for whoever runs
+   the session. A connection whose frame does not arrive in time, is malformed, or carries a
+   nonce that no session waits for is closed (`DialBackGate`).
+5. The host keeps a session's nonce for 5 seconds from the request, and for at most 64
+   sessions per machine, the agent's connection limit. A nonce is used once, compared in
+   constant time, and never logged. Refusals go to the machine's console log, at most 5 in
+   10 seconds.
+6. If the agent replies `dialBackFailed`, or replies `dialedBack` but no connection with the
+   nonce arrives within the 5 seconds, the session fails with `sessionDialBackFailed` or
+   `sessionDialBackMissing`. The host never falls back to running the session on a
+   connection that it opened.
 
 ## Exec sessions
 
@@ -266,9 +282,9 @@ design and the alternatives.
   writer blocks, after 256 KiB; the machine's other connections, new connections in both
   directions, and the console go on working, also through a 60-second stall and while the
   process holding the descriptor is stopped (`scripts/measure-vsock-buffer.sh
-  --guest-initiated`). The host therefore must not
-  stop reading a connection that it opened for long; this is not yet the case (see the pull
-  request for phase 05).
+  --guest-initiated`). Sessions therefore run on connections that the agent dials (see
+  [Dial-back](#dial-back)); the connections that the host opens carry only short requests
+  with small replies.
 - A receiver holds at most one maximal frame plus one read in its buffer.
 
 In terminal mode, Ctrl-C typed on the Mac is a byte of input, as in ssh: the guest's terminal
