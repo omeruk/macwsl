@@ -200,9 +200,13 @@ struct MawIntegration: Sendable {
     }
 
     /// `measurement: <what>, 5 runs: 1, 2, 3, 4, 5 ms; median 3 ms, slowest 5 ms`, which the
-    /// pull request quotes. Returns the median.
+    /// pull request quotes. Returns the median, or infinity if no run succeeded.
     @discardableResult
     static func report(_ what: String, _ times: [Double], unit: String = "ms") -> Double {
+        guard !times.isEmpty else {
+            print("measurement: \(what), no successful runs")
+            return .infinity
+        }
         let sorted = times.sorted()
         let median =
             sorted.count % 2 == 1
