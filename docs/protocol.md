@@ -169,7 +169,9 @@ host                                   agent
 - **End of the session**: the agent sends `exited` once the process has been reaped and its
   output has reached end-of-file, or 250 ms after the exit if a descendant keeps the output
   open. It then closes the connection. The host must read until `exited` even after a write
-  fails, because the agent may already have closed its side.
+  fails, because the agent may already have closed its side. A write to a closed connection
+  fails with EPIPE or ECONNRESET, or on macOS with ENOTCONN when it races the close; the host
+  treats all three as the agent having closed its side.
 - **Exit status**: as in ssh, the status is the exit code, or 128 plus the signal number if a
   signal ended the process. SIGINT gives 130.
 - **Host disconnect**: if the host closes the connection before `exited`, the agent sends
