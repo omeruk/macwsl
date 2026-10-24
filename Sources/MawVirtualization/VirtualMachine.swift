@@ -384,15 +384,17 @@
                     switch result {
                     case .success(let connection):
                         // The connection object closes its descriptor when it is closed or
-                        // released; the caller gets a duplicate of its own.
-                        let descriptor = dup(connection.fileDescriptor)
+                        // released; the caller gets a duplicate of its own, which no program
+                        // that the daemon starts inherits.
+                        let descriptor = duplicateClosingOnExec(connection.fileDescriptor)
                         let code = errno
                         connection.close()
                         if descriptor < 0 {
                             attempt.resume(
                                 .failure(
-                                    ConnectFailure(reason: "dup: \(SystemError.message(for: code))")
-                                ))
+                                    ConnectFailure(
+                                        reason: SystemError("fcntl(F_DUPFD_CLOEXEC)", code: code)
+                                            .description)))
                         } else if !attempt.resume(.success(descriptor)) {
                             close(descriptor)
                         }
@@ -524,9 +526,9 @@
             from socketDevice: VZVirtioSocketDevice
         ) -> Bool {
             guard gate.admit(sourcePort: connection.sourcePort) == nil else { return false }
-            // As for a connection the host opens: keep a duplicate of the descriptor and close
-            // the connection object, here once the delegate has returned.
-            let descriptor = dup(connection.fileDescriptor)
+            // As for a connection the host opens: keep a duplicate of the descriptor, closed on
+            // exec, and close the connection object, here once the delegate has returned.
+            let descriptor = duplicateClosingOnExec(connection.fileDescriptor)
             guard descriptor >= 0 else {
                 gate.abandon()
                 return false
