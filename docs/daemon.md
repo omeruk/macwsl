@@ -129,7 +129,7 @@ how phase 13 moves to it.
 - `mawd install` is idempotent. When the agent is already loaded, it replaces the plist and
   restarts the daemon (`launchctl bootout`, then `bootstrap`), so that a rebuilt `mawd` takes
   effect. Between the two, it waits until launchd has removed the previous job, which launchd
-  keeps until the daemon has exited, for up to 30 seconds.
+  keeps until the daemon has exited, for up to 30 seconds of time that the Mac is awake.
 - `mawd uninstall` asks a running daemon to stop its machines, unloads the agent, and removes
   the plist and the lock file.
 

@@ -56,7 +56,8 @@ import Testing
     @Test func waitsUntilLaunchdNoLongerListsTheJob() async throws {
         var answers = [true, true, true, false]
         try await Launchctl.waitUntilRemoved(
-            service: "gui/501/test", timeout: .seconds(10), interval: .milliseconds(1)
+            service: "gui/501/test", timeout: .seconds(10), interval: .milliseconds(1),
+            clock: SuspendingClock()
         ) { () throws(MawError) in answers.removeFirst() }
         #expect(answers.isEmpty)
     }
@@ -64,7 +65,8 @@ import Testing
     @Test func doesNotWaitForAJobThatIsGone() async throws {
         var asked = 0
         try await Launchctl.waitUntilRemoved(
-            service: "gui/501/test", timeout: .seconds(10), interval: .seconds(10)
+            service: "gui/501/test", timeout: .seconds(10), interval: .seconds(10),
+            clock: SuspendingClock()
         ) { () throws(MawError) in
             asked += 1
             return false
@@ -76,11 +78,24 @@ import Testing
         let started = ContinuousClock.now
         await #expect(throws: MawError.launchAgentNotRemoved(service: "gui/501/test", seconds: 1)) {
             try await Launchctl.waitUntilRemoved(
-                service: "gui/501/test", timeout: .seconds(1), interval: .milliseconds(50)
+                service: "gui/501/test", timeout: .seconds(1), interval: .milliseconds(50),
+                clock: SuspendingClock()
             ) { () throws(MawError) in true }
         }
         let waited = ContinuousClock.now - started
         #expect(waited >= .seconds(1) && waited < .seconds(5))
+    }
+
+    /// The limit counts only the time of its clock: by default `SuspendingClock`, which stands
+    /// still while the Mac sleeps. Here a clock that stands still throughout: polls that take
+    /// longer than the limit in real time do not end the wait.
+    @Test func countsOnlyTheTimeOfItsClock() async throws {
+        var answers = [true, true, true, false]
+        try await Launchctl.waitUntilRemoved(
+            service: "gui/501/test", timeout: .milliseconds(10), interval: .milliseconds(20),
+            clock: StoppedClock()
+        ) { () throws(MawError) in answers.removeFirst() }
+        #expect(answers.isEmpty)
     }
 
     @Test func passesOnAnErrorFromLaunchctl() async {
@@ -88,7 +103,8 @@ import Testing
             command: "launchctl print gui/501/test", seconds: 60)
         await #expect(throws: failure) {
             try await Launchctl.waitUntilRemoved(
-                service: "gui/501/test", timeout: .seconds(10), interval: .milliseconds(1)
+                service: "gui/501/test", timeout: .seconds(10), interval: .milliseconds(1),
+                clock: SuspendingClock()
             ) { () throws(MawError) in throw failure }
         }
     }
@@ -101,4 +117,28 @@ import Testing
             return reason.contains("could not be started")
         }
     }
+}
+
+/// A clock whose time does not move.
+struct StoppedClock: Clock {
+    struct Instant: InstantProtocol {
+        var offset: Duration
+
+        func advanced(by duration: Duration) -> Instant {
+            Instant(offset: offset + duration)
+        }
+
+        func duration(to other: Instant) -> Duration {
+            other.offset - offset
+        }
+
+        static func < (lhs: Instant, rhs: Instant) -> Bool {
+            lhs.offset < rhs.offset
+        }
+    }
+
+    var now: Instant { Instant(offset: .zero) }
+    var minimumResolution: Duration { .nanoseconds(1) }
+
+    func sleep(until deadline: Instant, tolerance: Duration?) async throws {}
 }

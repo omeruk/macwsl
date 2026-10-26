@@ -38,22 +38,29 @@
         /// launchd has removed the job: launchd keeps it while its program exits, and until
         /// then refuses to load the label again ("Bootstrap failed: 5: Input/output error").
         /// Throws `launchAgentNotRemoved` if the job is still there after `timeout`.
+        ///
+        /// `timeout` counts only time that the Mac is awake (`SuspendingClock`). launchd cannot
+        /// remove the job while the Mac sleeps, and a Mac with its lid closed can fall asleep
+        /// during the wait: one did for two hours, after which a `ContinuousClock` deadline had
+        /// passed although launchd had removed the job five seconds after `bootout`.
         public static func waitUntilRemoved(
             _ label: String, timeout: Duration = removalTimeout
         ) async throws(MawError) {
             try await waitUntilRemoved(
-                service: "\(domain)/\(label)", timeout: timeout, interval: .milliseconds(50)
+                service: "\(domain)/\(label)", timeout: timeout, interval: .milliseconds(50),
+                clock: SuspendingClock()
             ) { () throws(MawError) in try isLoaded(label) }
         }
 
-        /// `waitUntilRemoved`, with `isLoaded` asked every `interval`.
-        static func waitUntilRemoved(
-            service: String, timeout: Duration, interval: Duration,
+        /// `waitUntilRemoved`, with `isLoaded` asked every `interval` and `timeout` measured
+        /// with `clock`.
+        static func waitUntilRemoved<C: Clock<Duration>>(
+            service: String, timeout: Duration, interval: Duration, clock: C,
             isLoaded: () throws(MawError) -> Bool
         ) async throws(MawError) {
-            let deadline = ContinuousClock.now + timeout
+            let deadline = clock.now.advanced(by: timeout)
             while try isLoaded() {
-                guard ContinuousClock.now < deadline else {
+                guard clock.now < deadline else {
                     throw .launchAgentNotRemoved(
                         service: service, seconds: Int(timeout.components.seconds))
                 }
