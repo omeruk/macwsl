@@ -77,13 +77,18 @@ import Testing
     }
 
     /// A connection that never completes is given up at the timeout, not waited for.
-    @Test func givesUpAtTheTimeout() {
+    @Test func givesUpAtTheTimeout() async {
         let fake = FakeDialSystem(connectResult: EINPROGRESS, neverWritable: true)
-        let start = ContinuousClock.now
-        #expect(throws: DialBackError.timedOut(.milliseconds(200))) {
-            try DialBackDialer(system: fake.system, timeout: .milliseconds(200)).dial()
+        // On a thread of its own: the dial waits for its timeout.
+        let (result, elapsed) = await runOnDedicatedThread {
+            () -> (Result<OwnedDescriptor, DialBackError>, Duration) in
+            let start = ContinuousClock.now
+            let result = Result { () throws(DialBackError) in
+                try DialBackDialer(system: fake.system, timeout: .milliseconds(200)).dial()
+            }
+            return (result, ContinuousClock.now - start)
         }
-        let elapsed = ContinuousClock.now - start
+        #expect(throws: DialBackError.timedOut(.milliseconds(200))) { try result.get() }
         #expect(elapsed >= .milliseconds(200) && elapsed < .seconds(2), "\(elapsed)")
         #expect(fake.allSocketsClosed)
     }
@@ -109,20 +114,28 @@ import Testing
         let nonce = DialBackNonce.random()
 
         let request = try FrameConnection(try agent.connect())
-        let deadline = ContinuousClock.now + .seconds(10)
-        #expect(try request.exchangeVersions(until: deadline) == ProtocolVersion.current)
-        request.enqueue(.control(.dialBack(nonce)))
-        try request.flush(until: deadline)
-        let reply = try await runOnDedicatedThread { () throws(ConnectionError) in
-            try request.receiveControl(until: deadline, expecting: "dialedBack")
+        let host = dialed.host.rawValue
+        // On a thread of its own: each step waits for the agent.
+        let (version, reply, ending, nonceFrame) = try await runOnDedicatedThread {
+            () throws(ConnectionError) -> (
+                UInt32, ControlMessage, Result<Frame, ConnectionError>, [UInt8]?
+            ) in
+            let deadline = ContinuousClock.now + .seconds(10)
+            let version = try request.exchangeVersions(until: deadline)
+            request.enqueue(.control(.dialBack(nonce)))
+            try request.flush(until: deadline)
+            let reply = try request.receiveControl(until: deadline, expecting: "dialedBack")
+            let ending = Result { () throws(ConnectionError) in
+                try request.receiveFrame(until: deadline)
+            }
+            // Exactly the nonce frame, as the host reads it, and nothing of what follows.
+            return (version, reply, ending, readExactly(host, count: 5 + 32))
         }
+        #expect(version == ProtocolVersion.current)
         #expect(reply == .dialedBack)
-        #expect(throws: ConnectionError.closed) {
-            try request.receiveFrame(until: deadline)
-        }
+        #expect(throws: ConnectionError.closed) { try ending.get() }
 
-        // Exactly the nonce frame, as the host reads it, and nothing of what follows.
-        let first = try #require(readExactly(dialed.host.rawValue, count: 5 + 32))
+        let first = try #require(nonceFrame)
         var decoder = FrameDecoder()
         decoder.append(first)
         #expect(try decoder.nextFrame()?.dialBackNonce() == nonce)
@@ -155,7 +168,8 @@ import Testing
         let dialed = try DialedPair()
         let agent = TestAgent(dialBack: dialed.agentSide)
         #expect(try await request(.dialBack(.random()), from: agent) == .dialedBack)
-        _ = try #require(readExactly(dialed.host.rawValue, count: 5 + 32))
+        let host = dialed.host.rawValue
+        _ = try #require(await runOnDedicatedThread { readExactly(host, count: 5 + 32) })
 
         let reply = try await request(.dialBack(.random()), on: try FrameConnection(dialed.host))
         guard case .error(let error) = reply else {
@@ -176,18 +190,21 @@ import Testing
             throw .noFreePort
         })
         let connection = try FrameConnection(try agent.connect())
-        let deadline = ContinuousClock.now + .seconds(10)
-        _ = try connection.exchangeVersions(until: deadline)
-        connection.enqueue(.control(.exec(ExecRequest(argv: ["sleep", "1000"]))))
-        try connection.flush(until: deadline)
-        guard case .started = try connection.receiveControl(until: deadline, expecting: "started")
-        else {
+        // On a thread of its own: each step waits for the agent.
+        let (started, reply) = try await runOnDedicatedThread {
+            () throws(ConnectionError) -> (ControlMessage, ControlMessage?) in
+            let deadline = ContinuousClock.now + .seconds(10)
+            _ = try connection.exchangeVersions(until: deadline)
+            connection.enqueue(.control(.exec(ExecRequest(argv: ["sleep", "1000"]))))
+            try connection.flush(until: deadline)
+            let started = try connection.receiveControl(until: deadline, expecting: "started")
+            guard case .started = started else { return (started, nil) }
+            connection.enqueue(.control(.dialBack(.random())))
+            return (started, try GuestAgentClientReply.next(on: connection, until: deadline))
+        }
+        guard case .started = started, let reply else {
             Issue.record("the process did not start")
             return
-        }
-        connection.enqueue(.control(.dialBack(.random())))
-        let reply = try await runOnDedicatedThread { () throws(ConnectionError) in
-            try GuestAgentClientReply.next(on: connection, until: deadline)
         }
         guard case .error(let error) = reply else {
             Issue.record("expected an error, received \(reply.name)")
@@ -208,11 +225,12 @@ import Testing
     private func request(_ message: ControlMessage, on connection: FrameConnection) async throws
         -> ControlMessage
     {
-        let deadline = ContinuousClock.now + .seconds(10)
-        _ = try connection.exchangeVersions(until: deadline)
-        connection.enqueue(.control(message))
-        return try await runOnDedicatedThread { () throws(ConnectionError) in
-            try GuestAgentClientReply.next(on: connection, until: deadline)
+        // On a thread of its own: each step waits for the agent.
+        try await runOnDedicatedThread { () throws(ConnectionError) in
+            let deadline = ContinuousClock.now + .seconds(10)
+            _ = try connection.exchangeVersions(until: deadline)
+            connection.enqueue(.control(message))
+            return try GuestAgentClientReply.next(on: connection, until: deadline)
         }
     }
 }

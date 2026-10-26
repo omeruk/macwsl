@@ -36,7 +36,8 @@ import Testing
             ExecRequest(argv: ["cat"]), output: output.handler)
         // 4 MiB: far more than every buffer on the way, so that back-pressure must work.
         let input = (0..<(4 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 31) }
-        let writer = Task.detached {
+        // A thread of its own, not a task: `write` blocks while the input queue is full.
+        async let written: Void = runOnDedicatedThread {
             var offset = 0
             while offset < input.count {
                 let end = min(offset + 50_000, input.count)
@@ -46,7 +47,7 @@ import Testing
             process.closeInput()
         }
         #expect(try await process.waitForExit() == .exited(code: 0))
-        await writer.value
+        await written
         #expect(output.standardOutputBytes == input)
     }
 
@@ -210,29 +211,35 @@ import Testing
     }
 
     /// A host that sends more input than the window allows is closed with a protocol error.
-    @Test func closesAConnectionThatExceedsTheInputWindow() throws {
+    @Test func closesAConnectionThatExceedsTheInputWindow() async throws {
         let connection = try FrameConnection(try agent.connect())
-        let deadline = ContinuousClock.now + .seconds(10)
-        #expect(try connection.exchangeVersions(until: deadline) == ProtocolVersion.current)
-        connection.enqueue(.control(.exec(ExecRequest(argv: ["sleep", "1000"]))))
-        try connection.flush(until: deadline)
-        guard case .started = try connection.receiveControl(until: deadline, expecting: "started")
-        else {
+        // On a thread of its own: each step waits for the agent.
+        let (version, started, reply) = try await runOnDedicatedThread {
+            () throws -> (UInt32, ControlMessage, ControlMessage?) in
+            let deadline = ContinuousClock.now + .seconds(10)
+            let version = try connection.exchangeVersions(until: deadline)
+            connection.enqueue(.control(.exec(ExecRequest(argv: ["sleep", "1000"]))))
+            try connection.flush(until: deadline)
+            let started = try connection.receiveControl(until: deadline, expecting: "started")
+            guard case .started = started else { return (version, started, nil) }
+            // Twice the window, without waiting for `stdinConsumed`: the process's pipe takes
+            // at most 64 KiB of it.
+            let chunk = [UInt8](repeating: 0x79, count: AgentProtocol.maximumDataChunkSize)
+            for _ in 0..<(2 * AgentProtocol.inputWindow / chunk.count) {
+                connection.enqueue(Frame(type: .stdin, payload: chunk))
+            }
+            try connection.flush(until: deadline)
+            var frame = try connection.receiveFrame(until: deadline, expecting: "an error")
+            while frame.type == .stdinConsumed {
+                frame = try connection.receiveFrame(until: deadline, expecting: "an error")
+            }
+            return (version, started, try frame.controlMessage())
+        }
+        #expect(version == ProtocolVersion.current)
+        guard case .started = started, let reply else {
             Issue.record("the process did not start")
             return
         }
-        // Twice the window, without waiting for `stdinConsumed`: the process's pipe takes at
-        // most 64 KiB of it.
-        let chunk = [UInt8](repeating: 0x79, count: AgentProtocol.maximumDataChunkSize)
-        for _ in 0..<(2 * AgentProtocol.inputWindow / chunk.count) {
-            connection.enqueue(Frame(type: .stdin, payload: chunk))
-        }
-        try connection.flush(until: deadline)
-        var frame = try connection.receiveFrame(until: deadline, expecting: "an error")
-        while frame.type == .stdinConsumed {
-            frame = try connection.receiveFrame(until: deadline, expecting: "an error")
-        }
-        let reply = try frame.controlMessage()
         guard case .error(let error) = reply else {
             Issue.record("expected an error, received \(reply.name)")
             return

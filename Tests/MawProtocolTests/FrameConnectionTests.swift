@@ -16,33 +16,45 @@ import Testing
     /// before closing is still read. The race takes many rounds to meet: on macOS, about one
     /// send in eight that races a close fails with ENOTCONN.
     @Test(.timeLimit(.minutes(1)))
-    func reportsAPeerThatClosesDuringASendAsClosed() throws {
+    func reportsAPeerThatClosesDuringASendAsClosed() async throws {
         let chunk = [UInt8](repeating: UInt8(ascii: "y"), count: 64)
-        for _ in 0..<500 {
-            let (host, peer) = try HandshakeTests.socketPair()
-            let connection = try FrameConnection(host)
-            startDetachedThread {
-                guard let agent = try? FrameConnection(peer) else { return }
-                agent.enqueue(.control(.exited(.exited(code: 0))))
-                try? agent.flush(until: .now + .seconds(5))
-                peer.close()
-            }
-            var failure: ConnectionError?
-            while failure == nil {
-                if connection.pendingOutputCount < 4096 {
-                    chunk.withUnsafeBytes { connection.enqueueData($0, type: .stdin) }
+        // On a thread of its own: each round waits for the peer's frame. Returns what went
+        // wrong, if anything; a send that fails otherwise than `closed` ends the rounds.
+        let problems = try await runOnDedicatedThread { () throws -> [String] in
+            var problems: [String] = []
+            for round in 0..<500 {
+                let (host, peer) = try HandshakeTests.socketPair()
+                let connection = try FrameConnection(host)
+                startDetachedThread {
+                    guard let agent = try? FrameConnection(peer) else { return }
+                    agent.enqueue(.control(.exited(.exited(code: 0))))
+                    try? agent.flush(until: .now + .seconds(5))
+                    peer.close()
                 }
-                do {
-                    try connection.flush()
-                } catch {
-                    failure = error
+                var failure: ConnectionError?
+                while failure == nil {
+                    if connection.pendingOutputCount < 4096 {
+                        chunk.withUnsafeBytes { connection.enqueueData($0, type: .stdin) }
+                    }
+                    do throws(ConnectionError) {
+                        try connection.flush()
+                    } catch {
+                        failure = error
+                    }
+                }
+                guard failure == .closed else {
+                    return problems + ["round \(round): the send failed with \(failure!)"]
+                }
+                connection.discardPendingOutput()
+                let received = Result { () throws(ConnectionError) in
+                    try connection.receiveControl(until: .now + .seconds(5), expecting: "exited")
+                }
+                if (try? received.get()) != .exited(.exited(code: 0)) {
+                    problems.append("round \(round): received \(received)")
                 }
             }
-            try #require(failure == .closed, "\(failure!)")
-            connection.discardPendingOutput()
-            #expect(
-                try connection.receiveControl(until: .now + .seconds(5), expecting: "exited")
-                    == .exited(.exited(code: 0)))
+            return problems
         }
+        #expect(problems.isEmpty, "\(problems)")
     }
 }
