@@ -16,6 +16,7 @@ import Testing
         .machineStopped(machine: "initramfs", reason: "maw --shutdown was run"),
         .launchAgentFailed(reason: "launchctl bootstrap failed"),
         .launchctlTimedOut(command: "launchctl bootout gui/501/dev.maw.mawd", seconds: 60),
+        .launchAgentNotRemoved(service: "gui/501/dev.maw.mawd", seconds: 30),
         .guestCommandNotFound(command: "nope", reason: "not in PATH"),
         .virtualizationEntitlementMissing,
     ]
@@ -61,6 +62,17 @@ import Testing
     ])
     func pointsToTheDaemonsLog(_ error: MawError) {
         #expect(error.recoverySuggestion?.contains("~/Library/Logs/maw/mawd.log") == true)
+    }
+
+    @Test func namesTheCommandsForAJobThatLaunchdHasNotRemoved() {
+        let error = MawError.launchAgentNotRemoved(service: "gui/501/dev.maw.mawd", seconds: 30)
+        #expect(
+            error.errorDescription
+                == "launchd had not removed gui/501/dev.maw.mawd 30 seconds after launchctl "
+                + "bootout, so it could not be loaded again.")
+        #expect(
+            error.recoverySuggestion?.contains("launchctl print gui/501/dev.maw.mawd") == true)
+        #expect(error.recoverySuggestion?.contains("mawd install") == true)
     }
 
     @Test func suggestsReinstallingTheDaemonOnAVersionMismatch() {

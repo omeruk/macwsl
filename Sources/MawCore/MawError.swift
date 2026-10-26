@@ -84,6 +84,9 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     /// A `launchctl` command did not finish within `seconds` and was killed. `command` is the
     /// command line.
     case launchctlTimedOut(command: String, seconds: Int)
+    /// launchd still had the job `service` (`gui/<uid>/<label>`) `seconds` seconds after
+    /// `launchctl bootout`, so it could not be loaded again.
+    case launchAgentNotRemoved(service: String, seconds: Int)
 
     // MARK: Guest files
 
@@ -227,6 +230,9 @@ extension MawError: LocalizedError {
             "The maw LaunchAgent could not be changed: \(reason)."
         case .launchctlTimedOut(let command, let seconds):
             "\(command) did not finish within \(seconds) seconds and was stopped."
+        case .launchAgentNotRemoved(let service, let seconds):
+            "launchd had not removed \(service) \(seconds) seconds after launchctl bootout, "
+                + "so it could not be loaded again."
         case .kernelNotFound(let path):
             "The guest kernel files are missing: \(path) does not exist."
         case .virtualizationEntitlementMissing:
@@ -349,6 +355,10 @@ extension MawError: LocalizedError {
         case .launchctlTimedOut:
             "launchd did not answer in time. Run the command again; if it still does not "
                 + "finish, log out and back in, which restarts your launchd session."
+        case .launchAgentNotRemoved(let service, _):
+            "Wait until launchctl print \(service) reports that it cannot find the service, "
+                + "then run mawd install again. If the daemon does not exit, find it with "
+                + "pgrep -fl 'mawd serve' and end it with kill."
         case .kernelNotFound:
             "Install the guest kernel and initramfs with scripts/fetch-guest.sh."
         case .virtualizationEntitlementMissing:
