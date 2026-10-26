@@ -87,7 +87,9 @@ prompts/                 phase prompts used to build this project
 
 - `~/Library/Application Support/maw/distros/<name>/disk.img` sparse raw ext4 disk
 - `~/Library/Application Support/maw/distros/<name>/distro.json` metadata
+- `~/Library/Application Support/maw/state.json` daemon settings, such as the default distro
 - `~/Library/Application Support/maw/kernel/` kernel and initramfs
+- `~/Library/Caches/maw/images/` verified distribution images and partial downloads
 - `~/Library/Logs/maw/` daemon and per-VM console logs
 - `~/.mawconfig` global settings (like `.wslconfig`): memory, CPUs, swap, idle timeout
 - `/etc/maw.conf` inside each distro (like `wsl.conf`): default user, automount, boot

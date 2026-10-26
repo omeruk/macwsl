@@ -11,22 +11,20 @@ import Testing
     // MARK: Actions to sessions
 
     @Test func opensALoginShell() throws {
-        #expect(
-            try plan()
-                == SessionPlan(machine: .initramfs, argv: ["/bin/sh", "-l"], workingDirectory: "/"))
+        #expect(try plan() == SessionPlan(machine: nil, program: .loginShell))
     }
 
-    @Test func runsACommandThroughTheShell() throws {
-        #expect(try plan("uname", "-a").argv == ["/bin/sh", "-c", "uname -a"])
-        #expect(try plan("--", "uname", "-a").argv == ["/bin/sh", "-c", "uname -a"])
+    @Test func runsACommandThroughTheUsersShell() throws {
+        #expect(try plan("uname", "-a").program == .shellCommand("uname -a"))
+        #expect(try plan("--", "uname", "-a").program == .shellCommand("uname -a"))
     }
 
     @Test func runsACommandDirectlyWithExec() throws {
-        #expect(try plan("-e", "sh", "-c", "exit 3").argv == ["sh", "-c", "exit 3"])
+        #expect(try plan("-e", "sh", "-c", "exit 3").program == .argv(["sh", "-c", "exit 3"]))
     }
 
-    @Test func runsInTheRootDirectoryByDefault() throws {
-        #expect(try plan("-e", "pwd").workingDirectory == "/")
+    @Test func runsInTheHomeDirectoryByDefault() throws {
+        #expect(try plan("-e", "pwd").workingDirectory == nil)
     }
 
     @Test func runsInAnAbsoluteLinuxDirectory() throws {
@@ -43,51 +41,47 @@ import Testing
         }
     }
 
-    @Test func refusesAUser() throws {
-        #expect(throws: MawError.notImplemented(feature: "--user (-u)", phase: "05")) {
-            try plan("-u", "root")
-        }
+    @Test func runsAsTheRequestedUser() throws {
+        #expect(try plan("-u", "root", "-e", "id", "-u").user == "root")
+        #expect(try plan("-e", "id").user == nil)
     }
 
-    @Test func refusesADistributionThatIsNotInstalled() throws {
-        #expect(throws: MawError.distributionNotInstalled(try DistroName("Ubuntu"))) {
-            try plan("-d", "Ubuntu", "uname")
-        }
-    }
-
-    @Test func runsOnTheInitramfsMachineWithoutADistribution() throws {
-        #expect(try MachineResolver.machine(for: nil) == .initramfs)
+    @Test func runsOnTheNamedDistributionOrTheDefault() throws {
+        #expect(
+            try plan("-d", "Ubuntu", "uname").machine == .distribution(try DistroName("Ubuntu")))
+        // The daemon resolves the default distribution, and reports when none is installed.
+        #expect(try plan("uname").machine == nil)
     }
 
     // MARK: The shell command line
 
     @Test func joinsArgumentsWithSingleSpaces() {
-        #expect(SessionPlan.shellCommand(["ls", "-la", "/"]) == ["/bin/sh", "-c", "ls -la /"])
+        #expect(SessionPlan.shellCommand(["ls", "-la", "/"]) == .shellCommand("ls -la /"))
     }
 
     @Test func keepsSpacesInsideAnArgumentButNotItsBoundaries() {
         // The Mac's shell removed the quotes of `maw echo "a  b"`; the guest's shell splits
         // the joined line again, as wsl.exe's does.
-        #expect(SessionPlan.shellCommand(["echo", "a  b"]) == ["/bin/sh", "-c", "echo a  b"])
+        #expect(SessionPlan.shellCommand(["echo", "a  b"]) == .shellCommand("echo a  b"))
     }
 
     @Test func passesQuotesToTheGuestShell() {
         // `maw echo "'a  b'"` keeps the inner quotes, so the guest's shell keeps the spaces.
-        #expect(SessionPlan.shellCommand(["echo", "'a  b'"]) == ["/bin/sh", "-c", "echo 'a  b'"])
+        #expect(SessionPlan.shellCommand(["echo", "'a  b'"]) == .shellCommand("echo 'a  b'"))
         #expect(
             SessionPlan.shellCommand(["sh", "-c", "'exit 3'"])
-                == ["/bin/sh", "-c", "sh -c 'exit 3'"])
+                == .shellCommand("sh -c 'exit 3'"))
     }
 
     @Test func turnsEmptyArgumentsIntoSpaces() {
-        #expect(SessionPlan.shellCommand(["echo", "", "x"]) == ["/bin/sh", "-c", "echo  x"])
-        #expect(SessionPlan.shellCommand([""]) == ["/bin/sh", "-c", ""])
+        #expect(SessionPlan.shellCommand(["echo", "", "x"]) == .shellCommand("echo  x"))
+        #expect(SessionPlan.shellCommand([""]) == .shellCommand(""))
     }
 
     @Test func passesShellSyntaxThrough() {
         #expect(
             SessionPlan.shellCommand(["echo", "$HOME", "|", "wc", "-c"])
-                == ["/bin/sh", "-c", "echo $HOME | wc -c"])
+                == .shellCommand("echo $HOME | wc -c"))
     }
 
     // MARK: Terminal or pipes

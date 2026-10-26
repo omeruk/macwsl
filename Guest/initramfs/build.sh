@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the maw initramfs: static busybox with applet symlinks, static e2fsprogs tools,
-# and /init, packed as a reproducible gzip-compressed cpio archive. Runs inside the builder
+# static bsdtar, and /init, packed as a reproducible gzip-compressed cpio archive. Runs inside the builder
 # container; start it through Guest/build.sh.
 #
 # Usage: build.sh --sources <dir> --work <dir> --headers <dir> --gen-init-cpio <path>
@@ -106,6 +106,28 @@ for tool in misc/mke2fs e2fsck/e2fsck resize/resize2fs; do
     require_static "$work/e2fsprogs/build/$tool"
 done
 
+# bsdtar only: the host decompresses images and streams a plain tar archive, so no
+# compression library is linked. Extended attributes, including the raw POSIX ACL attributes
+# that Ubuntu's archives carry, are restored through the C library's setxattr.
+echo "initramfs: building bsdtar from libarchive $LIBARCHIVE_VERSION"
+mkdir -p "$work/libarchive"
+tar -xf "$sources/$(basename "$LIBARCHIVE_URL")" -C "$work/libarchive" --strip-components=1
+(
+    cd "$work/libarchive"
+    ./configure \
+        CC="$cc" CFLAGS="-Os" LDFLAGS="-static" \
+        --enable-bsdtar=static --disable-bsdcpio --disable-bsdcat --disable-bsdunzip \
+        --disable-shared --enable-static --disable-acl --enable-xattr \
+        --without-zlib --without-bz2lib --without-libb2 --without-iconv --without-lz4 \
+        --without-zstd --without-lzma --without-lzo2 --without-cng --without-openssl \
+        --without-xml2 --without-expat --without-mbedtls --without-nettle \
+        > configure.log 2>&1 || { cat configure.log; exit 1; }
+    # libtool reads -static as "prefer static libtool libraries"; -all-static links the
+    # executable fully static.
+    make -j"$jobs" LDFLAGS="-all-static" bsdtar > /dev/null
+)
+require_static "$work/libarchive/bsdtar"
+
 echo "initramfs: assembling the root"
 root=$work/root
 mkdir -p "$root"/{bin,sbin,usr/bin,usr/sbin,etc,dev,proc,sys,run,tmp,root,mnt}
@@ -122,6 +144,7 @@ for tool in misc/mke2fs e2fsck/e2fsck resize/resize2fs; do
     install -m 0755 "$work/e2fsprogs/build/$tool" "$root/sbin/$(basename "$tool")"
 done
 ln -sfn mke2fs "$root/sbin/mkfs.ext4"
+install -m 0755 "$work/libarchive/bsdtar" "$root/bin/bsdtar"
 
 if [ -n "$agent" ]; then
     install -m 0755 "$agent" "$root/sbin/maw-agent"
@@ -132,7 +155,7 @@ install -m 0755 "$initramfs_dir/maw-shutdown" "$root/sbin/maw-shutdown"
 printf '%s\n' "$version" > "$root/etc/maw-initramfs-version"
 printf 'root:x:0:0:root:/root:/bin/sh\n' > "$root/etc/passwd"
 printf 'root:x:0:\n' > "$root/etc/group"
-strip --strip-all "$root/bin/busybox" "$root"/sbin/{mke2fs,e2fsck,resize2fs}
+strip --strip-all "$root/bin/busybox" "$root/bin/bsdtar" "$root"/sbin/{mke2fs,e2fsck,resize2fs}
 
 # Describe every entry for gen_init_cpio, with normalized modes and owner 0:0, sorted by
 # path so that parents precede children and the order never depends on the file system.

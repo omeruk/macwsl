@@ -52,7 +52,12 @@ swift build --swift-sdk aarch64-swift-linux-musl --product maw-agent
 `scripts/integration-test.sh` runs the whole test suite, including the integration tests that
 boot real virtual machines. It builds, signs `mawd`, and sets `MAW_INTEGRATION=1`.
 Without that variable, `swift test` skips the integration tests. They need an Apple silicon
-Mac that is not itself a virtual machine, and the guest files from `scripts/fetch-guest.sh`.
+Mac that is not itself a virtual machine, the guest files from `scripts/fetch-guest.sh`, and a
+network connection. They install test distributions named `maw-it-<time>-...` with a daemon of
+their own, remove them at the end, and download the Ubuntu image only if
+`~/Library/Caches/maw/images` does not have it yet. The script fails the run if the guest
+agent started more than once in one boot of a machine. When a test fails, it keeps the test
+daemon's logs and the agent's journal and prints where they are.
 
 ### Running tests with only the Command Line Tools
 
@@ -68,9 +73,8 @@ swift test -Xswiftc -F -Xswiftc $DEV/Frameworks \
 
 ## Using maw
 
-`maw` runs commands in Linux through the maw daemon, `mawd`, which launchd starts when `maw`
-needs it. Until distributions can be installed (phase 05), commands run in the minimal guest
-that the initramfs provides, as root.
+`maw` runs Linux distributions through the maw daemon, `mawd`, which launchd starts when `maw`
+needs it.
 
 1. Install the guest files and build. `scripts/sign-dev.sh` builds `maw` and `mawd` and signs
    them: `mawd` needs the virtualization entitlement, and the daemon accepts only a `maw`
@@ -94,24 +98,58 @@ that the initramfs provides, as root.
    mawd install
    ```
 
-Then:
+### Installing Ubuntu
 
 ```sh
-maw -- uname -a                 # run a command; maw exits with its status
+maw --list --online     # the distributions that can be installed
+maw --install           # Ubuntu 24.04 LTS, the recommended one
+```
+
+maw downloads the image (388 MB, once; an interrupted download resumes), verifies its SHA-256,
+and asks for the name and password of your Linux account. The name does not need to match your
+Mac user name; the password is what `sudo` asks for. The installation takes about 10 seconds
+after the download, and ends in a shell in the new distribution. Ctrl-C at any point cancels
+it and leaves nothing behind but the partial download. To install without a terminal, name the
+user and give the password on standard input:
+
+```sh
+printf '%s\n' "$password" | maw --install -u ayse
+```
+
+[`docs/distributions.md`](docs/distributions.md) describes what the installation does and
+changes, and where its files are.
+
+### First steps
+
+```sh
+maw                             # a login shell as your user, in your Linux home directory
+maw -- sudo apt update          # package management
+maw -- uname -r                 # the maw kernel, 6.18.x-maw
+maw -u root -- id -u            # run as root: prints 0
 maw -e sh -c 'exit 3'; echo $?  # -e runs the command directly, without a shell: prints 3
 echo hello | maw -e cat         # standard input reaches the command: prints hello
-maw                             # an interactive shell on a terminal
 maw --status                    # the daemon, its virtual machines, and their sessions
 maw --shutdown                  # stop every virtual machine
 maw --version                   # the versions of maw, the daemon, and the guest files
 ```
 
-The first command starts the daemon and boots the virtual machine, which took about 0.4
-seconds on the development Mac; later commands reuse it, and shells in several terminals share
-it. It stops a minute after the last session
-ends, and the daemon exits after five idle minutes. `maw <command>` passes the command to
-`/bin/sh -c`; the Mac's shell has already removed your quotes, so use `-e` when the arguments
-must arrive unchanged. A `maw` session ends when its command or shell exits.
+The first command starts the daemon and boots the distribution, which takes under a second;
+later commands reuse it, and shells in several terminals share it. It stops a minute after the
+last session ends, and the daemon exits after five idle minutes. `maw <command>` passes the
+command line to your Linux shell with `-c`; the Mac's shell has already removed your quotes,
+so use `-e` when the arguments must arrive unchanged. A session ends when its command or shell
+exits. Without an installed distribution, `maw` reports that none is installed and names
+`maw --install`.
+
+### Removing a distribution
+
+`maw --unregister` arrives in phase 06. Until then, stop the virtual machines and delete the
+distribution's directory, which permanently deletes its disk:
+
+```sh
+maw --shutdown
+rm -r "$HOME/Library/Application Support/maw/distros/Ubuntu-24.04"
+```
 
 To remove the daemon, which stops its virtual machines first:
 
@@ -119,9 +157,9 @@ To remove the daemon, which stops its virtual machines first:
 mawd uninstall
 ```
 
-Logs are in `~/Library/Logs/maw`: `mawd.log` for the daemon, and `initramfs.log` for the
-virtual machine's console, including how each shutdown went. [`docs/daemon.md`](docs/daemon.md)
-describes the daemon in detail.
+Logs are in `~/Library/Logs/maw`: `mawd.log` for the daemon, `<distribution>.log` for each
+distribution's console, including how each shutdown went, and `install-<distribution>.log` for
+its installation. [`docs/daemon.md`](docs/daemon.md) describes the daemon in detail.
 
 ## Booting the guest on your Mac
 

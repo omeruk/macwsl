@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import MawCore
+import MawTestSupport
 import Testing
 
 @testable import MawVirtualization
@@ -22,6 +23,43 @@ import Testing
         #expect((attributes[.size] as? UInt64) == ByteSize.gibibytes(4).bytes)
         // A 4 GiB image must occupy almost nothing until the guest writes to it.
         #expect(try allocatedBytes(image) < 1 << 20)
+        // Only its owner may read it.
+        #expect((attributes[.posixPermissions] as? Int) == 0o600)
+    }
+
+    @Test func seesALockThatAnotherProcessHolds() async throws {
+        let directory = try TemporaryDirectory()
+        let image = directory.file("disk.img")
+        try DiskImage.createSparse(at: image, size: .mebibytes(1))
+        #expect(!DiskImage.isLocked(image))
+
+        // Another process holds an exclusive lock, as Virtualization.framework's machine does,
+        // until its standard input closes.
+        let holder = Process()
+        holder.executableURL = URL(filePath: "/usr/bin/python3")
+        holder.arguments = [
+            "-I", "-c",
+            "import fcntl,sys; f=open(sys.argv[1]); fcntl.flock(f, fcntl.LOCK_EX); "
+                + "print('locked', flush=True); sys.stdin.read()",
+            image.path(percentEncoded: false),
+        ]
+        let input = Pipe()
+        let output = Pipe()
+        holder.standardInput = input
+        holder.standardOutput = output
+        try holder.run()
+        _ = try output.fileHandleForReading.read(upToCount: 7)
+        #expect(DiskImage.isLocked(image))
+        await #expect(throws: MawError.diskImageInUse(path: image.path(percentEncoded: false))) {
+            try await DiskImage.waitUntilUnlocked(image, timeout: .milliseconds(200))
+        }
+        // It waits until the holder exits.
+        let waiting = Task { try await DiskImage.waitUntilUnlocked(image, timeout: .seconds(10)) }
+        try await Task.sleep(for: .milliseconds(300))
+        try input.fileHandleForWriting.close()
+        try await waiting.value
+        #expect(!DiskImage.isLocked(image))
+        #expect(await holder.waitForExit(within: .seconds(10)))
     }
 
     @Test func refusesToOverwriteAnExistingFile() throws {

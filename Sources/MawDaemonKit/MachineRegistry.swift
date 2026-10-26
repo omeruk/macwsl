@@ -79,11 +79,43 @@
 
         // MARK: Sessions
 
-        /// Starts `machine` if needed, takes a lease on it, and connects to its guest agent.
-        /// `onEnd` runs if the machine stops while the lease is held.
+        /// Starts `machine` if needed, takes a lease on it, and opens a session's connection to
+        /// its guest agent. `onEnd` runs if the machine stops while the lease is held.
         public func openSession(
             on machine: MachineID, onEnd: @escaping LeaseEndHandler
         ) async throws(MawError) -> (Lease, OwnedDescriptor) {
+            while true {
+                try await start(machine)
+                // The actor may have been re-entered while the machine started.
+                guard case .running(let handle, _) = slots[machine]?.state else { continue }
+                // The lease comes first, so that the idle timer cannot stop the machine while the
+                // connection is being made.
+                let lease = addLease(on: machine, onEnd: onEnd)
+                connecting[lease.id] = .some(nil)
+                let result: Result<OwnedDescriptor, MawError>
+                do throws(MawError) {
+                    result = .success(try await handle.openSessionConnection())
+                } catch {
+                    result = .failure(error)
+                }
+                if case .some(.some(let reason)) = connecting.removeValue(forKey: lease.id) {
+                    // The machine stopped while the connection was being made.
+                    throw .machineStopped(machine: machine.name, reason: reason)
+                }
+                switch result {
+                case .success(let descriptor):
+                    return (lease, descriptor)
+                case .failure(let error):
+                    release(lease)
+                    throw error
+                }
+            }
+        }
+
+        /// Starts `machine` if it is not running, and returns once it runs. Without a session,
+        /// it stops after the idle timeout as usual. The installer uses this for a new
+        /// distribution's first boot.
+        public func start(_ machine: MachineID) async throws(MawError) {
             while true {
                 switch slots[machine, default: Slot()].state {
                 case .stopped:
@@ -94,28 +126,8 @@
                     }
                 case .stopping(_, let task):
                     await task.value
-                case .running(let handle, _):
-                    // The lease comes first, so that the idle timer cannot stop the machine
-                    // while the connection is being made.
-                    let lease = addLease(on: machine, onEnd: onEnd)
-                    connecting[lease.id] = .some(nil)
-                    let result: Result<OwnedDescriptor, MawError>
-                    do throws(MawError) {
-                        result = .success(try await handle.connectToAgent())
-                    } catch {
-                        result = .failure(error)
-                    }
-                    if case .some(.some(let reason)) = connecting.removeValue(forKey: lease.id) {
-                        // The machine stopped while the connection was being made.
-                        throw .machineStopped(machine: machine.name, reason: reason)
-                    }
-                    switch result {
-                    case .success(let descriptor):
-                        return (lease, descriptor)
-                    case .failure(let error):
-                        release(lease)
-                        throw error
-                    }
+                case .running:
+                    return
                 }
             }
         }

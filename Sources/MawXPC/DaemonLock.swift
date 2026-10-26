@@ -9,13 +9,17 @@
     /// wants to know whether the daemon runs, such as `maw --status`, checks this lock instead.
     /// The kernel releases a `flock` when its holder exits, however it exits.
     public final class DaemonLock: Sendable {
-        private let descriptor: Int32
+        let descriptor: Int32
 
         private init(descriptor: Int32) {
             self.descriptor = descriptor
         }
 
+        /// Unlocks before closing. Closing alone releases a `flock` only when no other
+        /// descriptor refers to the open file, and a child that another thread is starting has
+        /// a copy of every descriptor until its `execve`, close-on-exec or not.
         deinit {
+            flock(descriptor, LOCK_UN)
             close(descriptor)
         }
 

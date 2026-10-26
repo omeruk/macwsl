@@ -1,9 +1,9 @@
 # The maw daemon
 
 `mawd` owns every virtual machine. `maw`, and from phase 11b the terminal app, are its clients.
-They talk to it over XPC. For a session, the daemon connects to the guest agent over vsock and
-hands that connection's descriptor to the client, which runs the guest protocol
-(`docs/protocol.md`) itself, so terminal bytes never pass through the daemon.
+They talk to it over XPC. For a session, the daemon has the guest agent open a vsock
+connection to it and hands that connection's descriptor to the client, which runs the guest
+protocol (`docs/protocol.md`) itself, so terminal bytes never pass through the daemon.
 
 The code is in `Sources/MawXPC` (the interface and the XPC wrapper), `Sources/MawDaemonKit`
 (the daemon), `Sources/MawClient` (the client library), and `Sources/mawd/Serve.swift`.
@@ -13,15 +13,15 @@ The code is in `Sources/MawXPC` (the interface and the XPC wrapper), `Sources/Ma
 A **machine** is one virtual machine and its state, identified by a `MachineID`
 (`Sources/MawCore/MachineID.swift`):
 
+- `.distribution(DistroName)`: one per installed distribution, which boots its disk with
+  systemd as PID 1 ([decision record 0013](decisions/0013-systemd-and-the-agent.md)).
 - `.initramfs`: the guest kernel and initramfs with no disk, as `mawd debug-boot` boots them.
-  It is the only machine until phase 05.
-- `.distribution(DistroName)`: phase 05 adds one per installed distribution, backed by its disk
-  image. The interface already carries it; until then, the daemon refuses it with
-  `distributionNotInstalled`.
+  `maw` no longer uses it; the installer provisions disks with a machine of the same kind that
+  it owns itself (see "Installing distributions").
 
-`maw` chooses the machine in `MachineResolver` (`Sources/maw/SessionPlan.swift`): `-d <name>`
-fails because nothing is installed yet, and without `-d` commands run on the initramfs machine.
-That fallback is the one place phase 05 replaces.
+`maw -d <name>` names a distribution's machine; without `-d`, `maw` asks for the default
+distribution, which the daemon resolves from `state.json`. With nothing installed, the request
+fails with `noDistributionInstalled`, whose suggestion names `maw --install`.
 
 ### Lifecycle
 
@@ -45,13 +45,54 @@ stopped ──openSession──▶ starting ──agent answers info──▶ ru
 - **Failure.** A machine that fails to start reports the error to every waiting request and
   stays stopped. A machine that stops on its own, or with an error, is marked stopped, its
   sessions end with the reason, and the next session starts it again.
-- **Settings.** Each machine gets the defaults of phase 03: the smaller of 4 and the number of
-  host CPUs, and 2 GiB of memory.
+- **Settings.** A distribution's machine gets every CPU of the Mac and half of its memory, its
+  disk with full synchronization, and a NAT network device with the MAC address in its
+  `distro.json`. Its kernel command line carries `maw.root=/dev/vda` and `maw.clock=<seconds>`.
+  The initramfs machine keeps the defaults of phase 03: the smaller of 4 and the number of host
+  CPUs, and 2 GiB of memory.
+- **The dial-back listener.** When a machine reaches the running state, the daemon sets a
+  `VZVirtioSocketListener` on its vsock port 19800 (`AgentProtocol.dialBackPort`). When the
+  machine stops, it removes the listener and ends the wait of every session that has not
+  received its connection yet. The listener exists only inside the daemon's process; only the
+  machine's guest can reach it (docs/security.md).
+
+### Opening a session
+
+Every session, whether `maw`'s, the installer's, or `mawd debug-boot`'s, runs on a connection
+that the guest agent dials ([decision record 0017](decisions/0017-dial-back-for-sessions.md)):
+
+1. The daemon registers a new 32-byte nonce with the machine's `DialBackGate`. It is valid for
+   5 seconds; at most 64 sessions of a machine wait at once.
+2. It opens a connection to the agent (port 19799), exchanges versions, and sends `dialBack`
+   with the nonce.
+3. The agent binds a source port below 1024, connects to port 19800 within 2 seconds, sends
+   the nonce first, replies `dialedBack`, and closes the request connection.
+4. The listener admits the connection, reads exactly its 37-byte nonce frame within 2 seconds,
+   and gives the connection to the session whose nonce it carries. Connections from a source
+   port of 1024 or above, connections while no session waits, connections beyond the waiting
+   sessions plus 4 that have not sent their nonce, and connections with any other nonce are
+   refused or closed; the console log records each refusal, at most 5 in 10 seconds.
+5. The daemon hands the connection's descriptor, positioned after the nonce frame, to the
+   client in `sessionOpened`.
+
+The connections that the daemon opens itself carry only `info`, `shutdown`, and `dialBack`,
+whose replies it reads in full at once. A session's output on such a connection could stop the
+machine's vsock device while the client did not read it (docs/protocol.md, "Flow control and
+ordering").
+
+A dial-back can fail in three ways, each with its own error:
+
+| Error | Situation | Suggested fix |
+|-------|-----------|---------------|
+| `sessionDialBackFailed` | The agent replied `dialBackFailed`: no source port below 1024 was free, binding one failed, or its connection was refused or did not complete within 2 seconds. The message gives the agent's reason. | Run the command again. If it fails again, restart the virtual machines with `maw --shutdown`; the console log in `~/Library/Logs/maw` has the agent's warning. |
+| `sessionDialBackMissing` | The agent replied `dialedBack`, but no connection with the session's nonce arrived within the nonce's 5 seconds. | Run the command again. If it fails again, restart the virtual machines with `maw --shutdown`; the virtual machine's console log in `~/Library/Logs/maw` lists the connections that were refused. |
+| `sessionDialBackBusy` | 64 sessions of the machine were already waiting for their connections. | Wait for other sessions to start, then run the command again. |
 
 ### Console logs
 
 Each machine writes its console to `~/Library/Logs/maw/<machine>.log`, for example
-`initramfs.log`, together with the daemon's notes about it (lines starting with `[mawd]`).
+`Ubuntu-24.04.log`, together with the daemon's notes about it (lines starting with `[mawd]`).
+The provisioning machine of an installation writes to `install-<name>.log`.
 
 ## The daemon
 
@@ -87,7 +128,8 @@ how phase 13 moves to it.
 
 - `mawd install` is idempotent. When the agent is already loaded, it replaces the plist and
   restarts the daemon (`launchctl bootout`, then `bootstrap`), so that a rebuilt `mawd` takes
-  effect.
+  effect. Between the two, it waits until launchd has removed the previous job, which launchd
+  keeps until the daemon has exited, for up to 30 seconds of time that the Mac is awake.
 - `mawd uninstall` asks a running daemon to stop its machines, unloads the agent, and removes
   the plist and the lock file.
 
@@ -99,7 +141,7 @@ Every message is an XPC dictionary (`Sources/MawXPC/InterfaceCoding.swift`):
 
 | Key | Type | Content |
 |-----|------|---------|
-| `interfaceVersion` | uint64 | `DaemonInterface.version`, currently **1**. This key never changes. |
+| `interfaceVersion` | uint64 | `DaemonInterface.version`, currently **2**. This key never changes. |
 | `body` | data | the message, JSON-encoded from the `Codable` types in `Sources/MawXPC/DaemonInterface.swift` |
 | `descriptor` | fd | only in `sessionOpened`: the guest agent connection |
 
@@ -113,9 +155,12 @@ there is no negotiation.
 | Request | Reply | Meaning |
 |---------|-------|---------|
 | `hello(clientVersion)` | `welcome(DaemonInfo)` | The first request on every connection. `DaemonInfo` holds the daemon's maw version, process ID, and interface version. |
-| `openSession(MachineID)` | `sessionOpened(SessionInfo)` plus `descriptor` | Starts the machine if needed and connects to its guest agent. The client owns the descriptor and runs the guest protocol over it with `GuestAgentClient`. |
+| `openSession(MachineID?)` | `sessionOpened(SessionInfo)` plus `descriptor` | Starts the machine if needed and has its guest agent dial a connection (see "Opening a session"); `nil` is the default distribution's machine. The client owns the descriptor and runs the guest protocol over it with `GuestAgentClient`. `SessionInfo` names the machine. |
 | `status` | `status(DaemonStatus)` | The daemon's version, process ID, and uptime, whether it may run virtual machines, and each machine with its state, uptime, CPUs, memory, and session count. |
 | `shutdown` | `shutdownComplete(ShutdownSummary)` | Stops every machine and ends its sessions. Returns once they have stopped. |
+| `install(InstallRequest)` | `installed(InstallSummary)` | Installs a distribution. The reply comes when the installation has finished; meanwhile the daemon sends `installProgress` events. `InstallRequest` holds the catalog name, an optional name to install under, the user, the password as a `Secret`, and the Mac's locale. |
+| `checkInstall(distribution:name:)` | `installPossible` | Checks what can be checked before the account is known: the distribution is in the catalog, the name is free and not being installed, and the volume has room. `maw --install` sends it before it asks for the account; `install` checks the same again. |
+| `cancelInstall` | `installCancelled(wasRunning:)` | Cancels this connection's installation, and replies once its traces are removed; the installation's own reply is then `failure(installationCancelled)`. An installation that has already registered the distribution finishes instead, and `wasRunning` is false. |
 
 Any request can be answered with `failure(MawError)`, which carries the error unchanged; the
 client shows its message and suggested fix.
@@ -125,6 +170,7 @@ client shows its message and suggested fix.
 | Event | Meaning |
 |-------|---------|
 | `sessionEnded(SessionEnded)` | A session's machine stopped. `reason` says why, for example `maw --shutdown was run`. The daemon sends it before it stops the machine, so it normally arrives before the guest connection closes. |
+| `installProgress(InstallProgress)` | This connection's installation started or finished a step (`download`, `verify`, `prepare`, `format`, `extract`, `configure`, `finish`, `start`, with its duration), or downloaded more (bytes, total, rate, and where it resumed), at most five times a second. An event can arrive after the reply it precedes; `maw` waits briefly for the last step's event. |
 
 ### The version check
 
@@ -134,6 +180,27 @@ client shows its message and suggested fix.
 - **The client** checks the version of every reply first. A mismatch fails with
   `daemonVersionMismatch`, whose suggested fix is to run `mawd install` again, so that launchd
   runs the daemon from the same build as the client.
+
+### Installing distributions
+
+`Installer` (`Sources/MawDaemonKit/Installer.swift`) runs each installation on a task of its
+own, so that the connection can still cancel it. It refuses an installed name, a name being
+installed by another connection, an invalid user or password, and too little free space before
+it downloads anything. `ImageCache` downloads over HTTPS into `~/Library/Caches/maw/images` and
+verifies the SHA-256 before every use. `VirtualProvisioningMachine` boots the initramfs with the
+new disk and runs each step as a command through the guest agent; the image is decompressed on
+the Mac and streamed to `bsdtar` in the guest. [docs/distributions.md](distributions.md) lists
+the steps and what they change.
+
+An installation is cancelled when its client sends `cancelInstall`, when the client's
+connection closes, and when the daemon receives SIGTERM: the provisioning machine stops at once,
+and the staging directory is removed before the cancellation is confirmed. At start, the daemon
+removes staging directories that a crash left behind. The password is in the daemon's memory
+only while the installation runs, travels to the guest as `chpasswd`'s standard input, and
+never appears in a log, a description, or an error message.
+
+`state.json` in `~/Library/Application Support/maw` records the default distribution: the
+first one installed. Phase 06 adds `maw --set-default`.
 
 ### The session lease
 
@@ -215,6 +282,7 @@ Phase 11b, which connects the terminal app to the daemon, adds the app's identif
 |------|---------|
 | `~/Library/Logs/maw/mawd.log` | The daemon's own log: start, machines starting and stopping and why, sessions opened and released, errors. launchd sends the daemon's standard output and error here. |
 | `~/Library/Logs/maw/<machine>.log` | One machine's console, with the daemon's notes, including how each shutdown went. |
+| `~/Library/Logs/maw/install-<name>.log` | The console of the machine that provisioned `<name>`, from its last installation attempt. |
 
 The daemon also logs to the unified log, subsystem `dev.maw`, categories `daemon` and `xpc`:
 
@@ -230,6 +298,13 @@ directory, and a machine idle timeout of 3 seconds. It sets `MAW_DAEMON_LABEL` s
 `maw` processes of the tests connect to it, and removes the agent when it exits, also when a
 test fails or the script is interrupted. `MAW_DAEMON_LABEL` is not meant for users.
 
+The script fails the run if a boot of any machine started the guest agent more than once,
+according to the console logs: each boot starts it once, and a second start means that it
+exited and ended every session it served. When a test fails, the agent restarted, or the run
+left something behind, the script saves the agent's journal from the test distribution into
+the test daemon's log directory, keeps that directory with the daemon's log and every console
+log, and prints its path. Otherwise it deletes it.
+
 ## Known limitations
 
 - A connection that arrives while an idle daemon is exiting is interrupted, and the command
@@ -241,5 +316,5 @@ test fails or the script is interrupted. `MAW_DAEMON_LABEL` is not meant for use
   idle timeout is not affected.
 - The daemon does not detect that a client of the same interface version comes from another
   build. `hello` carries the client's maw version, and the daemon logs a difference.
-- A distribution named `initramfs` would share the initramfs machine's console log. Phase 05
-  decides how distribution names and machine names relate.
+- A distribution's machine and its console log are named after the distribution. The installer
+  refuses the name `initramfs`, which would share the initramfs machine's console log.

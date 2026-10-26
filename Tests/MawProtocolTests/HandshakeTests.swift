@@ -21,24 +21,163 @@ import Testing
             return try? connection?.exchangeVersions(until: .now + .seconds(5))
         }
         let hostConnection = try FrameConnection(host)
-        #expect(try hostConnection.exchangeVersions(until: .now + .seconds(5)) == 1)
+        // A blocking exchange on the cooperative pool could leave no thread to start the peer.
+        let hostVersion = try await runOnDedicatedThread { () throws(ConnectionError) in
+            try hostConnection.exchangeVersions(until: .now + .seconds(5))
+        }
+        #expect(hostVersion == ProtocolVersion.current)
         #expect(await peerVersion == ProtocolVersion.current)
+    }
+
+    /// The client's request follows its version at once, without waiting for the agent's, which
+    /// would cost a round trip. This peer answers nothing before it has both frames, and replies
+    /// `dialedBack` only if they are the version and the request; a client that waited for the
+    /// peer's version would time out.
+    @Test func clientSendsItsRequestWithoutWaitingForTheAgentsVersion() async throws {
+        let (host, peer) = try Self.socketPair()
+        let client = GuestAgentClient(replyTimeout: .seconds(5)) { () throws(MawError) in host }
+        let nonce = DialBackNonce.random()
+        // A thread of its own, running before the client starts, so that a busy cooperative
+        // pool cannot delay the peer past the client's timeout.
+        startDetachedThread {
+            guard let connection = try? FrameConnection(peer) else { return }
+            let deadline = ContinuousClock.now + .seconds(10)
+            let version = try? connection.receiveFrame(until: deadline).protocolVersion()
+            let request = try? connection.receiveControl(until: deadline, expecting: "a request")
+            connection.enqueue(.version())
+            if version == ProtocolVersion.current && request == .dialBack(nonce) {
+                connection.enqueue(.control(.dialedBack))
+            } else {
+                connection.enqueue(
+                    .control(.error(AgentError(.protocolViolation, "not a version and dialBack"))))
+            }
+            try? connection.flush(until: deadline)
+            peer.close()
+        }
+        try await client.dialBack(nonce)
     }
 
     @Test func clientReportsAGuestWithAnotherVersion() async throws {
         let (host, peer) = try Self.socketPair()
         let client = GuestAgentClient { () throws(MawError) in host }
-        // A guest from a future build: it sends version 2 and closes after the mismatch.
+        // A guest from a future build: it sends the next version and closes after the mismatch.
+        let future = ProtocolVersion.current + 1
         startDetachedThread {
             guard let connection = try? FrameConnection(peer) else { return }
-            connection.enqueue(.version(2))
+            connection.enqueue(.version(future))
             try? connection.flush(until: .now + .seconds(5))
             _ = try? connection.receiveFrame(until: .now + .seconds(5))
             peer.close()
         }
-        await #expect(throws: MawError.guestAgentVersionMismatch(host: 1, guest: 2)) {
+        await #expect(
+            throws: MawError.guestAgentVersionMismatch(host: ProtocolVersion.current, guest: future)
+        ) {
             try await client.info()
         }
+    }
+
+    /// An agent from a build before version 3, as it answers a newer host: its version, then
+    /// an error naming both versions.
+    @Test func clientReportsAnAgentFromAnEarlierBuild() async throws {
+        let (host, peer) = try Self.socketPair()
+        let client = GuestAgentClient { () throws(MawError) in host }
+        let earlier = ProtocolVersion.current - 1
+        startDetachedThread {
+            guard let connection = try? FrameConnection(peer) else { return }
+            connection.enqueue(.version(earlier))
+            connection.enqueue(
+                .control(
+                    .error(
+                        AgentError(
+                            .versionMismatch, "mismatch", hostVersion: ProtocolVersion.current,
+                            guestVersion: earlier))))
+            try? connection.flush(until: .now + .seconds(5))
+            _ = try? connection.receiveFrame(until: .now + .seconds(5))
+            peer.close()
+        }
+        await #expect(
+            throws: MawError.guestAgentVersionMismatch(
+                host: ProtocolVersion.current, guest: earlier)
+        ) {
+            _ = try await client.exec(ExecRequest(argv: ["true"])) { _, _ in }
+        }
+    }
+
+    /// An agent of another version that has answered and closed the connection before the
+    /// client writes: the client's write fails, and it still reports the mismatch from the
+    /// frames that arrived.
+    @Test(arguments: [false, true])
+    func clientReportsAMismatchAfterItsWriteFails(largeRequest: Bool) async throws {
+        let (host, peer) = try Self.socketPair()
+        let earlier = ProtocolVersion.current - 1
+        let agent = try FrameConnection(peer)
+        agent.enqueue(.version(earlier))
+        agent.enqueue(
+            .control(
+                .error(
+                    AgentError(
+                        .versionMismatch, "mismatch", hostVersion: ProtocolVersion.current,
+                        guestVersion: earlier))))
+        try agent.flush(until: .now + .seconds(5))
+        peer.close()
+
+        let client = GuestAgentClient(replyTimeout: .seconds(5)) { () throws(MawError) in host }
+        await #expect(
+            throws: MawError.guestAgentVersionMismatch(
+                host: ProtocolVersion.current, guest: earlier)
+        ) {
+            if largeRequest {
+                // More than the socket holds, so that the request needs several writes.
+                let argument = String(repeating: "a", count: 512 << 10)
+                _ = try await client.exec(ExecRequest(argv: ["echo", argument])) { _, _ in }
+            } else {
+                _ = try await client.info()
+            }
+        }
+    }
+
+    /// `dialBack` against the agent's server: the agent dials, sends the nonce first on the
+    /// dialed connection, and replies `dialedBack`.
+    @Test func asksTheAgentToDialBack() async throws {
+        let (request, agentSide) = try Self.socketPair()
+        let (dialedHost, dialedAgent) = try Self.socketPair()
+        let server = AgentServer(
+            configuration: AgentConfiguration(
+                dialBack: { () throws(DialBackError) -> OwnedDescriptor in dialedAgent },
+                powerOff: {}))
+        server.serveOnNewThread(agentSide)
+        let client = GuestAgentClient { () throws(MawError) in request }
+        let nonce = DialBackNonce.random()
+        try await client.dialBack(nonce)
+
+        let connection = try FrameConnection(dialedHost)
+        let first = try await runOnDedicatedThread { () throws(ConnectionError) -> Frame in
+            try connection.receiveFrame(until: .now + .seconds(5))
+        }
+        #expect(try first.dialBackNonce() == nonce)
+    }
+
+    @Test func reportsADialBackThatTheAgentCouldNotMake() async throws {
+        let (request, agentSide) = try Self.socketPair()
+        let server = AgentServer(
+            configuration: AgentConfiguration(
+                dialBack: { () throws(DialBackError) -> OwnedDescriptor in throw .noFreePort },
+                powerOff: {}))
+        server.serveOnNewThread(agentSide)
+        let client = GuestAgentClient { () throws(MawError) in request }
+        await #expect(
+            throws: MawError.sessionDialBackFailed(reason: "no source port below 1024 is free")
+        ) {
+            try await client.dialBack(.random())
+        }
+    }
+
+    @Test func mapsAFailedDialBack() {
+        #expect(
+            GuestAgentClient.map(
+                .remote(AgentError(.dialBackFailed, "no source port below 1024 is free")),
+                during: "dialBack")
+                == .sessionDialBackFailed(reason: "no source port below 1024 is free"))
     }
 
     @Test func agentRejectsAHostWithAnotherVersion() async throws {
@@ -56,9 +195,10 @@ import Testing
             ]
         }
         #expect(try reply[0].protocolVersion() == ProtocolVersion.current)
+        let current = ProtocolVersion.current
         let error = AgentError(
-            .versionMismatch, "the host speaks protocol version 9, the agent version 1",
-            hostVersion: 9, guestVersion: 1)
+            .versionMismatch, "the host speaks protocol version 9, the agent version \(current)",
+            hostVersion: 9, guestVersion: current)
         #expect(try reply[1].controlMessage() == .error(error))
         // Then the agent closes the connection.
         let end = await runOnDedicatedThread { () -> Bool in
@@ -72,7 +212,7 @@ import Testing
         #expect(end)
         #expect(
             GuestAgentClient.map(.remote(error), during: "info")
-                == .guestAgentVersionMismatch(host: 9, guest: 1))
+                == .guestAgentVersionMismatch(host: 9, guest: current))
     }
 
     @Test func clientTimesOutOnASilentPeer() async throws {

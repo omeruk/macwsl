@@ -35,6 +35,13 @@ typedef struct maw_spawn_options {
     /// Nonzero: start a new session and make `stdin_fd`, a terminal, its controlling terminal.
     /// Zero: start a new process group, so that signals can be sent to the whole group.
     int controlling_terminal;
+    /// Nonzero: set the supplementary groups to `groups`, then the group ID to `gid`, then the
+    /// user ID to `uid`, before changing the working directory.
+    int set_credentials;
+    uid_t uid;
+    gid_t gid;
+    const gid_t *groups;
+    size_t group_count;
 } maw_spawn_options;
 
 /// The step at which a failed `maw_spawn` stopped.
@@ -44,6 +51,7 @@ typedef enum maw_spawn_stage {
     MAW_SPAWN_STAGE_DESCRIPTORS = 2,
     MAW_SPAWN_STAGE_WORKING_DIRECTORY = 3,
     MAW_SPAWN_STAGE_EXEC = 4,
+    MAW_SPAWN_STAGE_CREDENTIALS = 5,
 } maw_spawn_stage;
 
 /// Starts a child process. In the child, every signal disposition is reset to its default and
@@ -71,6 +79,10 @@ int maw_terminal_eof_character(int fd);
 /// Makes a descriptor non-blocking.
 int maw_set_nonblocking(int fd);
 
+/// Duplicates a descriptor with close-on-exec set on the duplicate (`F_DUPFD_CLOEXEC`), unlike
+/// `dup`. Returns the duplicate, or -1 with errno set.
+int maw_duplicate(int fd);
+
 /// Stops writes to a socket or pipe whose reader has gone from raising SIGPIPE, where the
 /// platform allows that per descriptor (Darwin). Elsewhere, use `maw_send` for sockets.
 int maw_suppress_sigpipe(int fd);
@@ -93,8 +105,28 @@ int maw_open_exit_watch(pid_t pid);
 /// or -1 with errno set (ENOSYS outside Linux).
 int maw_vsock_listen(uint32_t port, int backlog);
 
-/// Accepts a connection; the new descriptor is close-on-exec. Returns it, or -1 with errno set.
-int maw_accept(int fd);
+/// Accepts a vsock connection only if it comes from the host (context ID 2). A connection from
+/// any other context, such as a process inside the guest through the loopback transport, is
+/// closed: it returns -1 with errno set to EPERM and the peer's context ID in `peer_cid`.
+/// The new descriptor is close-on-exec. ENOSYS outside Linux.
+int maw_vsock_accept_host(int fd, uint32_t *peer_cid);
+
+/// Opens a non-blocking, close-on-exec vsock stream socket. Returns the descriptor, or -1 with
+/// errno set (ENOSYS outside Linux).
+int maw_vsock_socket(void);
+
+/// Binds a vsock socket to `port` for any context ID. Ports up to 1023 need
+/// CAP_NET_BIND_SERVICE in the initial user namespace; without it the result is EACCES.
+int maw_vsock_bind(int fd, uint32_t port);
+
+/// Connects a vsock socket to `port` of context `cid`. On a non-blocking socket the result is
+/// EINPROGRESS while the connection is being made; `maw_socket_error` then gives its outcome
+/// once the socket is writable.
+int maw_vsock_connect(int fd, uint32_t cid, uint32_t port);
+
+/// The socket's pending error (SO_ERROR), which it also clears: 0 after a successful
+/// non-blocking connect. Returns 0 and sets `*error`, or returns an errno value.
+int maw_socket_error(int fd, int *error);
 
 #ifdef __cplusplus
 }

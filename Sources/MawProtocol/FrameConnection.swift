@@ -106,7 +106,8 @@ public final class FrameConnection: @unchecked Sendable {
                 switch errno {
                 case EINTR: continue
                 case EAGAIN, EWOULDBLOCK: return false
-                case EPIPE, ECONNRESET: throw .closed
+                // macOS reports ENOTCONN instead of EPIPE when the send races the peer's close.
+                case EPIPE, ECONNRESET, ENOTCONN: throw .closed
                 default: throw .system(SystemError("send"))
                 }
             }
@@ -197,12 +198,16 @@ public final class FrameConnection: @unchecked Sendable {
         }
     }
 
-    /// Sends this side's protocol version and returns the peer's. Both sides send first, so
-    /// neither waits for the other.
-    public func exchangeVersions(until deadline: ContinuousClock.Instant?) throws(ConnectionError)
-        -> UInt32
-    {
+    /// Sends this side's protocol version, followed by `frames`, and returns the peer's. Both
+    /// sides send first, so neither waits for the other. The host sends its request in
+    /// `frames`, so that the request does not wait for the agent's version (docs/protocol.md).
+    public func exchangeVersions(
+        until deadline: ContinuousClock.Instant?, thenSending frames: [Frame] = []
+    ) throws(ConnectionError) -> UInt32 {
         enqueue(.version())
+        for frame in frames {
+            enqueue(frame)
+        }
         try flush(until: deadline)
         let frame = try receiveFrame(until: deadline, expecting: "the protocol version")
         do throws(FrameError) {

@@ -42,8 +42,10 @@
                 throw .sparseFilesUnsupported(path: path)
             }
 
-            // O_EXCL refuses an existing file atomically, without a check-then-create race.
-            let descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o644)
+            // O_EXCL refuses an existing file atomically, without a check-then-create race. Only
+            // the owner may read or write it: the disk holds the distribution's files, including
+            // its password hashes.
+            let descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
             guard descriptor >= 0 else {
                 let code = errno
                 if code == EEXIST {
@@ -58,6 +60,34 @@
                 let reason = String(cString: strerror(errno))
                 unlink(path)
                 throw .diskImageCreationFailed(path: path, reason: reason)
+            }
+        }
+
+        /// Whether another process holds a lock on the disk image, as Virtualization.framework
+        /// does while a virtual machine uses it. Asks with `F_GETLK`, which takes no lock.
+        public static func isLocked(_ url: URL) -> Bool {
+            let descriptor = open(url.path(percentEncoded: false), O_RDONLY | O_CLOEXEC)
+            guard descriptor >= 0 else { return false }
+            defer { close(descriptor) }
+            var lock = flock()
+            lock.l_type = Int16(F_WRLCK)
+            lock.l_whence = Int16(SEEK_SET)
+            lock.l_start = 0
+            lock.l_len = 0
+            guard fcntl(descriptor, F_GETLK, &lock) == 0 else { return false }
+            return lock.l_type != Int16(F_UNLCK)
+        }
+
+        /// Waits until no virtual machine holds the disk image, for at most `timeout`. A
+        /// machine whose daemon was killed keeps its disk until its process exits, which took
+        /// 1.2 s when measured. Throws `diskImageInUse` if it is still held.
+        public static func waitUntilUnlocked(_ url: URL, timeout: Duration) async throws(MawError) {
+            let deadline = ContinuousClock.now + timeout
+            while isLocked(url) {
+                guard ContinuousClock.now < deadline else {
+                    throw .diskImageInUse(path: url.path(percentEncoded: false))
+                }
+                try? await Task.sleep(for: .milliseconds(100))
             }
         }
     }
