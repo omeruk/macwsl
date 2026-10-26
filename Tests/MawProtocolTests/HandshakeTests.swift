@@ -29,6 +29,29 @@ import Testing
         #expect(await peerVersion == ProtocolVersion.current)
     }
 
+    /// The client's request follows its version at once, without waiting for the agent's, which
+    /// would cost a round trip. This peer answers nothing before it has both frames; a client
+    /// that waited for the peer's version would time out.
+    @Test func clientSendsItsRequestWithoutWaitingForTheAgentsVersion() async throws {
+        let (host, peer) = try Self.socketPair()
+        let client = GuestAgentClient(replyTimeout: .seconds(2)) { () throws(MawError) in host }
+        let nonce = DialBackNonce.random()
+        async let received = runOnDedicatedThread { () -> (UInt32?, ControlMessage?) in
+            guard let connection = try? FrameConnection(peer) else { return (nil, nil) }
+            let deadline = ContinuousClock.now + .seconds(5)
+            let version = try? connection.receiveFrame(until: deadline).protocolVersion()
+            let request = try? connection.receiveControl(until: deadline, expecting: "a request")
+            connection.enqueue(.version())
+            connection.enqueue(.control(.dialedBack))
+            try? connection.flush(until: deadline)
+            return (version, request)
+        }
+        try await client.dialBack(nonce)
+        let (version, request) = await received
+        #expect(version == ProtocolVersion.current)
+        #expect(request == .dialBack(nonce))
+    }
+
     @Test func clientReportsAGuestWithAnotherVersion() async throws {
         let (host, peer) = try Self.socketPair()
         let client = GuestAgentClient { () throws(MawError) in host }

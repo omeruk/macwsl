@@ -43,8 +43,7 @@ public struct GuestAgentClient: Sendable {
         let timeout = replyTimeout
         return try await runOnDedicatedThread { () throws(MawError) -> AgentInfo in
             try Self.mapErrors(during: "info") { () throws(ConnectionError) -> AgentInfo in
-                let connection = try Self.open(descriptor, timeout: timeout)
-                connection.enqueue(.control(.info))
+                let connection = try Self.open(descriptor, sending: .info, timeout: timeout)
                 switch try Self.reply(on: connection, timeout: timeout, to: "info") {
                 case .agentInfo(let info):
                     return info
@@ -62,8 +61,7 @@ public struct GuestAgentClient: Sendable {
         let timeout = replyTimeout
         try await runOnDedicatedThread { () throws(MawError) in
             try Self.mapErrors(during: "shutdown") { () throws(ConnectionError) in
-                let connection = try Self.open(descriptor, timeout: timeout)
-                connection.enqueue(.control(.shutdown))
+                let connection = try Self.open(descriptor, sending: .shutdown, timeout: timeout)
                 switch try Self.reply(on: connection, timeout: timeout, to: "shutdown") {
                 case .shutdownAcknowledged:
                     return
@@ -83,8 +81,8 @@ public struct GuestAgentClient: Sendable {
         let timeout = replyTimeout
         try await runOnDedicatedThread { () throws(MawError) in
             try Self.mapErrors(during: "dialBack") { () throws(ConnectionError) in
-                let connection = try Self.open(descriptor, timeout: timeout)
-                connection.enqueue(.control(.dialBack(nonce)))
+                let connection = try Self.open(
+                    descriptor, sending: .dialBack(nonce), timeout: timeout)
                 switch try Self.reply(on: connection, timeout: timeout, to: "dialBack") {
                 case .dialedBack:
                     return
@@ -112,8 +110,8 @@ public struct GuestAgentClient: Sendable {
                 during: "exec", command: command, guestName: guestName
             ) {
                 () throws(ConnectionError) -> (FrameConnection, Int32) in
-                let connection = try Self.open(descriptor, timeout: timeout)
-                connection.enqueue(.control(.exec(request)))
+                let connection = try Self.open(
+                    descriptor, sending: .exec(request), timeout: timeout)
                 switch try Self.reply(on: connection, timeout: timeout, to: "exec") {
                 case .started(let pid):
                     return (connection, pid)
@@ -127,13 +125,17 @@ public struct GuestAgentClient: Sendable {
 
     // MARK: Conversation steps
 
-    /// Wraps a descriptor and exchanges protocol versions.
-    static func open(_ descriptor: OwnedDescriptor, timeout: Duration) throws(ConnectionError)
-        -> FrameConnection
-    {
+    /// Wraps a descriptor, sends this side's version and `request` together, and checks the
+    /// agent's version. The request does not wait for the agent's version, which would cost a
+    /// round trip: the agent reads it only once the versions match, and a mismatch is reported
+    /// before any reply is read.
+    static func open(
+        _ descriptor: OwnedDescriptor, sending request: ControlMessage, timeout: Duration
+    ) throws(ConnectionError) -> FrameConnection {
         let connection = try FrameConnection(descriptor)
         let deadline = ContinuousClock.now + timeout
-        let remote = try connection.exchangeVersions(until: deadline)
+        let remote = try connection.exchangeVersions(
+            until: deadline, thenSending: [.control(request)])
         guard remote == ProtocolVersion.current else {
             throw .versionMismatch(local: ProtocolVersion.current, remote: remote)
         }

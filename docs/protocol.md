@@ -58,14 +58,17 @@ An empty data frame is valid and has no effect.
 ## Handshake
 
 1. As soon as the connection is open, each side sends a `version` frame. Neither waits for
-   the other first.
+   the other first. The host sends its one request, `exec`, `info`, `shutdown`, or
+   `dialBack`, right after its `version` frame, without waiting for the agent's version,
+   which would cost a round trip.
 2. Each side reads the first frame. It must be a `version` frame with a 4-byte payload.
 3. If the versions differ, the agent sends an `error` control message with code
-   `versionMismatch`, `hostVersion`, and `guestVersion`, and closes the connection. The host
-   reports `MawError.guestAgentVersionMismatch(host:guest:)`, whose suggested fix is to
-   install guest files built from the same commit, with `scripts/fetch-guest.sh` or by
-   rebuilding them.
-4. Otherwise the host sends one request: `exec`, `info`, `shutdown`, or `dialBack`.
+   `versionMismatch`, `hostVersion`, and `guestVersion`, and closes the connection without
+   reading the request. The host reports `MawError.guestAgentVersionMismatch(host:guest:)`,
+   whose suggested fix is to install guest files built from the same commit, with
+   `scripts/fetch-guest.sh` or by rebuilding them.
+4. Otherwise the agent reads the request and answers it. The host reads the reply only after
+   it has checked the agent's version.
 
 The agent closes a connection that has not completed the handshake and sent its request
 within 10 seconds.
