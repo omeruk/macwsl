@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import MawCore
+import MawProtocol
 import Testing
 
 /// A distribution installed from the cached image, as a user meets it: the account, `sudo`,
@@ -110,7 +111,9 @@ struct DistributionIntegrationTests {
 
     @Test func keepsTheImagesCapabilitiesAndOwners() async throws {
         let image = maw.imageCache.appending(path: Self.catalog.image.cacheFileName)
-        let entries = try PaxEntry.read(image: image)
+        // On a thread of its own: it reads tar's output until tar exits.
+        let entries = try await runOnDedicatedThread { () throws in try PaxEntry.read(image: image)
+        }
         try #require(entries.count > 10_000, "the image has \(entries.count) entries")
 
         // File capabilities, such as ping's cap_net_raw, byte for byte.
@@ -291,7 +294,7 @@ struct DistributionIntegrationTests {
         for _ in 0..<5 {
             _ = try await maw.run(["--shutdown"])
             try await Task.sleep(for: .seconds(2))
-            let (status, elapsed) = try maw.timed(["-d", distribution, "-e", "true"])
+            let (status, elapsed) = try await maw.timed(["-d", distribution, "-e", "true"])
             #expect(status == 0)
             times.append(elapsed)
         }
@@ -321,7 +324,7 @@ struct DistributionIntegrationTests {
         #expect(try await maw.session(["-e", "true"]).status == 0)
         var times: [Double] = []
         for _ in 0..<100 {
-            let (status, elapsed) = try maw.timed(["-d", distribution, "-e", "true"])
+            let (status, elapsed) = try await maw.timed(["-d", distribution, "-e", "true"])
             times.append(elapsed)
             #expect(status == 0)
         }

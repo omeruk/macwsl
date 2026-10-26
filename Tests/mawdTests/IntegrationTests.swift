@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import MawProtocol
 import MawTestSupport
 import Testing
 import os
@@ -28,15 +29,16 @@ private let integrationEnabled = ProcessInfo.processInfo.environment["MAW_INTEGR
 struct IntegrationTests {
     let mawd: URL
 
-    init() throws {
+    init() async throws {
         let path = try #require(
             ProcessInfo.processInfo.environment["MAWD_PATH"],
             "MAWD_PATH must point to the signed mawd; scripts/integration-test.sh sets it.")
         mawd = URL(filePath: path)
         try #require(
             FileManager.default.isExecutableFile(atPath: path), "\(path) is not an executable.")
+        // On a thread of its own: it waits for codesign.
         try #require(
-            Self.hasVirtualizationEntitlement(path),
+            await runOnDedicatedThread { Self.hasVirtualizationEntitlement(path) },
             "\(path) is not signed with the virtualization entitlement. Run scripts/sign-dev.sh.")
     }
 

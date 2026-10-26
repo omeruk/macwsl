@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import MawCore
+import MawProtocol
 import MawTestSupport
 import Testing
 
@@ -162,31 +163,38 @@ struct MawIntegration: Sendable {
     /// from starting it to its exit, in milliseconds. Kills it after `timeout`.
     ///
     /// `posix_spawn` and a kqueue rather than `Process`: `Process.waitUntilExit()` waits on a
-    /// run loop and adds tens of milliseconds, more than the latency being measured.
-    func timed(_ arguments: [String], timeout: Duration = .seconds(60)) throws
+    /// run loop and adds tens of milliseconds, more than the latency being measured. The wait
+    /// runs on a thread of its own, which also measures the time.
+    func timed(_ arguments: [String], timeout: Duration = .seconds(60)) async throws
         -> (status: Int32, milliseconds: Double)
     {
-        var actions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&actions)
-        defer { posix_spawn_file_actions_destroy(&actions) }
-        for descriptor in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] {
-            posix_spawn_file_actions_addopen(
-                &actions, descriptor, "/dev/null", descriptor == STDIN_FILENO ? O_RDONLY : O_WRONLY,
-                0)
-        }
-        let argv = ([maw.path(percentEncoded: false)] + arguments).map { strdup($0) } + [nil]
-        let envp = mawEnvironment.map { strdup("\($0.key)=\($0.value)") } + [nil]
-        defer {
-            for string in argv + envp {
-                free(string)
+        let argv = [maw.path(percentEncoded: false)] + arguments
+        let environment = mawEnvironment.map { "\($0.key)=\($0.value)" }
+        let (error, status, elapsed) = await runOnDedicatedThread {
+            () -> (Int32, Int32?, Duration) in
+            var actions: posix_spawn_file_actions_t?
+            posix_spawn_file_actions_init(&actions)
+            defer { posix_spawn_file_actions_destroy(&actions) }
+            for descriptor in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] {
+                posix_spawn_file_actions_addopen(
+                    &actions, descriptor, "/dev/null",
+                    descriptor == STDIN_FILENO ? O_RDONLY : O_WRONLY, 0)
             }
+            let cArgv = argv.map { strdup($0) } + [nil]
+            let envp = environment.map { strdup($0) } + [nil]
+            defer {
+                for string in cArgv + envp {
+                    free(string)
+                }
+            }
+            var pid: pid_t = 0
+            let start = ContinuousClock.now
+            let error = posix_spawn(&pid, cArgv[0], &actions, nil, cArgv, envp)
+            guard error == 0 else { return (error, nil, .zero) }
+            let status = Self.reap(pid, within: timeout)
+            return (0, status, ContinuousClock.now - start)
         }
-        var pid: pid_t = 0
-        let start = ContinuousClock.now
-        let error = posix_spawn(&pid, argv[0], &actions, nil, argv, envp)
         try #require(error == 0, "posix_spawn failed with error \(error)")
-        let status = Self.reap(pid, within: timeout)
-        let elapsed = ContinuousClock.now - start
         let exited = try #require(status, "maw \(arguments) did not exit within \(timeout).")
         // WEXITSTATUS, which Swift does not import.
         return ((exited >> 8) & 0xFF, elapsed.fractionalMilliseconds)

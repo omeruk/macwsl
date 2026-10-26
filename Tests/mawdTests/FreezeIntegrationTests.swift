@@ -279,7 +279,8 @@ struct FreezeIntegrationTests {
     ) async throws {
         var times: [Double] = []
         for _ in 0..<5 {
-            let run = try maw.timed(["-d", distribution, "-e", "true"], timeout: .seconds(10))
+            let run = try await maw.timed(
+                ["-d", distribution, "-e", "true"], timeout: .seconds(10))
             #expect(
                 run.status == 0, "maw -e true exited with \(run.status) while \(situation).",
                 sourceLocation: sourceLocation)
