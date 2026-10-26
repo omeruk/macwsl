@@ -1,45 +1,54 @@
 import Foundation
 import MawCore
+import MawProtocol
 import Testing
 
 @testable import MawXPC
 
 /// `Launchctl.run`, with programs other than launchctl standing in for it.
 @Suite struct LaunchctlTests {
-    @Test func returnsTheStatusAndTheOutputOfAProgramThatExits() throws {
+    /// `Launchctl.run` on a thread of its own: it waits for the program.
+    static func run(_ arguments: [String], executable: String, timeout: Duration = .seconds(10))
+        async throws(MawError) -> (status: Int32, output: String)
+    {
+        try await runOnDedicatedThread { () throws(MawError) in
+            try Launchctl.run(arguments, executable: executable, timeout: timeout)
+        }
+    }
+
+    @Test func returnsTheStatusAndTheOutputOfAProgramThatExits() async throws {
         // More than a pipe holds, so that the program finishes only if its output is read
         // while it runs.
-        let result = try Launchctl.run(
+        let result = try await Self.run(
             ["-c", "echo error >&2; head -c 300000 /dev/zero | tr '\\\\0' a"],
-            executable: "/bin/sh", timeout: .seconds(10))
+            executable: "/bin/sh")
         #expect(result.status == 0)
         #expect(result.output.hasPrefix("error\n"))
         #expect(result.output.utf8.count == 6 + 300_000)
     }
 
-    @Test func returnsANonZeroStatus() throws {
-        let result = try Launchctl.run(
-            ["-c", "echo refused; exit 3"], executable: "/bin/sh", timeout: .seconds(10))
+    @Test func returnsANonZeroStatus() async throws {
+        let result = try await Self.run(["-c", "echo refused; exit 3"], executable: "/bin/sh")
         #expect(result.status == 3)
         #expect(result.output == "refused\n")
     }
 
-    @Test func reportsAProgramEndedByASignal() throws {
-        let result = try Launchctl.run(
-            ["-c", "kill -TERM $$"], executable: "/bin/sh", timeout: .seconds(10))
+    @Test func reportsAProgramEndedByASignal() async throws {
+        let result = try await Self.run(["-c", "kill -TERM $$"], executable: "/bin/sh")
         #expect(result.status == 128 + SIGTERM)
     }
 
-    @Test func killsAProgramThatDoesNotFinishInTime() throws {
+    @Test func killsAProgramThatDoesNotFinishInTime() async throws {
         // A duration of its own, so that pgrep finds this sleep and no other.
         let duration = "1000.\(Int.random(in: 100_000...999_999))"
         let started = ContinuousClock.now
-        #expect(throws: MawError.launchctlTimedOut(command: "sleep \(duration)", seconds: 1)) {
-            _ = try Launchctl.run([duration], executable: "/bin/sleep", timeout: .seconds(1))
+        await #expect(throws: MawError.launchctlTimedOut(command: "sleep \(duration)", seconds: 1))
+        {
+            _ = try await Self.run([duration], executable: "/bin/sleep", timeout: .seconds(1))
         }
         #expect(ContinuousClock.now - started < .seconds(5))
-        let search = try Launchctl.run(
-            ["-f", "^/bin/sleep \(duration)$"], executable: "/usr/bin/pgrep", timeout: .seconds(10))
+        let search = try await Self.run(
+            ["-f", "^/bin/sleep \(duration)$"], executable: "/usr/bin/pgrep")
         #expect(search.status == 1, "The program is still running: \(search.output)")
     }
 

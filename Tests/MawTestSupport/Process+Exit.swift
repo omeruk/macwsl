@@ -15,7 +15,14 @@ extension Process {
         while isRunning && ContinuousClock.now < deadline && !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(10))
         }
-        return reapOrKill()
+        guard isRunning else { return true }
+        // As `reapOrKill`, but sleeping without holding a thread of the cooperative pool.
+        kill(processIdentifier, SIGKILL)
+        let killed = ContinuousClock.now + .seconds(5)
+        while isRunning && ContinuousClock.now < killed {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
     }
 
     /// `waitForExit(within:)` for code that cannot wait asynchronously, such as a `deinit`.
