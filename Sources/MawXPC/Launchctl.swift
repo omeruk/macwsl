@@ -181,21 +181,19 @@
             for pid: pid_t, reading reader: Int32, into output: inout [UInt8], queue: Int32,
             until deadline: ContinuousClock.Instant, command: String
         ) throws(MawError) -> Int32? {
-            var changes = [
-                Darwin.kevent(
-                    ident: UInt(reader), filter: Int16(EVFILT_READ), flags: UInt16(EV_ADD),
-                    fflags: 0, data: 0, udata: nil),
-                Darwin.kevent(
-                    ident: UInt(pid), filter: Int16(EVFILT_PROC),
-                    flags: UInt16(EV_ADD | EV_ONESHOT), fflags: NOTE_EXIT, data: 0, udata: nil),
-            ]
-            // If the process has already exited, registering NOTE_EXIT may fail; `waitpid`
-            // below finds the exit either way.
-            for index in changes.indices {
-                _ = kevent(queue, &changes[index], 1, nil, 0, nil)
-            }
+            var readable = Darwin.kevent(
+                ident: UInt(reader), filter: Int16(EVFILT_READ), flags: UInt16(EV_ADD),
+                fflags: 0, data: 0, udata: nil)
+            _ = kevent(queue, &readable, 1, nil, 0, nil)
+            var exit = Darwin.kevent(
+                ident: UInt(pid), filter: Int16(EVFILT_PROC), flags: UInt16(EV_ADD | EV_ONESHOT),
+                fflags: NOTE_EXIT, data: 0, udata: nil)
 
             var status: Int32?
+            // Registering NOTE_EXIT fails with ESRCH for a process that has already exited.
+            if kevent(queue, &exit, 1, nil, 0, nil) < 0 && errno == ESRCH {
+                status = try exitStatus(of: pid, command: command, waiting: true)
+            }
             var atEnd = false
             var buffer = [UInt8](repeating: 0, count: 16 << 10)
             while true {
@@ -211,9 +209,17 @@
                     tv_sec: Int(remaining.components.seconds),
                     tv_nsec: Int(remaining.components.attoseconds / 1_000_000_000))
                 var event = Darwin.kevent()
-                guard kevent(queue, nil, 0, &event, 1, &limit) > 0,
-                    event.filter == Int16(EVFILT_READ)
-                else { continue }
+                guard kevent(queue, nil, 0, &event, 1, &limit) > 0 else { continue }
+                if event.filter == Int16(EVFILT_PROC) {
+                    // NOTE_EXIT can arrive before `waitpid` with WNOHANG finds the exit, and it
+                    // arrives only once: without a waiting `waitpid` here, the loop would wait
+                    // for events until `deadline` although the process has exited.
+                    if status == nil {
+                        status = try exitStatus(of: pid, command: command, waiting: true)
+                    }
+                    continue
+                }
+                guard event.filter == Int16(EVFILT_READ) else { continue }
                 let count = buffer.withUnsafeMutableBytes {
                     read(reader, $0.baseAddress, $0.count)
                 }
@@ -229,12 +235,17 @@
             }
         }
 
-        /// The exit status if `pid` has exited, reaping it; `nil` while it runs.
-        private static func exitStatus(of pid: pid_t, command: String) throws(MawError)
-            -> Int32?
+        /// The exit status if `pid` has exited, reaping it; `nil` while it runs. With
+        /// `waiting`, for a process that the kernel has reported as exited, waits until its
+        /// exit is complete.
+        private static func exitStatus(of pid: pid_t, command: String, waiting: Bool = false)
+            throws(MawError) -> Int32?
         {
             var raw: Int32 = 0
-            let result = waitpid(pid, &raw, WNOHANG)
+            var result: pid_t
+            repeat {
+                result = waitpid(pid, &raw, waiting ? 0 : WNOHANG)
+            } while waiting && result < 0 && errno == EINTR
             if result == pid {
                 return raw & 0x7F == 0 ? (raw >> 8) & 0xFF : 128 + (raw & 0x7F)
             }

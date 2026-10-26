@@ -109,6 +109,42 @@ import Testing
         }
     }
 
+    /// NOTE_EXIT can arrive before `waitpid` with WNOHANG finds the exit. `run` then waited
+    /// for events until its timeout although the program had exited, in about 1 of 1,500
+    /// calls, and returned the status late; a `launchctl print` from before a job's removal
+    /// then reported the job as still loaded. 6,000 short programs on four threads, each
+    /// with a 10-second timeout, must all return at once.
+    @Test(.timeLimit(.minutes(1)))
+    func returnsAsSoonAsTheProgramHasExited() async {
+        let durations = await withTaskGroup(of: [Duration].self) { group in
+            for worker in 0..<4 {
+                group.addTask {
+                    await runOnDedicatedThread { () -> [Duration] in
+                        (0..<1500).map { index in
+                            let started = ContinuousClock.now
+                            if (index + worker).isMultiple(of: 2) {
+                                _ = try? Launchctl.run(
+                                    [], executable: "/usr/bin/true", timeout: .seconds(10))
+                            } else {
+                                _ = try? Launchctl.run(
+                                    ["print", "\(Launchctl.domain)/dev.maw.no-such-service"],
+                                    timeout: .seconds(10))
+                            }
+                            return ContinuousClock.now - started
+                        }
+                    }
+                }
+            }
+            var all: [Duration] = []
+            for await some in group {
+                all += some
+            }
+            return all
+        }
+        let slow = durations.filter { $0 > .seconds(2) }
+        #expect(slow.isEmpty, "\(slow.count) of \(durations.count) calls took over 2 s: \(slow)")
+    }
+
     @Test func reportsAProgramThatCannotBeStarted() {
         #expect {
             _ = try Launchctl.run([], executable: "/nonexistent/launchctl", timeout: .seconds(10))
