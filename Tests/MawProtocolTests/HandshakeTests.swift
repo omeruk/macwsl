@@ -30,26 +30,31 @@ import Testing
     }
 
     /// The client's request follows its version at once, without waiting for the agent's, which
-    /// would cost a round trip. This peer answers nothing before it has both frames; a client
-    /// that waited for the peer's version would time out.
+    /// would cost a round trip. This peer answers nothing before it has both frames, and replies
+    /// `dialedBack` only if they are the version and the request; a client that waited for the
+    /// peer's version would time out.
     @Test func clientSendsItsRequestWithoutWaitingForTheAgentsVersion() async throws {
         let (host, peer) = try Self.socketPair()
-        let client = GuestAgentClient(replyTimeout: .seconds(2)) { () throws(MawError) in host }
+        let client = GuestAgentClient(replyTimeout: .seconds(5)) { () throws(MawError) in host }
         let nonce = DialBackNonce.random()
-        async let received = runOnDedicatedThread { () -> (UInt32?, ControlMessage?) in
-            guard let connection = try? FrameConnection(peer) else { return (nil, nil) }
-            let deadline = ContinuousClock.now + .seconds(5)
+        // A thread of its own, running before the client starts, so that a busy cooperative
+        // pool cannot delay the peer past the client's timeout.
+        startDetachedThread {
+            guard let connection = try? FrameConnection(peer) else { return }
+            let deadline = ContinuousClock.now + .seconds(10)
             let version = try? connection.receiveFrame(until: deadline).protocolVersion()
             let request = try? connection.receiveControl(until: deadline, expecting: "a request")
             connection.enqueue(.version())
-            connection.enqueue(.control(.dialedBack))
+            if version == ProtocolVersion.current && request == .dialBack(nonce) {
+                connection.enqueue(.control(.dialedBack))
+            } else {
+                connection.enqueue(
+                    .control(.error(AgentError(.protocolViolation, "not a version and dialBack"))))
+            }
             try? connection.flush(until: deadline)
-            return (version, request)
+            peer.close()
         }
         try await client.dialBack(nonce)
-        let (version, request) = await received
-        #expect(version == ProtocolVersion.current)
-        #expect(request == .dialBack(nonce))
     }
 
     @Test func clientReportsAGuestWithAnotherVersion() async throws {
