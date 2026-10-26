@@ -38,8 +38,10 @@ import Darwin
 import Foundation
 import Virtualization
 
-let agentPort: UInt32 = 19799
-let protocolVersion: UInt32 = 2
+// scripts/measure-vsock-buffer.sh compiles this file together with
+// Sources/MawProtocol/ProtocolVersion.swift, so that it speaks the agent's current protocol.
+let agentPort = AgentProtocol.vsockPort
+let protocolVersion = ProtocolVersion.current
 let chunkSize = 8192
 let chunkCount = 2048
 

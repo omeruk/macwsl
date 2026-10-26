@@ -39,7 +39,11 @@ done
 work=$(mktemp -d "${TMPDIR:-/tmp}/maw-vsock-buffer.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
-xcrun swiftc -O -swift-version 5 -o "$work/measure-vsock-buffer" scripts/measure-vsock-buffer.swift
+# With the protocol's constants, so that the tool sends the current version. Only main.swift may
+# hold top-level code when several files are compiled together.
+cp scripts/measure-vsock-buffer.swift "$work/main.swift"
+xcrun swiftc -O -swift-version 5 -o "$work/measure-vsock-buffer" "$work/main.swift" \
+    Sources/MawProtocol/ProtocolVersion.swift
 codesign --force --sign - --entitlements Resources/mawd.entitlements "$work/measure-vsock-buffer" \
     2> /dev/null
 if [ -n "$inspect" ]; then
