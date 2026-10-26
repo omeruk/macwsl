@@ -33,8 +33,11 @@ Option 3, as `mawd install` and `mawd uninstall`:
   daemon on the first connection, and an idle daemon exits.
 - `mawd install` is idempotent. When the agent is already loaded, it is unloaded with
   `launchctl bootout`, which stops the daemon with SIGTERM, and loaded again, so that a rebuilt
-  `mawd` takes effect. `bootstrap` is retried for up to five seconds, because launchd may still
-  be removing the previous job.
+  `mawd` takes effect. `bootout` returns before launchd has removed the job, and until then
+  launchd refuses a `bootstrap` of the same label ("Bootstrap failed: 5: Input/output error").
+  `mawd install` therefore waits, for up to 30 seconds, until `launchctl print` no longer finds
+  the job, and then runs `bootstrap` once; if the job is still there, it fails with
+  `launchAgentNotRemoved`. `mawd uninstall` waits in the same way.
 - `mawd uninstall` asks a running daemon to stop its machines, unloads the agent, and removes
   the plist. The logs are kept.
 - Hidden options (`--label`, `--log-directory`, `--machine-idle-timeout`,

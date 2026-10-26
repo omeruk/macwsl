@@ -43,6 +43,47 @@ import Testing
         #expect(search.status == 1, "The program is still running: \(search.output)")
     }
 
+    /// `bootout` returns while launchd still lists the job; the wait ends once it does not.
+    @Test func waitsUntilLaunchdNoLongerListsTheJob() async throws {
+        var answers = [true, true, true, false]
+        try await Launchctl.waitUntilRemoved(
+            service: "gui/501/test", timeout: .seconds(10), interval: .milliseconds(1)
+        ) { () throws(MawError) in answers.removeFirst() }
+        #expect(answers.isEmpty)
+    }
+
+    @Test func doesNotWaitForAJobThatIsGone() async throws {
+        var asked = 0
+        try await Launchctl.waitUntilRemoved(
+            service: "gui/501/test", timeout: .seconds(10), interval: .seconds(10)
+        ) { () throws(MawError) in
+            asked += 1
+            return false
+        }
+        #expect(asked == 1)
+    }
+
+    @Test func reportsAJobThatLaunchdDoesNotRemoveInTime() async {
+        let started = ContinuousClock.now
+        await #expect(throws: MawError.launchAgentNotRemoved(service: "gui/501/test", seconds: 1)) {
+            try await Launchctl.waitUntilRemoved(
+                service: "gui/501/test", timeout: .seconds(1), interval: .milliseconds(50)
+            ) { () throws(MawError) in true }
+        }
+        let waited = ContinuousClock.now - started
+        #expect(waited >= .seconds(1) && waited < .seconds(5))
+    }
+
+    @Test func passesOnAnErrorFromLaunchctl() async {
+        let failure = MawError.launchctlTimedOut(
+            command: "launchctl print gui/501/test", seconds: 60)
+        await #expect(throws: failure) {
+            try await Launchctl.waitUntilRemoved(
+                service: "gui/501/test", timeout: .seconds(10), interval: .milliseconds(1)
+            ) { () throws(MawError) in throw failure }
+        }
+    }
+
     @Test func reportsAProgramThatCannotBeStarted() {
         #expect {
             _ = try Launchctl.run([], executable: "/nonexistent/launchctl", timeout: .seconds(10))

@@ -30,6 +30,42 @@
             try check(["bootout", "\(domain)/\(label)"])
         }
 
+        /// How long `waitUntilRemoved` waits: longer than the 20 seconds after which launchd
+        /// kills a job's program that has not exited on SIGTERM.
+        public static let removalTimeout = Duration.seconds(30)
+
+        /// Waits until launchd no longer has a job with `label`. `bootout` returns before
+        /// launchd has removed the job: launchd keeps it while its program exits, and until
+        /// then refuses to load the label again ("Bootstrap failed: 5: Input/output error").
+        /// Throws `launchAgentNotRemoved` if the job is still there after `timeout`.
+        public static func waitUntilRemoved(
+            _ label: String, timeout: Duration = removalTimeout
+        ) async throws(MawError) {
+            try await waitUntilRemoved(
+                service: "\(domain)/\(label)", timeout: timeout, interval: .milliseconds(50)
+            ) { () throws(MawError) in try isLoaded(label) }
+        }
+
+        /// `waitUntilRemoved`, with `isLoaded` asked every `interval`.
+        static func waitUntilRemoved(
+            service: String, timeout: Duration, interval: Duration,
+            isLoaded: () throws(MawError) -> Bool
+        ) async throws(MawError) {
+            let deadline = ContinuousClock.now + timeout
+            while try isLoaded() {
+                guard ContinuousClock.now < deadline else {
+                    throw .launchAgentNotRemoved(
+                        service: service, seconds: Int(timeout.components.seconds))
+                }
+                do {
+                    try await Task.sleep(for: interval)
+                } catch {
+                    throw .launchAgentFailed(
+                        reason: "the wait for launchd to remove \(service) was cancelled")
+                }
+            }
+        }
+
         private static func check(_ arguments: [String]) throws(MawError) {
             let result = try run(arguments)
             guard result.status == 0 else {

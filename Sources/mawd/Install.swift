@@ -23,9 +23,6 @@ struct Install: AsyncParsableCommand {
             """
     )
 
-    /// How long `bootstrap` is retried while launchd still removes the previous job.
-    static let bootstrapRetryTimeout = Duration.seconds(5)
-
     @OptionGroup var settings: DaemonSettings
 
     func run() async throws {
@@ -56,10 +53,12 @@ struct Install: AsyncParsableCommand {
 
         let replaced = try Launchctl.isLoaded(settings.label)
         if replaced {
-            // The daemon receives SIGTERM and stops its machines cleanly first.
+            // The daemon receives SIGTERM and stops its machines cleanly first. launchd keeps
+            // the job until the daemon has exited, and refuses to load it again before that.
             try Launchctl.bootout(settings.label)
+            try await Launchctl.waitUntilRemoved(settings.label)
         }
-        try await bootstrap(plist)
+        try Launchctl.bootstrap(plist)
 
         print(
             replaced
@@ -71,21 +70,6 @@ struct Install: AsyncParsableCommand {
             print(
                 "warning: this mawd is not signed with the virtualization entitlement, so "
                     + "sessions will fail. Run scripts/sign-dev.sh, then mawd install again.")
-        }
-    }
-
-    /// `launchctl bootstrap`, retried briefly: right after `bootout`, launchd may still be
-    /// removing the previous job and refuse the new one.
-    private func bootstrap(_ plist: URL) async throws {
-        let deadline = ContinuousClock.now + Self.bootstrapRetryTimeout
-        while true {
-            do throws(MawError) {
-                try Launchctl.bootstrap(plist)
-                return
-            } catch {
-                guard ContinuousClock.now < deadline else { throw error }
-                try await Task.sleep(for: .milliseconds(100))
-            }
         }
     }
 }
@@ -128,9 +112,10 @@ struct Uninstall: AsyncParsableCommand {
                 }
             }
             try Launchctl.bootout(label)
+            try await Launchctl.waitUntilRemoved(label)
         }
-        // bootout can return while the daemon is still exiting; its lock is released when it
-        // has.
+        // The kernel releases the lock when the daemon exits, which has happened by the time
+        // launchd has removed the job.
         let lock = paths.daemonLockFile(label: label)
         let deadline = ContinuousClock.now + .seconds(5)
         while DaemonLock.isHeld(at: lock) && ContinuousClock.now < deadline {
