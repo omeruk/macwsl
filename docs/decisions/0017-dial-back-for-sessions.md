@@ -211,16 +211,39 @@ reinstalled from each build in turn, in 12 blocks in the order ABBA (load averag
 
 - **The 2 ms of a warm session** are the `dialBack` exchange. In a build with temporary timing
   in the daemon (8 blocks of 50 sessions), opening a session took a median of 505 µs with
-  host-opened sessions and 2,285 µs with the dial-back: 1,998 µs until the agent's
-  `dialedBack` reply, which includes the request connection, its version exchange, and the
-  agent's dial, and 82 µs more until the dialed connection was in hand. How the 1,998 µs
-  divide between those steps was not measured.
+  host-opened sessions and 2,285 µs with the dial-back. Timing on both sides, each step taken
+  with its own side's clock, divided the exchange as follows (200 warm sessions, load average
+  2.1 to 2.5):
+
+  | Step, on the host | Median | 95th percentile |
+  |---|---|---|
+  | Opening the request connection, 306 µs of it in the framework | 476 µs | 886 µs |
+  | Starting a thread for the conversation | 90 µs | 183 µs |
+  | Version exchange | 220 µs | 347 µs |
+  | `dialBack` request to `dialedBack` reply | 806 µs | 1,374 µs |
+  | Back from the thread to the daemon's task | 80 µs | 234 µs |
+  | Until the dialed connection is in hand | 30 µs | 130 µs |
+  | Total | 1,809 µs | 3,278 µs |
+
+  In the agent, 262 µs passed from accepting the request connection to sending its version
+  (starting a thread and setting up the connection), and 429 µs from the request to the reply,
+  324 µs of them in its connection to the host, the daemon's admission included. It also
+  waited 195 µs for the request after the version exchange, because the host sent the request
+  only once the agent's version had arrived. Since `bd9b5fc` the host sends the request with
+  its version: in a block-interleaved comparison of timed builds, the agent's wait fell from
+  154 to 85 µs and the exchange from 1,880 to 1,829 µs, and warm `maw -e true` did not change
+  measurably. The rest is the cost of a second connection per session: the framework's
+  connect, a thread on each side, and the conversation on it.
 - **The output cost lies in the transport.** With no maw code involved, a test program in the
   guest wrote 1.3 GB to a host process that read at once, 7 times in each direction,
   alternately: a median of 1,281 ms (1,015 MB/s) on connections that the host opened, and
   2,137 ms (608 MB/s) on connections that the guest opened. Virtualization.framework carries a
   guest-opened connection about 40 % slower; through maw the difference is 22 %. Why the
-  framework is slower in this direction is not established.
+  framework is slower in this direction is not established. Varying the guest's write size
+  (8 KiB to 1 MiB), its `SO_VM_SOCKETS_BUFFER_SIZE` (64 KiB to 4 MiB), the host's read size
+  (8 KiB to 1 MiB), or the host's `SO_RCVBUF` (4 MiB) left guest-opened connections 1.49 to
+  1.85 times slower than host-opened ones under the same settings, and the host's descriptors
+  of both kinds report the same buffer sizes.
 
 ## Consequences
 
