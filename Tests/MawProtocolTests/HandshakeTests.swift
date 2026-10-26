@@ -103,6 +103,39 @@ import Testing
         }
     }
 
+    /// An agent of another version that has answered and closed the connection before the
+    /// client writes: the client's write fails, and it still reports the mismatch from the
+    /// frames that arrived.
+    @Test(arguments: [false, true])
+    func clientReportsAMismatchAfterItsWriteFails(largeRequest: Bool) async throws {
+        let (host, peer) = try Self.socketPair()
+        let earlier = ProtocolVersion.current - 1
+        let agent = try FrameConnection(peer)
+        agent.enqueue(.version(earlier))
+        agent.enqueue(
+            .control(
+                .error(
+                    AgentError(
+                        .versionMismatch, "mismatch", hostVersion: ProtocolVersion.current,
+                        guestVersion: earlier))))
+        try agent.flush(until: .now + .seconds(5))
+        peer.close()
+
+        let client = GuestAgentClient(replyTimeout: .seconds(5)) { () throws(MawError) in host }
+        await #expect(
+            throws: MawError.guestAgentVersionMismatch(
+                host: ProtocolVersion.current, guest: earlier)
+        ) {
+            if largeRequest {
+                // More than the socket holds, so that the request needs several writes.
+                let argument = String(repeating: "a", count: 512 << 10)
+                _ = try await client.exec(ExecRequest(argv: ["echo", argument])) { _, _ in }
+            } else {
+                _ = try await client.info()
+            }
+        }
+    }
+
     /// `dialBack` against the agent's server: the agent dials, sends the nonce first on the
     /// dialed connection, and replies `dialedBack`.
     @Test func asksTheAgentToDialBack() async throws {
