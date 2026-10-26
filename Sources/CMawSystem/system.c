@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <limits.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -261,7 +262,18 @@ __attribute__((noreturn)) static void spawn_child(const maw_spawn_options *optio
     // that its permissions apply.
     if (options->set_credentials) {
         failure.stage = MAW_SPAWN_STAGE_CREDENTIALS;
-        if (setgroups(options->group_count, options->groups) < 0 || setgid(options->gid) < 0 ||
+#if defined(__linux__)
+        size_t group_count = options->group_count;
+#else
+        // macOS takes the count as an int. A count that does not fit is refused rather than
+        // truncated; the kernel refuses any count above NGROUPS_MAX with EINVAL as well.
+        if (options->group_count > INT_MAX) {
+            errno = EINVAL;
+            goto fail;
+        }
+        int group_count = (int)options->group_count;
+#endif
+        if (setgroups(group_count, options->groups) < 0 || setgid(options->gid) < 0 ||
             setuid(options->uid) < 0) {
             goto fail;
         }
