@@ -78,7 +78,8 @@ struct FreezeIntegrationTests {
         try await expectOutputContinues(reader)
         session.type([0x03])
         let status = await session.waitForExit(timeout: .seconds(30))
-        #expect(status == 130)
+        // A terminal session's error messages arrive on the terminal, so the reader holds them.
+        #expect(status == 130, "\(reader.progress)")
         try await expectSessionEnded()
     }
 
@@ -321,7 +322,12 @@ struct FreezeIntegrationTests {
             await reader.waitForLines(target, timeout: .seconds(30)), "\(reader.progress)",
             sourceLocation: sourceLocation)
         // Taken before the session ends: Ctrl-C adds "^C" to a terminal's output.
-        let progress = reader.progress
+        var progress = reader.progress
+        if progress.error != nil {
+            // What arrived instead of the sequence, such as an error message, up to its end.
+            await reader.waitForCapture()
+            progress = reader.progress
+        }
         #expect(progress.error == nil, "\(progress)", sourceLocation: sourceLocation)
     }
 
