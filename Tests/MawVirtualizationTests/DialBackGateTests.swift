@@ -305,6 +305,29 @@ import os
         #expect(gate.admit(sourcePort: 1023) == .noPendingRequest)
     }
 
+    /// A session whose nonce expired while it waited learns so when another session registers
+    /// its nonce first: the expiry that `expect()` performs resumes the waiter it removes.
+    @Test func endsAnExpiredWaitWhenAnotherSessionRegisters() async throws {
+        let gate = TestGate()
+        let first = try gate.gate.expect()
+        let ended = Locked<OwnedDescriptor??>(nil)
+        Task {
+            let descriptor = await gate.gate.connection(for: first)
+            ended.update { $0 = .some(descriptor) }
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        gate.clock.advance(by: .seconds(6))
+        let second = try gate.gate.expect()
+        defer { gate.gate.cancel(second) }
+        // The first wait's own expiry sleeps 5 s of real time; this one must end well before.
+        let deadline = ContinuousClock.now + .seconds(2)
+        while ended.value == nil && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let result = try #require(ended.value, "the first wait has not ended")
+        #expect(result == nil)
+    }
+
     @Test func endsTheWaitWhenTheTaskIsCancelled() async throws {
         let gate = TestGate()
         let pending = try gate.gate.expect()
@@ -406,6 +429,7 @@ import os
         #expect(ContinuousClock.now - started >= .milliseconds(300))
         #expect(agent.connections.value == 1)
     }
+
 }
 
 // MARK: Support

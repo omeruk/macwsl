@@ -153,22 +153,27 @@
         /// Registers a new nonce for a session's `dialBack` request.
         public func expect() throws(MawError) -> Pending {
             let instant = now()
-            let result: Result<Pending, MawError> = state.withLock { state in
+            let (result, waiters) = state.withLock {
+                state -> (Result<Pending, MawError>, [Waiter]) in
                 guard !state.isClosed else {
-                    return .failure(
-                        .guestAgentUnavailable(reason: "the virtual machine is not running"))
+                    return (
+                        .failure(
+                            .guestAgentUnavailable(reason: "the virtual machine is not running")),
+                        []
+                    )
                 }
-                Self.expire(&state, at: instant)
+                let waiters = Self.expire(&state, at: instant)
                 guard state.pending.count < limits.pendingRequests else {
-                    return .failure(.sessionDialBackBusy(limit: limits.pendingRequests))
+                    return (.failure(.sessionDialBackBusy(limit: limits.pendingRequests)), waiters)
                 }
                 let pending = Pending(
                     id: state.nextID, nonce: .random(), expiry: instant + limits.nonceLifetime)
                 state.nextID += 1
                 state.pending.append(
                     Entry(id: pending.id, nonce: pending.nonce, expiry: pending.expiry))
-                return .success(pending)
+                return (.success(pending), waiters)
             }
+            Self.resume(waiters)
             return try result.get()
         }
 
@@ -385,7 +390,6 @@
         private typealias Waiter = CheckedContinuation<OwnedDescriptor?, Never>
 
         /// Removes expired nonces and returns their waiters, to be resumed outside the lock.
-        @discardableResult
         private static func expire(_ state: inout State, at instant: ContinuousClock.Instant)
             -> [Waiter]
         {
