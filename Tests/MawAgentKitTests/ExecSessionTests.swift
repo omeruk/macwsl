@@ -161,7 +161,11 @@ import Testing
     /// blocks, as `maw`'s write to a standard output that nobody reads does; before, it blocked
     /// the client's I/O thread, and the signal was never sent. The process's trap creates a
     /// file, so that the test sees the signal arrive without reading any output.
-    @Test(.timeLimit(.minutes(1)), arguments: [nil, TerminalSize(rows: 24, columns: 80)])
+    ///
+    /// The cases run one after the other: each keeps a `yes` at full CPU, and two at once on a
+    /// small CI runner delayed the signal to about 200 ms.
+    @Test(
+        .serialized, .timeLimit(.minutes(1)), arguments: [nil, TerminalSize(rows: 24, columns: 80)])
     func deliversASignalWhileTheOutputIsNotRead(terminal: TerminalSize?) async throws {
         let marker = "/tmp/maw-test-signal-\(getpid())-\(UInt32.random(in: 0...UInt32.max))"
         defer { unlink(marker) }
