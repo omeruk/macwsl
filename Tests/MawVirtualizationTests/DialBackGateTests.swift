@@ -430,6 +430,36 @@ import os
         #expect(agent.connections.value == 1)
     }
 
+    /// The nonce's lifetime starts once the host's connection to the agent exists: a connect
+    /// that takes longer than the lifetime does not make the dial arrive too late.
+    @Test func startsTheNonceLifetimeAfterTheConnect() async throws {
+        var limits = DialBackGate.Limits()
+        limits.nonceLifetime = .milliseconds(300)
+        let gate = DialBackGate(limits: limits) { _ in }
+        let agent = FakeAgent(gate: gate, reply: .dial, connectDelay: .milliseconds(500))
+        let descriptor = try await gate.openSessionConnection(through: agent.client)
+        #expect(
+            try SocketPair.readExactly(descriptor.rawValue, count: 9) == Frame.version().encoded)
+    }
+
+    /// When no nonce can be registered, no request reaches the agent.
+    @Test func sendsNoRequestWhenEverySessionPlaceIsTaken() async throws {
+        let gate = TestGate()
+        for _ in 0..<gate.gate.limits.pendingRequests {
+            _ = try gate.gate.expect()
+        }
+        let agent = FakeAgent(gate: gate.gate, reply: .dial)
+        await #expect(throws: MawError.sessionDialBackBusy(limit: 64)) {
+            _ = try await gate.gate.openSessionConnection(through: agent.client)
+        }
+        #expect(agent.connections.value == 1)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while agent.served.value < 1 && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(agent.served.value == 1)
+        #expect(agent.requests.value.isEmpty)
+    }
 }
 
 // MARK: Support
@@ -532,22 +562,35 @@ private final class FakeAgent: Sendable {
 
     let gate: DialBackGate
     let reply: Reply
+    /// How long each connection to the agent takes to open.
+    let connectDelay: Duration
     let requests = Locked<[ControlMessage]>([])
     let nonces = Locked<[DialBackNonce]>([])
     let connections = Locked(0)
+    /// Connections the agent has finished with.
+    let served = Locked(0)
     private let dialed = Locked<[SocketPair]>([])
 
-    init(gate: DialBackGate, reply: Reply) {
+    init(gate: DialBackGate, reply: Reply, connectDelay: Duration = .zero) {
         self.gate = gate
         self.reply = reply
+        self.connectDelay = connectDelay
     }
 
     var client: GuestAgentClient {
         GuestAgentClient(replyTimeout: .seconds(5)) { [self] () throws(MawError) in
+            if connectDelay > .zero {
+                try? await Task.sleep(for: connectDelay)
+            }
             var descriptors: [Int32] = [-1, -1]
             guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else {
                 throw .guestAgentUnavailable(reason: "socketpair failed")
             }
+            // Before the client can close its end: once it has, macOS refuses SO_NOSIGPIPE,
+            // and the agent's first write would raise SIGPIPE in the test process.
+            var on: Int32 = 1
+            _ = setsockopt(
+                descriptors[1], SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
             connections.update { $0 += 1 }
             let agentSide = OwnedDescriptor(descriptors[1])
             startDetachedThread { [self] in serve(agentSide) }
@@ -556,7 +599,10 @@ private final class FakeAgent: Sendable {
     }
 
     private func serve(_ descriptor: OwnedDescriptor) {
-        defer { descriptor.close() }
+        defer {
+            descriptor.close()
+            served.update { $0 += 1 }
+        }
         let deadline = ContinuousClock.now + .seconds(5)
         guard let connection = try? FrameConnection(descriptor),
             (try? connection.exchangeVersions(until: deadline)) != nil,

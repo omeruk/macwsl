@@ -129,19 +129,30 @@
 
         // MARK: Sessions
 
-        /// Opens a session's connection: registers a nonce, asks the agent through `client` to
-        /// dial back with it, and returns the connection that the agent dialed, positioned after
-        /// the nonce frame. There is no fallback to a connection that the host opens, whose
-        /// unread output would stall the machine's vsock device (docs/protocol.md).
+        /// Opens a session's connection: once `client`'s connection to the agent exists,
+        /// registers a nonce and asks the agent to dial back with it, then returns the
+        /// connection that the agent dialed, positioned after the nonce frame. The nonce's
+        /// lifetime therefore starts after the connect, however long the connect takes. There
+        /// is no fallback to a connection that the host opens, whose unread output would stall
+        /// the machine's vsock device (docs/protocol.md).
         public func openSessionConnection(through client: GuestAgentClient)
             async throws(MawError) -> OwnedDescriptor
         {
-            let pending = try expect()
+            var registered: Pending?
             do {
-                try await client.dialBack(pending.nonce)
+                try await client.dialBack { () throws(MawError) -> DialBackNonce in
+                    let pending = try expect()
+                    registered = pending
+                    return pending.nonce
+                }
             } catch {
-                cancel(pending)
+                if let registered {
+                    cancel(registered)
+                }
                 throw error
+            }
+            guard let pending = registered else {
+                throw .sessionDialBackFailed(reason: "the request was sent without a nonce")
             }
             guard let descriptor = await connection(for: pending) else {
                 throw .sessionDialBackMissing(

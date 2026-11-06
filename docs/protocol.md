@@ -169,8 +169,10 @@ host                                    agent
    from an accepted connection, within 2 seconds, and nothing more, so that the rest is left
    for whoever runs the session. A connection whose frame does not arrive in time, is
    malformed, or carries a nonce that no session waits for is closed (`DialBackGate`).
-5. The host keeps a session's nonce for 5 seconds from the request, and for at most 64
-   sessions per machine, the agent's connection limit. A nonce is used once, compared in
+5. The host draws and registers a session's nonce once its connection to the agent exists,
+   just before it sends `dialBack`, so that the time the connect takes does not count. It
+   keeps the nonce for 5 seconds from then, and for at most 64 sessions per machine, the
+   agent's connection limit. A nonce is used once, compared in
    constant time, and never logged. Refusals go to the machine's console log, at most 5 in
    10 seconds.
 6. If the agent replies `dialBackFailed`, or replies `dialedBack` but no connection with the

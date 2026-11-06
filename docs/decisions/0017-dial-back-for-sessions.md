@@ -70,9 +70,11 @@ The first three keep host-opened connections and add a window for the output dir
    machine's vsock device for port **19800** (`AgentProtocol.dialBackPort`). It sets the
    listener when the machine reaches the running state, and removes it when the machine stops
    (`VirtualMachine.listenForDialBacks`, `didStop`).
-3. **The request.** For each session, the host opens a connection to the agent, exchanges
-   versions, and sends `dialBack` with a nonce of **32 bytes**
-   (`AgentProtocol.dialBackNonceSize`) from the system's random number generator. The agent
+3. **The request.** For each session, the host opens a connection to the agent, then draws
+   a nonce of **32 bytes** (`AgentProtocol.dialBackNonceSize`) from the system's random
+   number generator and registers it, exchanges versions, and sends `dialBack` with it. The
+   nonce is registered only once the connection exists, so that a slow connect does not use
+   up its lifetime (`DialBackGate.openSessionConnection`). The agent
    binds the highest free source port below 1024, counting down from 1023 and skipping ports
    in use, connects to port 19800 within **2 seconds**, queues a `dialBackNonce` frame as the
    connection's first frame, replies `dialedBack`, and serves the dialed connection like a
@@ -81,7 +83,7 @@ The first three keep host-opened connections and add a window for the output dir
    "Dial-back").
 4. **The nonce is the boundary.** The host gives the connection to a session only if its first
    frame carries a nonce that a session of that machine waits for. A nonce is used once, is
-   valid for **5 seconds** from the request, is compared in constant time, and is never logged.
+   valid for **5 seconds** from its registration, is compared in constant time, and is never logged.
    The source port below 1024 only filters (docs/security.md).
 5. **The input window of 0016 stays.** It keeps `signal` and `resize` moving while the guest
    process does not read its input; the direction of the connection does not change that. The

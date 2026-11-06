@@ -77,7 +77,23 @@ public struct GuestAgentClient: Sendable {
     /// `nonce`. Returns once the agent reports that it connected; the host's listener receives
     /// the connection.
     public func dialBack(_ nonce: DialBackNonce) async throws(MawError) {
+        try await dialBack(registering: { nonce })
+    }
+
+    /// Like `dialBack(_:)`, with the nonce that `register` returns. `register` runs once the
+    /// connection to the agent exists, just before the request is sent, so that a nonce's
+    /// lifetime does not include the time the connect takes. If it throws, nothing is sent.
+    public func dialBack(
+        registering register: () throws(MawError) -> DialBackNonce
+    ) async throws(MawError) {
         let descriptor = try await connect()
+        let nonce: DialBackNonce
+        do {
+            nonce = try register()
+        } catch {
+            descriptor.close()
+            throw error
+        }
         let timeout = replyTimeout
         try await runOnDedicatedThread { () throws(MawError) in
             try Self.mapErrors(during: "dialBack") { () throws(ConnectionError) in
