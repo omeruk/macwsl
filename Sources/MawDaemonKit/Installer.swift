@@ -110,7 +110,7 @@
             try Self.checkPassword(request.password)
 
             let key = name.rawValue.lowercased()
-            let staging = store.paths.stagingDirectory(for: name, id: UUID().uuidString)
+            let staging = store.stagingDirectory(for: name)
             active.insert(key)
             defer { active.remove(key) }
             log.notice("\(name): installation started for user \(user)")
@@ -240,14 +240,7 @@
         ) async throws(MawError) -> DistroMetadata {
             do throws(MawError) {
                 try await timed(.prepare, progress: progress) { () throws(MawError) in
-                    do {
-                        try FileManager.default.createDirectory(
-                            at: staging, withIntermediateDirectories: true)
-                    } catch {
-                        throw .provisioningFailed(
-                            step: "creating the distribution's directory",
-                            reason: error.localizedDescription)
-                    }
+                    try store.createStagingDirectory(staging)
                     try DiskImage.createSparse(at: disk, size: Self.diskSize)
                     try await machine.boot(disk: disk)
                 }
@@ -312,7 +305,7 @@
         }
 
         private func removeStaging(_ staging: URL) {
-            try? FileManager.default.removeItem(at: staging)
+            store.removeStagingDirectory(staging)
         }
 
         // MARK: Rules

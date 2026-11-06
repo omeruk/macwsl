@@ -42,16 +42,32 @@ public struct MawPaths: Sendable, Equatable {
         distroDirectory(for: name).appending(path: "distro.json", directoryHint: .notDirectory)
     }
 
-    /// `~/Library/Application Support/maw/distros/.staging-<name>-<id>`, where an installation
-    /// builds a distribution before it renames the directory to `distroDirectory(for:)`.
-    /// Distribution names cannot start with `.`, so it never collides with one.
-    public func stagingDirectory(for name: DistroName, id: String) -> URL {
-        distrosDirectory.appending(
-            path: "\(Self.stagingPrefix)\(name.rawValue)-\(id)", directoryHint: .isDirectory)
+    /// `~/Library/Application Support/maw/distros/.staging`, holding each daemon's staging
+    /// directories. Distribution names cannot start with `.`, so it never collides with one.
+    public var stagingRoot: URL {
+        distrosDirectory.appending(path: Self.stagingRootName, directoryHint: .isDirectory)
     }
 
-    /// The prefix of every staging directory's name.
-    public static let stagingPrefix = ".staging-"
+    /// `~/Library/Application Support/maw/distros/.staging/<label>`, the staging directories of
+    /// the daemon with `label`, which only that daemon creates and removes.
+    public func stagingDirectory(label: DaemonLabel) -> URL {
+        stagingRoot.appending(path: label.rawValue, directoryHint: .isDirectory)
+    }
+
+    /// `~/Library/Application Support/maw/distros/.staging/<label>/<name>-<id>`, where an
+    /// installation by the daemon with `label` builds a distribution before it renames the
+    /// directory to `distroDirectory(for:)`.
+    public func stagingDirectory(for name: DistroName, id: UUID, label: DaemonLabel) -> URL {
+        stagingDirectory(label: label).appending(
+            path: "\(name.rawValue)-\(id.uuidString)", directoryHint: .isDirectory)
+    }
+
+    /// The name of `stagingRoot`.
+    public static let stagingRootName = ".staging"
+
+    /// The prefix of the staging directories of earlier builds, `distros/.staging-<name>-<id>`,
+    /// which carried no label.
+    public static let legacyStagingPrefix = ".staging-"
 
     /// `~/Library/Application Support/maw/state.json`, the daemon's settings, such as the
     /// default distribution.

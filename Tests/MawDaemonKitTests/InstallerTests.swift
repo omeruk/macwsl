@@ -17,7 +17,8 @@ import os
     init() throws {
         home = FileManager.default.temporaryDirectory.appending(
             path: "maw-installer-\(UUID().uuidString)", directoryHint: .isDirectory)
-        store = DistributionStore(paths: MawPaths(homeDirectory: home))
+        store = DistributionStore(
+            paths: MawPaths(homeDirectory: home), daemonLabel: try DaemonLabel("dev.maw.mawd"))
         try FileManager.default.createDirectory(
             at: store.paths.distrosDirectory, withIntermediateDirectories: true)
     }
@@ -42,10 +43,18 @@ import os
             password: Secret(password), locale: "tr_TR.UTF-8")
     }
 
+    /// This daemon's staging directories, and anything else in `distros/.staging/`.
     var stagingDirectories: [String] {
-        ((try? FileManager.default.contentsOfDirectory(
-            atPath: store.paths.distrosDirectory.path(percentEncoded: false))) ?? [])
-            .filter { $0.hasPrefix(MawPaths.stagingPrefix) }
+        let root = store.paths.stagingRoot
+        let labels =
+            (try? FileManager.default.contentsOfDirectory(
+                atPath: root.path(percentEncoded: false))) ?? []
+        return labels.flatMap { label in
+            let entries =
+                (try? FileManager.default.contentsOfDirectory(
+                    atPath: root.appending(path: label).path(percentEncoded: false))) ?? []
+            return label == store.daemonLabel.rawValue ? entries : [label]
+        }
     }
 
     // MARK: Success

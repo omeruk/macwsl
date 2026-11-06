@@ -54,6 +54,8 @@ log_directory=$(mktemp -d "${TMPDIR:-/tmp}/maw-integration.XXXXXX")
 image_cache="$log_directory/images"
 owner_cache="$HOME/Library/Caches/maw/images"
 distros="$HOME/Library/Application Support/maw/distros"
+# The test daemon's staging directories (MawPaths.stagingDirectory(label:)).
+staging="$distros/.staging/$label"
 prefix="maw-it-$(date +%s)"
 test_distribution="$prefix-shared"
 test_user=maw
@@ -158,8 +160,8 @@ check_nothing_left() {
         if [ -n "$machines" ]; then
             left="$left virtual machine processes:$machines;"
         fi
-        for directory in "$distros/$prefix"* "$distros/.staging-$prefix"*; do
-            if [ -e "$directory" ]; then
+        for directory in "$distros/$prefix"* "$staging/$prefix"*; do
+            if [ -e "$directory" ] || [ -L "$directory" ]; then
                 left="$left $directory;"
             fi
         done
@@ -194,11 +196,13 @@ cleanup() {
         exit_status=1
     fi
     "$bin_path/mawd" uninstall --label "$label" > /dev/null 2>&1 || true
-    for directory in "$distros/$prefix"* "$distros/.staging-$prefix"*; do
-        if [ -e "$directory" ]; then
+    for directory in "$distros/$prefix"* "$staging/$prefix"*; do
+        if [ -e "$directory" ] || [ -L "$directory" ]; then
             rm -rf "$directory"
         fi
     done
+    # The test daemon's own staging directory, once empty; another label's is never touched.
+    rmdir "$staging" 2> /dev/null || true
     # Keep a verified image that this run downloaded, for the next run and for the owner.
     mkdir -p "$owner_cache"
     for image in "$image_cache"/*.tar.gz; do

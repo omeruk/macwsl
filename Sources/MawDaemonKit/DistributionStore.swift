@@ -7,7 +7,8 @@
     /// A distribution is installed when `distros/<name>/distro.json` exists. An installation
     /// builds it in a staging directory and renames that directory into place as its last step,
     /// so that an interrupted installation never leaves a half-installed distribution: what is
-    /// left is a staging directory, which `removeStagingLeftovers()` deletes.
+    /// left is a staging directory, which `removeStagingLeftovers()` deletes. Staging directories
+    /// belong to the daemon with `daemonLabel` (StagingDirectories.swift).
     public struct DistributionStore: Sendable {
         /// `state.json`: the daemon's settings.
         struct State: Codable, Equatable {
@@ -15,12 +16,16 @@
         }
 
         public let paths: MawPaths
+        /// The label of the daemon that uses this store, which names its staging directories.
+        public let daemonLabel: DaemonLabel
 
-        public init(paths: MawPaths) {
+        public init(paths: MawPaths, daemonLabel: DaemonLabel) {
             self.paths = paths
+            self.daemonLabel = daemonLabel
         }
 
-        /// Every installed distribution's metadata, by name. Unreadable entries are skipped.
+        /// Every installed distribution's metadata, by name. Unreadable entries are skipped, and
+        /// so is `.staging`, which no distribution name can match.
         public func installed() -> [DistroMetadata] {
             let entries =
                 (try? FileManager.default.contentsOfDirectory(
@@ -88,23 +93,6 @@
                 throw .provisioningFailed(
                     step: "registering the distribution", reason: error.localizedDescription)
             }
-        }
-
-        /// Deletes staging directories that an interrupted installation left behind. Returns
-        /// their names.
-        @discardableResult
-        public func removeStagingLeftovers() -> [String] {
-            let entries =
-                (try? FileManager.default.contentsOfDirectory(
-                    at: paths.distrosDirectory, includingPropertiesForKeys: nil,
-                    options: [])) ?? []
-            var removed: [String] = []
-            for entry in entries where entry.lastPathComponent.hasPrefix(MawPaths.stagingPrefix) {
-                if (try? FileManager.default.removeItem(at: entry)) != nil {
-                    removed.append(entry.lastPathComponent)
-                }
-            }
-            return removed
         }
 
         private func readState() -> State {

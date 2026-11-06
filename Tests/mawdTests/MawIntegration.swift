@@ -124,13 +124,17 @@ struct MawIntegration: Sendable {
         }
     }
 
-    /// The names in the distributions directory that contain `name`, including staging
-    /// directories.
+    /// The distribution directory of `name` and the test daemon's staging directories for it,
+    /// as paths relative to the distributions directory.
     func traces(of name: String) -> [String] {
-        let entries =
+        func entries(_ url: URL) -> [String] {
             (try? FileManager.default.contentsOfDirectory(
-                atPath: paths.distrosDirectory.path(percentEncoded: false))) ?? []
-        return entries.filter { $0 == name || $0.hasPrefix("\(MawPaths.stagingPrefix)\(name)-") }
+                atPath: url.path(percentEncoded: false))) ?? []
+        }
+        let staging = "\(MawPaths.stagingRootName)/\(label)"
+        return entries(paths.distrosDirectory).filter { $0 == name }
+            + entries(paths.distrosDirectory.appending(path: staging))
+            .filter { $0.hasPrefix("\(name)-") }.map { "\(staging)/\($0)" }
     }
 
     /// The test distribution's row in `--status`, or an empty string.

@@ -50,11 +50,13 @@ reports progress, one line per step:
 | Writing the disk | `sync`, unmount, power off. |
 | Starting | The distribution's first boot, so that the first session is warm. |
 
-Everything before "Starting" happens in `distros/.staging-<name>-<id>/`, which is renamed to
+Everything before "Starting" happens in `distros/.staging/<label>/<name>-<id>/`, where
+`<label>` is the daemon's launchd label (`dev.maw.mawd`), and that directory is renamed to
 `distros/<name>/` as the last step. Ctrl-C, a failure, the client's exit, or the daemon's stop
 ends the installation, stops the provisioning machine at once, and removes the staging
-directory; the daemon also removes staging directories left by a crash when it starts. The first
-installed distribution becomes the default.
+directory; the daemon also removes staging directories left by a crash when it starts, only
+under its own label (docs/daemon.md). No distribution can be named `.staging`, since a name
+starts with a letter or digit. The first installed distribution becomes the default.
 
 The provisioning machine's console goes to `~/Library/Logs/maw/install-<name>.log`. Two
 installations of the same image share one download: the second waits for the first's.

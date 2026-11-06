@@ -37,4 +37,19 @@ import Testing
         #expect(!DaemonLock.isHeld(at: url))
         #expect(try DaemonLock.acquire(at: url) != nil)
     }
+
+    /// Which daemons run, by label: only locks that are held count.
+    @Test func listsTheLabelsWhoseLocksAreHeld() throws {
+        let directory = url.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(DaemonLock.labelsHeld(in: directory).isEmpty)
+        let held = try DaemonLock.acquire(at: directory.appending(path: "dev.maw.mawd.lock"))
+        let other = try DaemonLock.acquire(at: directory.appending(path: "dev.maw.other.lock"))
+        var released = try DaemonLock.acquire(at: directory.appending(path: "dev.maw.gone.lock"))
+        released = nil
+        try Data().write(to: directory.appending(path: "state.json"))
+        try Data().write(to: directory.appending(path: ".lock"))
+        #expect(DaemonLock.labelsHeld(in: directory) == ["dev.maw.mawd", "dev.maw.other"])
+        withExtendedLifetime((held, other, released)) {}
+    }
 }

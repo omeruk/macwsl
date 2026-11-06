@@ -21,6 +21,16 @@ import Testing
         #expect(
             paths.metadataFile(for: ubuntu).path(percentEncoded: false)
                 == support + "/distros/Ubuntu/distro.json")
+        let label = try DaemonLabel("dev.maw.mawd")
+        let id = try #require(UUID(uuidString: "6F1C0A52-0B4E-4E0C-9B7E-2B8F7A0C1D2E"))
+        #expect(paths.stagingRoot.path(percentEncoded: false) == support + "/distros/.staging/")
+        #expect(
+            paths.stagingDirectory(label: label).path(percentEncoded: false)
+                == support + "/distros/.staging/dev.maw.mawd/")
+        #expect(
+            paths.stagingDirectory(for: ubuntu, id: id, label: label).path(percentEncoded: false)
+                == support
+                + "/distros/.staging/dev.maw.mawd/Ubuntu-6F1C0A52-0B4E-4E0C-9B7E-2B8F7A0C1D2E/")
         #expect(paths.kernelDirectory.path(percentEncoded: false) == support + "/kernel/")
         #expect(
             paths.logsDirectory.path(percentEncoded: false)

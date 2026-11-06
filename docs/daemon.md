@@ -194,8 +194,20 @@ the steps and what they change.
 
 An installation is cancelled when its client sends `cancelInstall`, when the client's
 connection closes, and when the daemon receives SIGTERM: the provisioning machine stops at once,
-and the staging directory is removed before the cancellation is confirmed. At start, the daemon
-removes staging directories that a crash left behind. The password is in the daemon's memory
+and the staging directory is removed before the cancellation is confirmed.
+
+Each daemon builds new distributions in `distros/.staging/<label>/`, named by its own launchd
+label, so that daemons of different labels, such as the integration tests' and the user's,
+never remove each other's installations in progress. At start, while it holds its lock, the
+daemon removes what a crash left in its own label's directory, and nothing of another label's.
+Staging directories of earlier builds, `distros/.staging-<name>-<id>/`, carry no label; the
+daemon removes them only when no other daemon holds its lock, because a daemon creates staging
+directories only while it holds its lock, and otherwise keeps them for a later start. Creating
+and removing staging directories never follows a symbolic link below `distros/`. The label
+must be 1 to 128 letters, digits, `.`, `-`, and `_`, start with a letter or digit, and contain
+no `..`, so that it names exactly one directory.
+
+The password is in the daemon's memory
 only while the installation runs, travels to the guest as `chpasswd`'s standard input, and
 never appears in a log, a description, or an error message.
 

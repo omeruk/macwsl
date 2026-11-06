@@ -28,6 +28,7 @@ struct Serve: AsyncParsableCommand {
         signal(SIGPIPE, SIG_IGN)
         let log = DaemonLog { line in FileHandle.standardError.write(Data(line.utf8)) }
         let label = settings.label
+        let daemonLabel = try DaemonLabel(label)
         let paths = MawPaths()
         guard let lock = try DaemonLock.acquire(at: paths.daemonLockFile(label: label)) else {
             throw ValidationError("Another mawd serve already runs for \(label).")
@@ -57,12 +58,8 @@ struct Serve: AsyncParsableCommand {
                 await lifetime.setMachinesActive(active)
             }
         }
-        let store = DistributionStore(paths: paths)
-        // Left by an installation that the daemon could not clean up, such as one interrupted
-        // by a crash or a power loss.
-        for leftover in store.removeStagingLeftovers() {
-            log.notice("removed \(leftover), left by an interrupted installation")
-        }
+        let store = DistributionStore(paths: paths, daemonLabel: daemonLabel)
+        removeStagingLeftovers(store: store, label: label, paths: paths, log: log)
         let registry = MachineRegistry(
             clock: clock, idleTimeout: settings.machineIdleDuration, log: log,
             factory: VirtualMachineHandle.factory(
@@ -108,6 +105,33 @@ struct Serve: AsyncParsableCommand {
         await service.serve(listener)
         withExtendedLifetime(lock) {}
     }
+
+    /// Removes the staging directories that an installation left behind when the daemon could
+    /// not clean up, such as one interrupted by a crash or a power loss: this daemon's own,
+    /// which no other process uses while it holds its lock, and those of earlier builds, whose
+    /// names carry no label, only while no other daemon runs. A daemon creates staging
+    /// directories only while it holds its lock, so with no other lock held, none of them
+    /// belongs to an installation in progress.
+    private func removeStagingLeftovers(
+        store: DistributionStore, label: String, paths: MawPaths, log: DaemonLog
+    ) {
+        for leftover in store.removeStagingLeftovers() {
+            log.notice("removed \(leftover), left by an interrupted installation")
+        }
+        let legacy = store.legacyStagingDirectories()
+        guard !legacy.isEmpty else { return }
+        let others = DaemonLock.labelsHeld(in: paths.applicationSupportDirectory)
+            .filter { $0 != label }
+        guard others.isEmpty else {
+            log.notice(
+                "kept \(legacy.count) staging directories of an earlier build while "
+                    + "\(others.joined(separator: ", ")) runs; a later start removes them")
+            return
+        }
+        for leftover in store.removeLegacyStagingDirectories() {
+            log.notice("removed \(leftover), left by an interrupted installation")
+        }
+    }
 }
 
 /// The settings that `mawd install` passes to `mawd serve` through the LaunchAgent. All but
@@ -129,8 +153,11 @@ struct DaemonSettings: ParsableArguments {
     var imageCacheDirectory: String?
 
     func validate() throws {
-        if label.isEmpty || label.contains("/") {
-            throw ValidationError("--label must be a launchd label such as dev.maw.mawd.")
+        do {
+            _ = try DaemonLabel(label)
+        } catch {
+            throw ValidationError(
+                "--label must be a launchd label such as dev.maw.mawd: \(error.reason).")
         }
         for (name, value) in [
             ("--machine-idle-timeout", machineIdleTimeout),
