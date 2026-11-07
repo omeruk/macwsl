@@ -378,8 +378,8 @@ extension MawError: LocalizedError {
                 + "'_', starting with a letter, and not one the distribution already uses, for "
                 + "example 'ayse'."
         case .invalidPassword:
-            "Type the same non-empty password twice. With --user, give it as the first line of "
-                + "standard input."
+            "Type the same non-empty password twice. With --user, give it as the first\n"
+                + "line of standard input."
         case .installNeedsTerminal:
             "Run it in a terminal, or give the user with --user <name> and the password as the "
                 + "first line of standard input."

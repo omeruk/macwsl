@@ -70,9 +70,13 @@ final class PromptTerminal {
     }
 
     /// Reads a password without echoing it. Ctrl-C ends maw, and `readpassphrase` restores the
-    /// terminal first.
+    /// terminal first. Throws `InstallRequest.passwordTooLong` for a password longer than
+    /// `InstallRequest.maximumPasswordBytes`.
     func readSecret(prompt: String) throws(MawError) -> Secret {
-        var buffer = [CChar](repeating: 0, count: 1024)
+        // `readpassphrase` keeps at most one byte less than the buffer and discards the rest
+        // of the line. One byte more than the limit, plus the terminating zero, tells a
+        // password at the limit from a longer one.
+        var buffer = [CChar](repeating: 0, count: InstallRequest.maximumPasswordBytes + 2)
         defer { buffer.withUnsafeMutableBytes { _ = memset($0.baseAddress, 0, $0.count) } }
         guard
             readpassphrase(prompt, &buffer, buffer.count, RPP_ECHO_OFF | RPP_REQUIRE_TTY) != nil
@@ -80,6 +84,9 @@ final class PromptTerminal {
             throw .invalidPassword(reason: "no password was entered")
         }
         let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        guard bytes.count <= InstallRequest.maximumPasswordBytes else {
+            throw InstallRequest.passwordTooLong
+        }
         return Secret(String(decoding: bytes, as: UTF8.self))
     }
 }

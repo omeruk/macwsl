@@ -196,6 +196,27 @@ import os
         #expect(images.downloads == 0)
     }
 
+    /// The limit is sudo's, in bytes of UTF-8 (`InstallRequest.maximumPasswordBytes`). It also
+    /// covers a password from standard input, which `maw` reads without a limit.
+    @Test func refusesAPasswordLongerThanSudoAccepts() async throws {
+        try Installer.checkPassword(Secret(String(repeating: "a", count: 511)))
+        try Installer.checkPassword(Secret(String(repeating: "a", count: 509) + "ğ"))
+        for password in [
+            String(repeating: "a", count: 512), String(repeating: "a", count: 510) + "ğ",
+            String(repeating: "a", count: 1_500),
+        ] {
+            #expect(throws: InstallRequest.passwordTooLong) {
+                try Installer.checkPassword(Secret(password))
+            }
+        }
+        await #expect(throws: InstallRequest.passwordTooLong) {
+            try await installer().install(
+                request(password: String(repeating: "a", count: 512)), progress: { _ in })
+        }
+        #expect(machine.calls.isEmpty)
+        #expect(images.downloads == 0)
+    }
+
     @Test func checksTheFreeSpaceBeforeTheDownload() async throws {
         let entry = DistroCatalog.builtIn.recommendedEntry
         let required = InstallSpace.required(for: entry.image, alreadyDownloaded: 0)

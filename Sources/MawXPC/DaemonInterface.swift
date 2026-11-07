@@ -114,6 +114,16 @@
             self.password = password
             self.locale = locale
         }
+
+        /// The longest password, in bytes of UTF-8, that the new account can use with `sudo`.
+        /// Ubuntu 24.04's sudo 1.9.15p5 refuses a password of `PAM_MAX_RESP_SIZE` (512) bytes
+        /// or more before it reaches PAM (`plugins/sudoers/auth/pam.c`, `converse`), although
+        /// `pam_unix` sets one of up to 512 bytes.
+        public static let maximumPasswordBytes = 511
+
+        /// The error for a password longer than `maximumPasswordBytes`.
+        public static let passwordTooLong = MawError.invalidPassword(
+            reason: "it is longer than sudo's limit of \(maximumPasswordBytes) bytes")
     }
 
     /// The steps of an installation, in order. `download` and `verify` are the only ones

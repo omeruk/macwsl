@@ -337,10 +337,14 @@
         // MARK: Rules
 
         /// Ubuntu's `chpasswd` reads `user:password` lines, so a password must be a single
-        /// line; it must not be empty, so that `sudo` asks for something.
+        /// line; it must not be empty, so that `sudo` asks for something, nor longer than
+        /// `sudo` accepts.
         static func checkPassword(_ password: Secret) throws(MawError) {
             if password.value.isEmpty {
                 throw .invalidPassword(reason: "it is empty")
+            }
+            if password.value.utf8.count > InstallRequest.maximumPasswordBytes {
+                throw InstallRequest.passwordTooLong
             }
             if password.value.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }
             ) {
