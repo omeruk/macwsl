@@ -24,6 +24,9 @@ struct SessionRunner {
     /// What ended the session.
     enum Ending: Sendable {
         case exited(Result<ExitStatus, MawError>)
+        /// The connection ended before the command's exit status, with the error that the
+        /// guest process reported (`GuestProcess.connectionEndedBeforeExit`).
+        case connectionEnded(MawError)
         case daemon(DaemonClient.Event)
         case signal(Int32)
     }
@@ -52,7 +55,7 @@ struct SessionRunner {
         case .terminal:
             ending = try await runOnTerminal(request, session: session, events: events)
         }
-        return try await status(after: ending, events: events, machine: session.info.machine)
+        return try await Self.status(after: ending, events: events, machine: session.info.machine)
     }
 
     // MARK: Modes
@@ -101,8 +104,10 @@ struct SessionRunner {
 
     // MARK: Ending
 
-    /// The exit status for `ending`, or the error that explains it.
-    private func status(after ending: Ending, events: EventRelay, machine: MachineID) async throws
+    /// The exit status for `ending`, or the error that explains it. Called once the terminal,
+    /// if any, has been restored, so that the error is printed on a terminal in its normal
+    /// mode.
+    static func status(after ending: Ending, events: EventRelay, machine: MachineID) async throws
         -> Int32
     {
         switch ending {
@@ -114,6 +119,15 @@ struct SessionRunner {
                 throw Self.error(for: event, machine: machine)
             }
             throw error
+        case .connectionEnded(let error):
+            // A machine that stopped ends its sessions' connections too, and the daemon says so.
+            if let event = await events.next(within: Self.endingReasonTimeout) {
+                throw Self.error(for: event, machine: machine)
+            }
+            Logger.cli.debug(
+                "\(machine.name, privacy: .public): the session's connection ended before the exit status: \(error.description, privacy: .public)"
+            )
+            throw MawError.sessionConnectionEnded(distribution: machine.name)
         case .daemon(let event):
             throw Self.error(for: event, machine: machine)
         case .signal(let number):
@@ -150,7 +164,12 @@ struct SessionRunner {
         }
         return await withTaskGroup(of: Ending?.self) { group in
             group.addTask {
-                for await result in exits { return .exited(result) }
+                for await result in exits {
+                    if case .failure(let error) = result, process.connectionEndedBeforeExit {
+                        return .connectionEnded(error)
+                    }
+                    return .exited(result)
+                }
                 return nil
             }
             group.addTask {
