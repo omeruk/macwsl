@@ -21,7 +21,10 @@ distribution when maw updates it.
 1. **Boot sequence.** With `maw.root=/dev/vda` on the kernel command line, `/init`:
    1. sets the clock from `maw.clock=<seconds>` (the virtual machine has no real-time clock,
       and its clock would start in 1970, which breaks TLS and apt);
-   2. runs `e2fsck -p` on the disk and mounts it at `/sysroot`, read-write;
+   2. runs `e2fsck -p` on the disk and mounts it at `/sysroot`, read-write. e2fsck runs in
+      `maw-check-root`, which reports its exit status on the console and lets the
+      distribution boot only with a status below 4 (docs/daemon.md, "A root file system that
+      fails its check");
    3. mounts a tmpfs on `/sysroot/run`, copies the agent to `/run/maw/maw-agent`, and writes the
       runtime unit `/run/systemd/system/maw-agent.service`, enabled for `sysinit.target`;
    4. moves `/dev`, `/proc`, and `/sys` into the new root, and runs

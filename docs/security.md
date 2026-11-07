@@ -182,8 +182,9 @@ questions, and the terminal echoes the account name as it is typed, on `/dev/tty
 (`Sources/maw/PromptTerminal.swift`), never on standard output or standard error, so none of
 it reaches a pipe or a file that those go to, as in `maw --install 2>&1 | tee install.log`.
 The password itself is never echoed, not even to the terminal, and it is not part of the
-progress, the summary, or any error message. `mawd` never logs it, and in the provisioning machine it reaches only `chpasswd`'s standard
-input, so the console log in `~/Library/Logs/maw/install/` does not contain it either.
+progress, the summary, or any error message. `mawd` never logs it, and in the provisioning
+machine it reaches only `chpasswd`'s standard input, so the console log in
+`~/Library/Logs/maw/install/` does not contain it either.
 
 Swift strings cannot be wiped, so copies may stay in the memory of `maw` and `mawd` until it is
 reused. A test checks that no description of an install request contains the password.
@@ -212,6 +213,23 @@ From phase 05 each distribution has a virtio network device with
   `distro.json` after a partial manual removal, and leaves that entry as it is. It builds the
   new distribution in its own staging directory, which it creates and removes without
   following symbolic links (docs/daemon.md).
+- A distribution whose root file system fails its check at boot is not changed further. The
+  initramfs does not mount it, and the daemon neither deletes, reformats, nor writes to its
+  disk image; only `e2fsck -p` may have repaired parts of it before it stopped
+  (docs/daemon.md, "A root file system that fails its check").
+
+### The guest's console
+
+The daemon writes everything the guest prints on its console to the console log, and reads it
+for one purpose: on a distribution's machine, until the initramfs's line
+`maw-initramfs: starting systemd`, it looks for the exact line
+`maw-initramfs: root-check e2fsck-status=<status>`, with a status of 0 to 255, and keeps the
+last one. That status only selects the error message when the guest powers off before its
+agent answers; the daemon takes no action on it. Until systemd starts, only the initramfs and
+the kernel write to the console. A marker-like line in e2fsck's output, which can include
+names from the file system, precedes the initramfs's own marker and is replaced by it; lines
+after systemd starts are not read. A guest that forged the marker could at most change the
+message of its own failed start.
 
 ## Known gaps
 

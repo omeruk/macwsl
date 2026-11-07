@@ -44,7 +44,9 @@ stopped ──openSession──▶ starting ──agent answers info──▶ ru
   `shutdown: clean after <n> ms via the guest agent`, or how it stopped otherwise.
 - **Failure.** A machine that fails to start reports the error to every waiting request and
   stays stopped. A machine that stops on its own, or with an error, is marked stopped, its
-  sessions end with the reason, and the next session starts it again.
+  sessions end with the reason, and the next session starts it again. A guest that powers off
+  before its agent answers fails the start with `vmFailed`, "the guest powered off before its
+  agent answered", unless the initramfs reported a failed root file system check (below).
 - **Settings.** A distribution's machine gets every CPU of the Mac and half of its memory, its
   disk with full synchronization, and a NAT network device with the MAC address in its
   `distro.json`. Its kernel command line carries `maw.root=/dev/vda` and `maw.clock=<seconds>`.
@@ -55,6 +57,43 @@ stopped ──openSession──▶ starting ──agent answers info──▶ ru
   machine stops, it removes the listener and ends the wait of every session that has not
   received its connection yet. The listener exists only inside the daemon's process; only the
   machine's guest can reach it (docs/security.md).
+
+### A root file system that fails its check
+
+Before it mounts a distribution's disk, the initramfs runs `Guest/initramfs/maw-check-root`,
+which runs `e2fsck -p` and prints e2fsck's exit status on the console in a line of its own:
+
+```
+maw-initramfs: root-check e2fsck-status=<status>
+```
+
+A line that explains the status follows it, and e2fsck's own messages precede it; all of them
+are in the machine's console log. The distribution boots with a status below 4, and otherwise
+the initramfs powers the machine off without mounting the disk:
+
+| Status | e2fsck(8) | Outcome |
+|--------|-----------|---------|
+| 0 | no errors | boots |
+| 1 to 3 | errors corrected (2: reboot requested, which a file system that is not mounted does not need) | boots; the console log records the status |
+| 4 to 7 | errors left uncorrected | `rootFileSystemCheckFailed` |
+| 8 to 15 | operational error, which includes a disk that cannot be opened and a superblock that cannot be read | `rootFileSystemCheckFailed` |
+| 16 and more | usage error (16), cancelled (32), library error (128), or a shell's status for a program that could not run or was killed | `rootFileSystemCheckFailed` |
+
+`VirtualMachineHandle` follows a distribution machine's console from its start until the line
+`maw-initramfs: starting systemd`, and keeps the last marker before it
+(`RootFileSystemCheckScanner`). Only the exact marker line is read, never e2fsck's free-form
+output. If the guest powers off before its agent answers, the daemon waits until the console
+has passed on every line, and fails the start with `rootFileSystemCheckFailed` if the marker's
+status did not allow the boot. Without a marker, as with guest files from before it, or after a
+status that allowed the boot, the error is `vmFailed` as before. The marker only selects the
+error; the daemon takes no action on it.
+
+The error names the distribution and the path of its console log, and says what the status
+establishes: errors that e2fsck left uncorrected for 4 to 7, and for 8 and more only that the
+check could not be completed, which is not proof that the disk is damaged. Its suggestion says
+that the disk image is kept where it is and that nothing but `e2fsck -p` has written to it,
+that it should be copied to a safe place before any repair by hand, and that maw has no repair
+command yet. maw never deletes, reformats, or writes to the disk image on this path.
 
 ### Opening a session
 
@@ -350,3 +389,9 @@ log, and prints its path. Otherwise it deletes it.
 - A distribution's machine and its console log are named after the distribution. The installer
   refuses the names `initramfs`, `mawd`, and `debug-boot-console`, in any case, whose console
   logs would be the initramfs machine's, the daemon's, or `mawd debug-boot`'s log files.
+- maw has no command to repair a distribution whose root file system failed its check. The
+  disk image stays where it is, unchanged except for what `e2fsck -p` repaired before it
+  stopped, and a repair needs e2fsck from a Linux system, run on a copy. Phase 06, which manages
+  installed distributions, is where such a command belongs: it would boot the initramfs
+  machine with the disk attached, as the installer does, and run e2fsck interactively or with
+  `-y` after the user has made a copy.
