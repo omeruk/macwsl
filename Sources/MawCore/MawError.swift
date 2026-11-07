@@ -29,6 +29,12 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case noDistributionInstalled
     /// `-u` names a user that does not exist in the distribution.
     case userNotFound(String, distribution: String)
+    /// The initramfs did not boot `distribution`, because `e2fsck -p` could not check or repair
+    /// its root file system: it exited with `e2fsckStatus`, 4 or more
+    /// (`RootFileSystemCheck`). `diskImage` and `consoleLog` are the paths of the
+    /// distribution's disk image and console log.
+    case rootFileSystemCheckFailed(
+        distribution: DistroName, e2fsckStatus: Int, diskImage: String, consoleLog: String)
 
     // MARK: Installation
 
@@ -185,6 +191,10 @@ extension MawError: LocalizedError {
             "No Linux distribution is installed."
         case .userNotFound(let user, let distribution):
             "There is no user named '\(user)' in \(distribution)."
+        case .rootFileSystemCheckFailed(let name, let status, _, let consoleLog):
+            "The file system of \(name) "
+                + Self.rootFileSystemCheckFinding(e2fsckStatus: status)
+                + ". \(name) was not started; its console log, \(consoleLog), has the details."
         case .unknownDistribution(let name):
             "There is no distribution named '\(name)' that maw can install."
         case .distributionAlreadyInstalled(let name):
@@ -301,6 +311,24 @@ extension MawError: LocalizedError {
         }
     }
 
+    /// What e2fsck's exit status establishes about a file system that failed its check. Only
+    /// statuses 4 to 7 say that the file system has errors; 8 and more say only that the check
+    /// did not complete.
+    private static func rootFileSystemCheckFinding(e2fsckStatus status: Int) -> String {
+        switch (RootFileSystemCheck(e2fsckStatus: status).outcome, status) {
+        case (.errorsLeftUncorrected, _):
+            "could not be repaired automatically: e2fsck found errors that it left uncorrected "
+                + "(exit status \(status))"
+        case (_, 8...15):
+            "could not be checked automatically: e2fsck stopped with an operational error "
+                + "(exit status \(status)), as it does, for example, when it cannot open the disk "
+                + "or read its superblock"
+        default:
+            "could not be checked automatically: e2fsck ended with exit status \(status) and "
+                + "did not complete the check"
+        }
+    }
+
     public var recoverySuggestion: String? {
         switch self {
         case .invalidDistroName:
@@ -319,6 +347,13 @@ extension MawError: LocalizedError {
             "Install Ubuntu with maw --install."
         case .userNotFound:
             "Check the name, or create the user in the distribution with sudo adduser."
+        case .rootFileSystemCheckFailed(_, _, let diskImage, _):
+            "maw keeps the disk image \(diskImage) and has not written to it; only e2fsck -p "
+                + "may have repaired parts of it before it stopped. Copy the image to a safe "
+                + "place before you try any repair by hand. maw has no command to repair a "
+                + "file system yet; a later phase adds one. If you do not need the "
+                + "distribution's files, the README explains how to remove it, after which "
+                + "maw --install can install it again."
         case .unknownDistribution:
             "maw --list --online shows the distributions that can be installed."
         case .distributionAlreadyInstalled(let name):

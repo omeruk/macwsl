@@ -19,6 +19,9 @@ import Testing
         .launchAgentNotRemoved(service: "gui/501/dev.maw.mawd", seconds: 30),
         .guestCommandNotFound(command: "nope", reason: "not in PATH"),
         .virtualizationEntitlementMissing,
+        .rootFileSystemCheckFailed(
+            distribution: try! DistroName("Ubuntu"), e2fsckStatus: 8, diskImage: "/d/disk.img",
+            consoleLog: "/l/Ubuntu.log"),
     ]
 
     @Test(arguments: errors)
@@ -163,6 +166,66 @@ import Testing
             error.errorDescription
                 == "The session ended because the virtual machine initramfs stopped: "
                 + "maw --shutdown was run.")
+    }
+
+    // MARK: A root file system that failed its check
+
+    static let disk = "/Users/ayse/Library/Application Support/maw/distros/Ubuntu/disk.img"
+    static let consoleLog = "/Users/ayse/Library/Logs/maw/Ubuntu.log"
+
+    static func rootCheckFailure(_ status: Int) -> MawError {
+        .rootFileSystemCheckFailed(
+            distribution: try! DistroName("Ubuntu"), e2fsckStatus: status, diskImage: disk,
+            consoleLog: consoleLog)
+    }
+
+    @Test(arguments: [4, 5, 6, 7])
+    func reportsErrorsThatE2fsckLeftUncorrected(_ status: Int) {
+        #expect(
+            Self.rootCheckFailure(status).errorDescription
+                == "The file system of Ubuntu could not be repaired automatically: e2fsck found "
+                + "errors that it left uncorrected (exit status \(status)). Ubuntu was not "
+                + "started; its console log, \(Self.consoleLog), has the details.")
+    }
+
+    /// Status 8 does not establish that the file system has errors: e2fsck also reports it
+    /// for a disk that it cannot open or a superblock that it cannot read.
+    @Test(arguments: [8, 12])
+    func reportsACheckThatStoppedWithAnOperationalError(_ status: Int) {
+        let description = Self.rootCheckFailure(status).errorDescription ?? ""
+        #expect(
+            description
+                == "The file system of Ubuntu could not be checked automatically: e2fsck "
+                + "stopped with an operational error (exit status \(status)), as it does, for "
+                + "example, when it cannot open the disk or read its superblock. Ubuntu was not "
+                + "started; its console log, \(Self.consoleLog), has the details.")
+        #expect(!description.contains("damaged"))
+        #expect(!description.contains("has errors"))
+    }
+
+    @Test(arguments: [16, 32, 127, 128, 137])
+    func reportsACheckThatDidNotComplete(_ status: Int) {
+        let description = Self.rootCheckFailure(status).errorDescription ?? ""
+        #expect(
+            description
+                == "The file system of Ubuntu could not be checked automatically: e2fsck ended "
+                + "with exit status \(status) and did not complete the check. Ubuntu was not "
+                + "started; its console log, \(Self.consoleLog), has the details.")
+        #expect(!description.contains("damaged"))
+    }
+
+    /// The suggestion says that the image is kept, that it should be copied first, and that
+    /// no repair command exists yet, whatever the status.
+    @Test(arguments: [4, 8, 16])
+    func suggestsKeepingACopyOfTheDiskImage(_ status: Int) {
+        #expect(
+            Self.rootCheckFailure(status).recoverySuggestion
+                == "maw keeps the disk image \(Self.disk) and has not written to it; only "
+                + "e2fsck -p may have repaired parts of it before it stopped. Copy the image to "
+                + "a safe place before you try any repair by hand. maw has no command to repair "
+                + "a file system yet; a later phase adds one. If you do not need the "
+                + "distribution's files, the README explains how to remove it, after which "
+                + "maw --install can install it again.")
     }
 
     @Test func endsAMessageWithOnePeriod() {
