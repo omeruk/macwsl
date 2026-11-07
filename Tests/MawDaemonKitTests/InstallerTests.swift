@@ -188,7 +188,7 @@ import os
         }
         await #expect(
             throws: MawError.invalidPassword(
-                reason: "it contains a line break or a control character")
+                reason: "it contains a line break\nor a control character")
         ) {
             try await installer().install(request(password: "a\nb"), progress: { _ in })
         }

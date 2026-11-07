@@ -348,7 +348,7 @@
             }
             if password.value.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }
             ) {
-                throw .invalidPassword(reason: "it contains a line break or a control character")
+                throw .invalidPassword(reason: "it contains a line break\nor a control character")
             }
         }
 

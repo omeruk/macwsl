@@ -405,8 +405,8 @@ extension MawError: LocalizedError {
             "Nothing was installed. The installation's console log in ~/Library/Logs/maw has "
                 + "details."
         case .installationCancelled:
-            "Nothing was installed. Run maw --install to start again; an interrupted download "
-                + "resumes where it stopped."
+            "Nothing was installed. Run maw --install to start again; an interrupted\n"
+                + "download resumes where it stopped."
         case .installationOutcomeUnknown(let name):
             "maw -d \(name) -e true succeeds if it is installed, and otherwise says that it is "
                 + "not; then run maw --install again."

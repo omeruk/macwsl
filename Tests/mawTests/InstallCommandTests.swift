@@ -336,7 +336,7 @@ extension InstallCancellationTests {
                 written.hasSuffix(
                     "Cancelling the installation...\n"
                         + "maw: The installation of Ubuntu-24.04 was cancelled.\n"
-                        + "Nothing was installed. Run maw --install to start again; an interrupted "
+                        + "Nothing was installed. Run maw --install to start again; an interrupted\n"
                         + "download resumes where it stopped.\n"))
         }
     }
