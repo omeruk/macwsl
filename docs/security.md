@@ -140,11 +140,13 @@ against the run's `SHA256SUMS` before installing it and again after.
 - Downloads use HTTPS only; a redirect to another scheme fails. A download that grows beyond
   the pinned size is stopped.
 - **Nothing reads an image before its size and SHA-256 match.** The check runs before every
-  installation, also for a cached image; a file that fails is deleted. A cancelled check has
-  no result, so the installation stops without reading the image, and the file stays for the
-  next check.
-- A partial download is resumed only when the server's `ETag` still matches (`If-Range`); the
-  final SHA-256 check covers the joined file in any case.
+  installation, also for a cached image; a file that fails is deleted. A cancellation stops
+  the check before its next 4 MiB read. A cancelled check has no result, so the installation
+  stops without reading the image or booting the provisioning machine, and the file stays for
+  the next check.
+- A partial download is resumed only when the server's validator, its `ETag` or otherwise its
+  `Last-Modified`, still matches (`If-Range`); the final SHA-256 check covers the joined file
+  in any case.
 - maw does not check OpenPGP signatures at installation; it has no OpenPGP implementation. The
   pinned SHA-256 makes that unnecessary for pinned images, at the cost of a maw release for
   every new image.
@@ -169,11 +171,19 @@ maw asks for the new account's password once per installation.
 
 | Stage | How it travels |
 |-------|----------------|
-| `maw` | Read with `readpassphrase(3)`, without echo, from the controlling terminal; or the first line of standard input with `--user`. The buffer is cleared after reading. |
+| `maw` | When standard input is a terminal, read with `readpassphrase(3)` (`RPP_ECHO_OFF`, `RPP_REQUIRE_TTY`) from the controlling terminal, `/dev/tty`, without echo, twice. With `--user` and standard input that is not a terminal, the first line of standard input. The buffer of `readpassphrase` is cleared after reading. |
 | XPC to `mawd` | Inside the `install` request's JSON body, to the same-user peer that passed the checks above. The value is a `Secret`, whose descriptions print `<redacted>`. |
 | `mawd` | In memory while the installation runs. It is never logged and is not part of any error message. |
 | vsock to the provisioning machine | As the standard input of `chroot /mnt/root /usr/sbin/chpasswd`, never in an argument, the environment, or a script. |
 | The guest | `chpasswd` stores its hash in `/etc/shadow`. |
+
+The password never reaches standard output, standard error, or a log. `maw` writes its
+questions, and the terminal echoes the account name as it is typed, on `/dev/tty`
+(`Sources/maw/PromptTerminal.swift`), never on standard output or standard error, so none of
+it reaches a pipe or a file that those go to, as in `maw --install 2>&1 | tee install.log`.
+The password itself is never echoed, not even to the terminal, and it is not part of the
+progress, the summary, or any error message. `mawd` never logs it, and in the provisioning machine it reaches only `chpasswd`'s standard
+input, so the console log in `~/Library/Logs/maw/install/` does not contain it either.
 
 Swift strings cannot be wiped, so copies may stay in the memory of `maw` and `mawd` until it is
 reused. A test checks that no description of an install request contains the password.
@@ -194,8 +204,14 @@ From phase 05 each distribution has a virtio network device with
 - Disk images are created with mode 600: they contain the distribution's files, including its
   password hashes.
 - `distro.json`, `state.json`, the image cache, and the logs contain no secrets. The console
-  logs contain what the guest prints on its console: the kernel log, systemd's status messages,
-  and the agent's log, which records commands' process IDs but not their arguments or input.
+  logs, the provisioning machines' in `~/Library/Logs/maw/install/` included, contain what the
+  guest prints on its console: the kernel log, systemd's status messages, and the agent's log,
+  which records commands' process IDs but not their arguments or input.
+- An installation never writes into an existing entry of `distros/`. It refuses a name under
+  which anything is left there, in any case, such as a directory with a disk image but no
+  `distro.json` after a partial manual removal, and leaves that entry as it is. It builds the
+  new distribution in its own staging directory, which it creates and removes without
+  following symbolic links (docs/daemon.md).
 
 ## Known gaps
 
