@@ -10,9 +10,10 @@ import MawXPC
 /// does.
 ///
 /// Ctrl-C asks the daemon to cancel and waits until it has removed the installation's traces,
-/// so that nothing is left when maw exits. Output from then on goes through an `OutputQueue`,
-/// so that a terminal that does not read, such as one stopped with Ctrl-S, cannot hold up the
-/// cancellation or the exit.
+/// so that nothing is left when maw exits. An installation that ended before the daemon
+/// received the cancellation is reported as its own reply says: installed, or failed. Output
+/// from then on goes through an `OutputQueue`, so that a terminal that does not read, such as
+/// one stopped with Ctrl-S, cannot hold up the cancellation or the exit.
 struct InstallCommand {
     let options: InstallOptions
     /// Connects to the daemon. The tests replace it.
@@ -28,6 +29,9 @@ struct InstallCommand {
     /// How long the messages after Ctrl-C may wait for a terminal that does not read before
     /// maw exits without them. The daemon has removed the installation by then.
     static let outputTimeout = Duration.milliseconds(250)
+    /// How long maw waits for the installation's own reply after the daemon answered that the
+    /// installation was no longer running. The daemon has sent it by then.
+    static let installReplyTimeout = Duration.milliseconds(500)
 
     /// What is known before the account is asked for.
     struct Preparation {
@@ -130,11 +134,17 @@ struct InstallCommand {
                 view.resized()
             }
         }
+        // The installation's reply, which a signal does not end: after one, it can still say
+        // how the installation ended.
+        let installation = Task { () -> Result<InstallSummary, MawError> in
+            do throws(MawError) {
+                return .success(try await client.install(request))
+            } catch {
+                return .failure(error)
+            }
+        }
         let outcome = await firstOutcome(
-            install: { () async throws(MawError) -> InstallSummary in
-                try await client.install(request)
-            },
-            events: client.events, view: view, signals: signals)
+            installation: installation, events: client.events, view: view, signals: signals)
         resizing.cancel()
 
         switch outcome {
@@ -157,16 +167,53 @@ struct InstallCommand {
             case .cancelled:
                 error = .installationCancelled(name)
             case .alreadyFinished:
-                output.write(
-                    "The installation had already finished. Run maw -d \(name) to use it.\n")
-                await output.waitUntilWritten(timeout: outputTimeout)
-                return .status(0)
+                // The installation ended before the daemon received the cancellation. Its own
+                // reply says how (`reply(of:timeout:)`).
+                switch await reply(of: installation, timeout: installReplyTimeout) {
+                case .success:
+                    output.write(
+                        "The installation had already finished. Run maw -d \(name) to use it.\n")
+                    await output.waitUntilWritten(timeout: outputTimeout)
+                    return .status(0)
+                case .failure(let failure):
+                    // It failed on its own; maw exits as it would have without the signal.
+                    let report = Maw.failure(for: failure)
+                    output.writeError(report?.output ?? "")
+                    await output.waitUntilWritten(timeout: outputTimeout)
+                    return .status(report?.exitCode.rawValue ?? 1)
+                case nil:
+                    error = .daemonConnectionLost(during: "cancelling the installation")
+                }
             case .unconfirmed:
                 error = .daemonConnectionLost(during: "cancelling the installation")
             }
             output.writeError(Maw.failure(for: error)?.output ?? "")
             await output.waitUntilWritten(timeout: outputTimeout)
             return .status(128 + number)
+        }
+    }
+
+    /// The installation's reply, or `nil` if it has not arrived within `timeout`.
+    ///
+    /// When the daemon answers `cancelInstall` that the installation was no longer running, it
+    /// has already sent the reply to `install`: the installation's task sends that reply before
+    /// it ends, and the daemon answers `cancelInstall` only after the task has ended
+    /// (`DaemonService.serve`). The two replies resume tasks of their own here, though, which
+    /// can run in either order, so maw waits for the installation's reply instead of assuming
+    /// that it has arrived.
+    static func reply(
+        of installation: Task<Result<InstallSummary, MawError>, Never>, timeout: Duration
+    ) async -> Result<InstallSummary, MawError>? {
+        let first = FirstResult<Result<InstallSummary, MawError>?>()
+        return await withCheckedContinuation { continuation in
+            first.onResult { continuation.resume(returning: $0) }
+            Task {
+                first.settle(await installation.value)
+            }
+            Task {
+                try? await Task.sleep(for: timeout)
+                first.settle(nil)
+            }
         }
     }
 
@@ -189,7 +236,7 @@ struct InstallCommand {
     /// the installation's request to return even after a signal: that request cannot be
     /// cancelled from here, only by `cancelInstall`, which must be sent at once.
     static func firstOutcome(
-        install: @escaping @Sendable () async throws(MawError) -> InstallSummary,
+        installation: Task<Result<InstallSummary, MawError>, Never>,
         events: AsyncStream<DaemonClient.Event>, view: InstallProgressView,
         signals: AsyncStream<Int32>
     ) async -> Outcome {
@@ -200,13 +247,13 @@ struct InstallCommand {
                 continuation.resume(returning: outcome)
             }
             Task {
-                do throws(MawError) {
-                    let summary = try await install()
+                switch await installation.value {
+                case .success(let summary):
                     // The reply can arrive before the last step's event, which travels as a
                     // message of its own; give it a moment so that the step's line is complete.
                     await view.waitUntilIdle(timeout: .milliseconds(500))
                     first.settle(.installed(summary))
-                } catch {
+                case .failure(let error):
                     first.settle(.failed(error))
                 }
             }
@@ -234,7 +281,7 @@ struct InstallCommand {
     enum Cancellation {
         /// The daemon stopped the installation and removed its traces.
         case cancelled
-        /// The installation had already finished.
+        /// The installation was no longer running: it had finished, or failed.
         case alreadyFinished
         /// The daemon did not confirm within `cancelTimeout`.
         case unconfirmed

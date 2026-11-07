@@ -341,3 +341,188 @@ extension InstallCancellationTests {
         }
     }
 }
+
+/// Ctrl-C as the installation ends: the daemon answers `cancelInstall` that nothing was running
+/// any more, and maw reports how the installation ended, as the installation's own reply says.
+@Suite struct InstallEndedBeforeTheCancellationTests {
+    /// When the installation's reply arrives, compared with the answer to `cancelInstall`.
+    enum ReplyOrder: Sendable {
+        case beforeTheAnswer
+        case afterTheAnswer
+        case never
+    }
+
+    /// An installation that ends when maw asks to cancel it, before the daemon receives the
+    /// request, so that the daemon answers that nothing was running.
+    final class EndedDaemon: InstallDaemon, @unchecked Sendable {
+        struct State {
+            var cancelRequested = false
+            var replied = false
+            var released = false
+        }
+
+        let events = AsyncStream<DaemonClient.Event> { $0.finish() }
+        let order: ReplyOrder
+        let failure: MawError?
+        private let state = OSAllocatedUnfairLock(initialState: State())
+
+        init(order: ReplyOrder, failure: MawError?) {
+            self.order = order
+            self.failure = failure
+        }
+
+        func checkInstall(distribution: String?, name: DistroName?) async throws(MawError) {}
+
+        func install(_ request: InstallRequest) async throws(MawError) -> InstallSummary {
+            await wait { $0.cancelRequested }
+            switch order {
+            case .beforeTheAnswer:
+                break
+            case .afterTheAnswer:
+                // The answer to cancelInstall is on its way; this reply follows it.
+                try? await Task.sleep(for: .milliseconds(100))
+            case .never:
+                await wait { $0.released }
+            }
+            state.withLock { $0.replied = true }
+            if let failure {
+                throw failure
+            }
+            return InstallSummary(
+                name: try! DistroName("Ubuntu-24.04"), displayName: "Ubuntu 24.04 LTS",
+                defaultUser: "ayse", isDefault: true, milliseconds: 1)
+        }
+
+        func cancelInstall() async throws(MawError) -> Bool {
+            state.withLock { $0.cancelRequested = true }
+            if order == .beforeTheAnswer {
+                // The installation's reply is on its way first.
+                await wait { $0.replied }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            return false
+        }
+
+        func close() {}
+
+        /// Lets an installation whose reply was held back end, once the test is over.
+        func release() {
+            state.withLock { $0.released = true }
+        }
+
+        private func wait(until condition: @escaping @Sendable (State) -> Bool) async {
+            while !state.withLock({ condition($0) }) {
+                try? await Task.sleep(for: .milliseconds(1))
+            }
+        }
+    }
+
+    static let failure = MawError.provisioningFailed(step: "extracting", reason: "the fake failed")
+
+    /// Runs `perform` against `daemon` after a SIGINT, and returns how it ended and what it
+    /// wrote to standard output and standard error.
+    static func interrupt(
+        _ daemon: EndedDaemon
+    ) async throws -> (ending: InstallCommand.Ending, output: String, error: String) {
+        let directory = FileManager.default.temporaryDirectory.appending(
+            path: "maw-install-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outputFile = directory.appending(path: "output")
+        let errorFile = directory.appending(path: "error")
+        let standardOutput = open(
+            outputFile.path(percentEncoded: false), O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        let standardError = open(
+            errorFile.path(percentEncoded: false), O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        defer {
+            close(standardOutput)
+            close(standardError)
+        }
+        try #require(standardOutput >= 0 && standardError >= 0)
+        let output = OutputQueue(standardOutput: standardOutput, standardError: standardError)
+        let name = try DistroName("Ubuntu-24.04")
+        let view = InstallProgressView(
+            text: InstallProgressText(name: name, displayName: "Ubuntu 24.04 LTS"),
+            isTerminal: false, columns: { 80 }, output: output.write)
+        let (signals, signal) = AsyncStream.makeStream(of: Int32.self)
+        let (resizes, _) = AsyncStream.makeStream(of: Int32.self)
+        let request = InstallRequest(
+            distribution: "Ubuntu-24.04", name: nil, user: "ayse", password: Secret("secret"),
+            locale: nil)
+        signal.yield(SIGINT)
+        let ending = try await InstallCommand.perform(
+            request, name: name, on: daemon, view: view, output: output, signals: signals,
+            resizes: resizes)
+        #expect(await output.waitUntilWritten(timeout: .seconds(5)))
+        return (
+            ending, try String(contentsOf: outputFile, encoding: .utf8),
+            try String(contentsOf: errorFile, encoding: .utf8)
+        )
+    }
+
+    /// The daemon has sent the installation's reply, but it does not arrive: maw cannot say
+    /// how the installation ended, and does not claim that it finished.
+    @Test(.timeLimit(.minutes(1)))
+    func reportsAnUnconfirmedEndWithoutTheInstallationsReply() async throws {
+        let daemon = EndedDaemon(order: .never, failure: Self.failure)
+        defer { daemon.release() }
+        let result = try await Self.interrupt(daemon)
+        guard case .status(let status) = result.ending else {
+            Issue.record("maw --install reported \(result.ending)")
+            return
+        }
+        #expect(status == 130)
+        #expect(
+            result.error
+                == "Cancelling the installation...\n"
+                + (Maw.failure(
+                    for: MawError.daemonConnectionLost(during: "cancelling the installation"))?
+                    .output ?? ""))
+        #expect(!(result.output + result.error).contains("already finished"))
+    }
+}
+
+extension InstallEndedBeforeTheCancellationTests {
+    /// Tests that assert latency. A suite named `Latency` puts them in the latency group, which
+    /// runs one test at a time and never beside a load generator (scripts/test-groups.sh).
+    /// These depend on the installation's reply arriving within
+    /// `InstallCommand.installReplyTimeout`.
+    @Suite struct Latency {
+        /// The installation failed: maw reports its failure and exits as it would have without
+        /// Ctrl-C, whichever reply reaches it first.
+        @Test(.timeLimit(.minutes(1)), arguments: [ReplyOrder.beforeTheAnswer, .afterTheAnswer])
+        func reportsTheInstallationsFailure(order: ReplyOrder) async throws {
+            let failure = InstallEndedBeforeTheCancellationTests.failure
+            let result = try await InstallEndedBeforeTheCancellationTests.interrupt(
+                EndedDaemon(order: order, failure: failure))
+            guard case .status(let status) = result.ending else {
+                Issue.record("maw --install reported \(result.ending)")
+                return
+            }
+            #expect(status == 1)
+            #expect(
+                result.error
+                    == "Cancelling the installation...\n"
+                    + (Maw.failure(for: failure)?.output ?? "")
+            )
+            #expect(!(result.output + result.error).contains("already finished"))
+        }
+
+        /// The installation finished: maw says so, whichever reply reaches it first.
+        @Test(.timeLimit(.minutes(1)), arguments: [ReplyOrder.beforeTheAnswer, .afterTheAnswer])
+        func reportsAFinishedInstallation(order: ReplyOrder) async throws {
+            let result = try await InstallEndedBeforeTheCancellationTests.interrupt(
+                EndedDaemon(order: order, failure: nil))
+            guard case .status(let status) = result.ending else {
+                Issue.record("maw --install reported \(result.ending)")
+                return
+            }
+            #expect(status == 0)
+            #expect(
+                result.output
+                    == "The installation had already finished. Run maw -d Ubuntu-24.04 to use it.\n"
+            )
+            #expect(result.error == "Cancelling the installation...\n")
+        }
+    }
+}
