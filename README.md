@@ -59,6 +59,19 @@ their own, remove them at the end, and download the Ubuntu image only if
 agent started more than once in one boot of a machine. When a test fails, it keeps the test
 daemon's logs and the agent's journal and prints where they are.
 
+### Test groups
+
+Tests that assert latency sit in nested suites named `Latency`, and tests that generate heavy
+load in nested suites named `Load`. CI runs the tests in three groups, so that load never
+delays a latency test: every other test in parallel, then the latency tests one at a time,
+then the load generators one at a time. It then checks that every test ran in exactly one group
+(`docs/decisions/0018-test-groups.md`). To run the groups the way CI does:
+
+```sh
+swift build --build-tests
+scripts/test-groups.sh all .build/test-results
+```
+
 ### Running tests with only the Command Line Tools
 
 Some Command Line Tools releases ship `Testing.framework` but don't put it on the compiler's

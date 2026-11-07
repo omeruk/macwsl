@@ -37,6 +37,10 @@
 # Requires an Apple silicon Mac that is not itself a virtual machine, the guest files from
 # scripts/fetch-guest.sh, and a network connection for apt and, on a first run, the download.
 #
+# Without arguments, the tests run in the three groups of scripts/test-groups.sh, one test at a
+# time, and the run fails unless every test ran in exactly one group. Arguments, such as a
+# `--filter`, are passed to a single `swift test` instead, without the groups and the check.
+#
 # Usage: scripts/integration-test.sh [<swift test arguments>...]
 
 set -eu
@@ -253,14 +257,25 @@ fi
 
 # --no-parallel: the integration suites boot virtual machines and measure latency, and suites
 # that run at the same time would compete for the CPU and distort the measurements.
+#
+# Without arguments, the tests run in the groups of scripts/test-groups.sh, each one test at a
+# time, followed by its check that every test ran in exactly one group. With arguments, which
+# may select tests, they run in one `swift test` without the check.
+with_test_environment() {
+    env MAW_INTEGRATION=1 MAWD_PATH="$bin_path/mawd" MAW_PATH="$bin_path/maw" \
+        MAW_DAEMON_LABEL="$label" MAW_TEST_LOG_DIRECTORY="$log_directory" \
+        MAW_TEST_MACHINE_IDLE_TIMEOUT="$machine_idle_timeout" \
+        MAW_TEST_DISTRIBUTION="$test_distribution" MAW_TEST_USER="$test_user" \
+        MAW_TEST_PASSWORD="$test_password" MAW_TEST_IMAGE_CACHE="$image_cache" \
+        MAW_TEST_PREFIX="$prefix" "$@"
+}
 status=0
-MAW_INTEGRATION=1 MAWD_PATH="$bin_path/mawd" MAW_PATH="$bin_path/maw" \
-    MAW_DAEMON_LABEL="$label" MAW_TEST_LOG_DIRECTORY="$log_directory" \
-    MAW_TEST_MACHINE_IDLE_TIMEOUT="$machine_idle_timeout" \
-    MAW_TEST_DISTRIBUTION="$test_distribution" MAW_TEST_USER="$test_user" \
-    MAW_TEST_PASSWORD="$test_password" MAW_TEST_IMAGE_CACHE="$image_cache" \
-    MAW_TEST_PREFIX="$prefix" \
-    swift test --skip-build --no-parallel "$@" || status=$?
+if [ "$#" -eq 0 ]; then
+    with_test_environment scripts/test-groups.sh all "$log_directory/test-results" \
+        --no-parallel || status=$?
+else
+    with_test_environment swift test --skip-build --no-parallel "$@" || status=$?
+fi
 
 if [ "$status" -ne 0 ]; then
     echo "integration-test.sh: the daemon's log follows." >&2
