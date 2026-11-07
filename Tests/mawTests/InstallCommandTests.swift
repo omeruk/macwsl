@@ -636,31 +636,6 @@ extension InstallEndedBeforeTheCancellationTests {
         exit(0)
     }
 
-    @Test(.timeLimit(.minutes(1)))
-    func asksOnTheControllingTerminalWhileTheOutputGoesToAPipe() async throws {
-        let result = await #expect(
-            processExitsWith: .success,
-            observing: [\.standardOutputContent, \.standardErrorContent]
-        ) {
-            await InstallPromptTests.installOnAPseudoTerminal()
-        }
-        let output = String(decoding: result?.standardOutputContent ?? [], as: UTF8.self)
-        let error = String(decoding: result?.standardErrorContent ?? [], as: UTF8.self)
-        let both = output + error
-        #expect(
-            output.hasPrefix("Installing Ubuntu 24.04 LTS.\n")
-                && output.contains("Ubuntu-24.04 is installed, and is the default distribution."),
-            "\(output)")
-        // The progress, as plain lines.
-        #expect(output.contains("Downloading"), "\(output)")
-        for prompt in ["Create the default", "user name", "password", "Retype"] {
-            #expect(!both.contains(prompt), "\(prompt) in \(both)")
-        }
-        #expect(!both.contains(Self.password))
-        #expect(!both.contains("\u{1B}"), "An escape sequence in \(both.debugDescription)")
-        #expect(!both.contains("\r"), "A carriage return in \(both.debugDescription)")
-    }
-
     /// Without a terminal on standard input, and without `--user`, there is nothing to ask on.
     @Test(.timeLimit(.minutes(1)))
     func refusesWithoutATerminalOnStandardInput() async throws {
@@ -684,6 +659,39 @@ extension InstallEndedBeforeTheCancellationTests {
             } catch {
                 exit(14)
             }
+        }
+    }
+}
+
+extension InstallPromptTests {
+    /// Tests that assert latency. A suite named `Latency` puts them in the latency group, which
+    /// runs one test at a time and never beside a load generator (scripts/test-groups.sh).
+    /// This one expects the progress that the fake daemon reports 100 ms before its reply.
+    @Suite struct Latency {
+        @Test(.timeLimit(.minutes(1)))
+        func asksOnTheControllingTerminalWhileTheOutputGoesToAPipe() async throws {
+            let result = await #expect(
+                processExitsWith: .success,
+                observing: [\.standardOutputContent, \.standardErrorContent]
+            ) {
+                await InstallPromptTests.installOnAPseudoTerminal()
+            }
+            let output = String(decoding: result?.standardOutputContent ?? [], as: UTF8.self)
+            let error = String(decoding: result?.standardErrorContent ?? [], as: UTF8.self)
+            let both = output + error
+            #expect(
+                output.hasPrefix("Installing Ubuntu 24.04 LTS.\n")
+                    && output.contains(
+                        "Ubuntu-24.04 is installed, and is the default distribution."),
+                "\(output)")
+            // The progress, as plain lines.
+            #expect(output.contains("Downloading"), "\(output)")
+            for prompt in ["Create the default", "user name", "password", "Retype"] {
+                #expect(!both.contains(prompt), "\(prompt) in \(both)")
+            }
+            #expect(!both.contains(InstallPromptTests.password))
+            #expect(!both.contains("\u{1B}"), "An escape sequence in \(both.debugDescription)")
+            #expect(!both.contains("\r"), "A carriage return in \(both.debugDescription)")
         }
     }
 }
