@@ -75,14 +75,15 @@
                 output: errors.handler)
             // /usr/bin/tar re-encodes the image as an uncompressed pax archive, which keeps the
             // extended attributes. Its output goes to bsdtar's standard input on a thread of
-            // its own, because reading the pipe and `GuestProcess.write` both block.
+            // its own, because reading the pipe and `GuestProcess.write` both block. `nil`: the
+            // thread could not be started, and bsdtar's input is closed, so that it ends.
             let tar = await withCheckedContinuation {
                 (
                     continuation: CheckedContinuation<
-                        Result<StreamingProcess.Outcome, any Error>, Never
+                        Result<StreamingProcess.Outcome, any Error>?, Never
                     >
                 ) in
-                startDetachedThread {
+                let started = startDetachedThread {
                     let outcome = Result {
                         try StreamingProcess.run(
                             "/usr/bin/tar",
@@ -95,8 +96,16 @@
                     process.closeInput()
                     continuation.resume(returning: outcome)
                 }
+                if !started {
+                    process.closeInput()
+                    continuation.resume(returning: nil)
+                }
             }
             let status = try await process.waitForExit()
+            guard let tar else {
+                throw .provisioningFailed(
+                    step: step, reason: "could not start the thread that runs /usr/bin/tar")
+            }
             guard status == .exited(code: 0) else {
                 throw .provisioningFailed(step: step, reason: "bsdtar \(status): \(errors.tail)")
             }
