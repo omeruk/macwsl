@@ -319,6 +319,9 @@ import os
     @Test(arguments: [
         ("Ubuntu-24.04", "ubuntu-24-04"), ("Work", "work"), ("a__b..c", "a-b-c"),
         ("x-", "x"), ("1", "1"),
+        // Cut to 63 characters, the 63rd being a separator.
+        (String(repeating: "a", count: 62) + ".b", String(repeating: "a", count: 62)),
+        (String(repeating: "b", count: 64), String(repeating: "b", count: 63)),
     ])
     func derivesTheHostNameFromTheDistributionsName(_ name: String, _ hostname: String) throws {
         #expect(Installer.hostname(for: try DistroName(name)) == hostname)

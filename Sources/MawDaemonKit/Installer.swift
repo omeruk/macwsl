@@ -339,7 +339,8 @@
         }
 
         /// The guest's host name: the distribution's name in lowercase, with every character
-        /// that a host name cannot contain replaced by `-`, such as `ubuntu-24-04`.
+        /// that a host name cannot contain replaced by `-`, such as `ubuntu-24-04`, at most 63
+        /// characters, and never ending in `-` (RFC 1123).
         static func hostname(for name: DistroName) -> String {
             var result = ""
             for scalar in name.rawValue.lowercased().unicodeScalars {
@@ -350,10 +351,11 @@
                     result += "-"
                 }
             }
+            result = String(result.prefix(63))
             while result.hasSuffix("-") {
                 result.removeLast()
             }
-            return result.isEmpty ? "maw" : String(result.prefix(63))
+            return result.isEmpty ? "maw" : result
         }
     }
 #endif
