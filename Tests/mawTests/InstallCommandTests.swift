@@ -781,3 +781,29 @@ extension InstallPromptTests {
         }
     }
 }
+
+/// The summary at the end of an installation, on a terminal of 60 columns.
+@Suite struct InstallSummaryWidthTests {
+    @Test(arguments: [
+        (
+            "Ubuntu-24.04", "ayse", true,
+            "Ubuntu-24.04 is installed, and is the default distribution.\n"
+                + "Run maw to open a shell as ayse."
+        ),
+        (
+            "CapC-resize", "capture", false,
+            "CapC-resize is installed.\nRun maw -d CapC-resize to open a shell as capture."
+        ),
+    ])
+    func fitsSixtyColumns(name: String, user: String, isDefault: Bool, expected: String) throws {
+        let text = InstallCommand.summary(
+            InstallSummary(
+                name: try DistroName(name), displayName: "Ubuntu 24.04 LTS", defaultUser: user,
+                isDefault: isDefault, milliseconds: 1))
+        #expect(text == expected)
+        // The columns that maw's install output uses on a terminal of 60: all but the last.
+        for line in text.split(separator: "\n") {
+            #expect(line.count <= InstallProgressView.usable(60), "\(line)")
+        }
+    }
+}

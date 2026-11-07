@@ -330,11 +330,13 @@ struct InstallCommand {
         }
     }
 
+    /// The last lines of an installation: one sentence on each line, so that they fit a
+    /// terminal of 60 columns for a name such as Ubuntu-24.04.
     static func summary(_ summary: InstallSummary) -> String {
         let role = summary.isDefault ? ", and is the default distribution" : ""
         let open =
             summary.isDefault ? "Run maw" : "Run maw -d \(summary.name)"
-        return "\(summary.name) is installed\(role). \(open) to open a shell as "
+        return "\(summary.name) is installed\(role).\n\(open) to open a shell as "
             + "\(summary.defaultUser)."
     }
 
