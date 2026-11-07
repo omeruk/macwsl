@@ -160,7 +160,8 @@
 
         /// Checks everything about an installation that does not depend on its account, and
         /// returns the catalog entry and the name to install it under: the entry exists, the
-        /// name is neither reserved, installed, nor being installed, and the volume has room.
+        /// name is neither reserved, installed, nor being installed, nothing else is in
+        /// `distros/` under it, and the volume has room.
         @discardableResult
         public func check(distribution: String?, name: DistroName?) throws(MawError) -> (
             CatalogEntry, DistroName
@@ -184,6 +185,9 @@
             }
             guard !active.contains(name.rawValue.lowercased()) else {
                 throw .installationInProgress(name)
+            }
+            if let leftover = store.leftoverEntry(for: name) {
+                throw .distributionDirectoryExists(path: leftover.path(percentEncoded: false))
             }
             try checkFreeSpace(for: entry.image)
             return (entry, name)

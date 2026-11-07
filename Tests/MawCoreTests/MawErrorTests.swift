@@ -129,6 +129,19 @@ import Testing
                 == "Wait for other sessions to start, then run the command again.")
     }
 
+    @Test func namesALeftoverDistributionDirectoryAndLeavesItToTheUser() {
+        let error = MawError.distributionDirectoryExists(path: "/maw/distros/Work")
+        #expect(
+            error.errorDescription
+                == "/maw/distros/Work already exists, but it holds no installed distribution: its "
+                + "distro.json is missing.")
+        #expect(
+            error.recoverySuggestion
+                == "maw leaves the directory as it is, because it may hold a distribution's "
+                + "disk.img. Move it elsewhere, or delete it if you no longer need what it holds, "
+                + "then run maw --install again. Or install under another name with --name.")
+    }
+
     @Test func namesTheSigningScriptForARejectedSignature() {
         let error = MawError.clientSignatureRejected(identifier: "maw-5555")
         #expect(error.recoverySuggestion?.contains("scripts/sign-dev.sh") == true)

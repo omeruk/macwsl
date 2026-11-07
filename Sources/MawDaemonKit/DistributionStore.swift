@@ -55,6 +55,24 @@
                 atPath: paths.metadataFile(for: name).path(percentEncoded: false))
         }
 
+        /// The entry in `distros/` that `name` would be installed as, if it exists but is not
+        /// an installed distribution, as a partial manual removal leaves it: a directory without
+        /// `distro.json`, or anything else under that name. Names are compared ignoring case,
+        /// as APFS does, so that `twin/` is found for `Twin`.
+        public func leftoverEntry(for name: DistroName) -> URL? {
+            let wanted = name.rawValue.lowercased()
+            let entries =
+                (try? FileManager.default.contentsOfDirectory(
+                    atPath: paths.distrosDirectory.path(percentEncoded: false))) ?? []
+            guard let entry = entries.first(where: { $0.lowercased() == wanted }) else {
+                return nil
+            }
+            if let found = try? DistroName(entry), isInstalled(found) {
+                return nil
+            }
+            return paths.distrosDirectory.appending(path: entry)
+        }
+
         /// The default distribution: the one `state.json` names if it is installed, otherwise
         /// the first installed one by name, otherwise `nil`.
         public func defaultDistribution() -> DistroName? {

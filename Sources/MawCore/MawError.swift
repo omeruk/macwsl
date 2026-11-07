@@ -38,6 +38,9 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case distributionAlreadyInstalled(DistroName)
     /// Another `maw --install` is installing the same distribution.
     case installationInProgress(DistroName)
+    /// The distribution's directory, `path`, exists but holds no `distro.json`, as a partial
+    /// manual removal leaves it. maw never changes it: it may hold the distribution's disk.
+    case distributionDirectoryExists(path: String)
     /// A user name failed Ubuntu's rules. `reason` explains which.
     case invalidUserName(String, reason: String)
     /// The password is empty, or the two entries differ, or standard input had none.
@@ -185,6 +188,9 @@ extension MawError: LocalizedError {
             "\(name) is already installed."
         case .installationInProgress(let name):
             "\(name) is being installed by another maw --install."
+        case .distributionDirectoryExists(let path):
+            "\(path) already exists, but it holds no installed distribution: its distro.json is "
+                + "missing."
         case .invalidUserName(let name, let reason):
             "'\(name)' cannot be the user name: \(reason)."
         case .invalidPassword(let reason):
@@ -312,6 +318,10 @@ extension MawError: LocalizedError {
             "Use it with maw -d \(name). The README explains how to remove a distribution."
         case .installationInProgress:
             "Wait for the other installation to finish."
+        case .distributionDirectoryExists:
+            "maw leaves the directory as it is, because it may hold a distribution's disk.img. "
+                + "Move it elsewhere, or delete it if you no longer need what it holds, then run "
+                + "maw --install again. Or install under another name with --name."
         case .invalidUserName:
             "Choose another name: 1 to \(UserName.maximumLength) lowercase letters, digits, '-' or "
                 + "'_', starting with a letter, and not one the distribution already uses, for "

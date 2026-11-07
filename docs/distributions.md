@@ -40,7 +40,7 @@ reports progress, one line per step:
 
 | Step | What happens |
 |------|--------------|
-| Checking | The name must be unknown, the user name valid by Ubuntu's rules (lowercase letter first, then lowercase letters, digits, `-` and `_`, at most 32 characters, not a name the image already uses), the password a non-empty single line, and the volume must have room for the rest of the download, the root file system, and 1 GB more. Nothing is downloaded before these checks pass. |
+| Checking | The name must be unknown, and nothing else may be in `distros/` under it in any case: a directory left without `distro.json`, as a partial manual removal leaves it, is refused and never changed, since it may hold a disk. The user name valid by Ubuntu's rules (lowercase letter first, then lowercase letters, digits, `-` and `_`, at most 32 characters, not a name the image already uses), the password a non-empty single line, and the volume must have room for the rest of the download, the root file system, and 1 GB more. Nothing is downloaded before these checks pass. |
 | Downloading | Only when the image is not in `~/Library/Caches/maw/images`. An interrupted download is kept and resumed. |
 | Verifying the image | The size and the SHA-256, before every installation. A file that fails is removed. Ctrl-C stops the check before its next 4 MiB read and leaves the file as it is. |
 | Creating the virtual disk | A 256 GiB sparse disk image, readable only by its owner, and the initramfs machine that provisions it. |

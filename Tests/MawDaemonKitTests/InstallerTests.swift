@@ -202,6 +202,31 @@ import os
                 == "Work")
     }
 
+    /// `distros/<name>/` without `distro.json`, as a partial manual removal leaves it, is
+    /// refused before anything is downloaded, under any spelling of the name, and stays as it
+    /// was.
+    @Test(arguments: ["Ubuntu-24.04", "ubuntu-24.04", "UBUNTU-24.04"])
+    func refusesALeftoverDirectoryAndLeavesItAsItWas(_ requested: String) async throws {
+        let leftover = store.paths.distrosDirectory.appending(path: "Ubuntu-24.04")
+        try FileManager.default.createDirectory(at: leftover, withIntermediateDirectories: true)
+        let disk = leftover.appending(path: "disk.img")
+        try Data("the user's disk".utf8).write(to: disk)
+        let error = MawError.distributionDirectoryExists(path: leftover.path(percentEncoded: false))
+        await #expect(throws: error) {
+            try await installer().check(distribution: nil, name: try DistroName(requested))
+        }
+        await #expect(throws: error) {
+            try await installer().install(request(name: requested), progress: { _ in })
+        }
+        #expect(images.downloads == 0)
+        #expect(machine.calls.isEmpty)
+        #expect(try Data(contentsOf: disk) == Data("the user's disk".utf8))
+        #expect(
+            try FileManager.default.contentsOfDirectory(
+                atPath: leftover.path(percentEncoded: false)) == ["disk.img"])
+        #expect(stagingDirectories.isEmpty)
+    }
+
     // MARK: Failure and cancellation
 
     @Test func removesEverythingWhenAStepFails() async throws {
