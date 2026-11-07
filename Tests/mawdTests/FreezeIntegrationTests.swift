@@ -24,8 +24,20 @@ import Testing
 struct FreezeIntegrationTests {
     let maw: MawIntegration
 
-    init() throws {
+    /// Each test starts without a `seq` in the guest. A session whose connection ended on the
+    /// host's side while the guest's side stayed open leaves its `seq` running, because the agent
+    /// never learns that the host has gone; every later test's check that its own `seq` ended
+    /// would then fail too, and one failure would be reported as several.
+    init() async throws {
         maw = try MawIntegration()
+        let cleanup = try await maw.session(["-u", "root", "-e", "pkill", "-KILL", "-x", "seq"])
+        // pkill exits with 0 when it ended a process and with 1 when there was none.
+        try #require(
+            cleanup.status == 0 || cleanup.status == 1,
+            "Ending a leftover seq failed: \(cleanup.standardError)")
+        if cleanup.status == 0 {
+            print("FreezeIntegrationTests: ended a seq that an earlier test left in the guest")
+        }
     }
 
     var distribution: String { maw.distribution }
