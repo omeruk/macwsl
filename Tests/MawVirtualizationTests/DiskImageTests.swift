@@ -48,7 +48,12 @@ import Testing
         holder.standardInput = input
         holder.standardOutput = output
         try holder.run()
-        _ = try output.fileHandleForReading.read(upToCount: 7)
+        // python3 can take seconds to start on a loaded machine. Should it never write, the
+        // read ends when the process is stopped.
+        let stopper = holder.terminate(after: .seconds(60))
+        defer { stopper.cancel() }
+        let locked = try await output.fileHandleForReading.readOnAThreadOfItsOwn(upToCount: 7)
+        try #require(locked == Data("locked\n".utf8))
         #expect(DiskImage.isLocked(image))
         await #expect(throws: MawError.diskImageInUse(path: image.path(percentEncoded: false))) {
             try await DiskImage.waitUntilUnlocked(image, timeout: .milliseconds(200))
