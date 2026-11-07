@@ -198,7 +198,7 @@ struct InstallCommand {
                     await output.waitUntilWritten(timeout: outputTimeout)
                     return .status(report?.exitCode.rawValue ?? 1)
                 case nil:
-                    error = .daemonConnectionLost(during: "cancelling the installation")
+                    error = .installationOutcomeUnknown(name)
                 }
             case .unconfirmed:
                 error = .daemonConnectionLost(during: "cancelling the installation")

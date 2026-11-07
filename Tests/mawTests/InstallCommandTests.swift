@@ -460,10 +460,11 @@ extension InstallCancellationTests {
         )
     }
 
-    /// The daemon has sent the installation's reply, but it does not arrive: maw cannot say
-    /// how the installation ended, and does not claim that it finished.
+    /// The daemon has sent the installation's reply, but it does not arrive: maw says that
+    /// it does not know how the installation ended, and neither claims that it finished nor
+    /// that the daemon went away.
     @Test(.timeLimit(.minutes(1)))
-    func reportsAnUnconfirmedEndWithoutTheInstallationsReply() async throws {
+    func reportsAnUnknownOutcomeWithoutTheInstallationsReply() async throws {
         let daemon = EndedDaemon(order: .never, failure: Self.failure)
         defer { daemon.release() }
         let result = try await Self.interrupt(daemon)
@@ -475,9 +476,11 @@ extension InstallCancellationTests {
         #expect(
             result.error
                 == "Cancelling the installation...\n"
-                + (Maw.failure(
-                    for: MawError.daemonConnectionLost(during: "cancelling the installation"))?
-                    .output ?? ""))
+                + "maw: The installation of Ubuntu-24.04 had already ended when maw asked the "
+                + "daemon to cancel it, but its result did not reach maw, so it is not known "
+                + "whether Ubuntu-24.04 was installed.\n"
+                + "maw -d Ubuntu-24.04 -e true succeeds if it is installed, and otherwise says "
+                + "that it is not; then run maw --install again.\n")
         #expect(!(result.output + result.error).contains("already finished"))
     }
 }

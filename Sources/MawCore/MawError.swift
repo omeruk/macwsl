@@ -64,6 +64,9 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case provisioningFailed(step: String, reason: String)
     /// The installation was cancelled, because its client went away or the daemon stopped.
     case installationCancelled(DistroName)
+    /// After Ctrl-C, the daemon answered that the installation had already ended, but its
+    /// result did not reach maw, so whether the distribution was installed is not known.
+    case installationOutcomeUnknown(DistroName)
 
     // MARK: Daemon
 
@@ -217,6 +220,10 @@ extension MawError: LocalizedError {
             "The installation failed while \(step): \(reason)."
         case .installationCancelled(let name):
             "The installation of \(name) was cancelled."
+        case .installationOutcomeUnknown(let name):
+            "The installation of \(name) had already ended when maw asked the daemon to cancel "
+                + "it, but its result did not reach maw, so it is not known whether \(name) was "
+                + "installed."
         case .daemonNotInstalled(let label):
             "The maw daemon is not installed: launchd has no LaunchAgent named \(label)."
         case .daemonUnreachable(let reason):
@@ -350,6 +357,9 @@ extension MawError: LocalizedError {
         case .installationCancelled:
             "Nothing was installed. Run maw --install to start again; an interrupted download "
                 + "resumes where it stopped."
+        case .installationOutcomeUnknown(let name):
+            "maw -d \(name) -e true succeeds if it is installed, and otherwise says that it is "
+                + "not; then run maw --install again."
         case .daemonNotInstalled:
             "Register the daemon with mawd install."
         case .daemonUnreachable, .daemonConnectionLost, .daemonProtocolError:
