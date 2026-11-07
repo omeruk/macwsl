@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-10-22
+- Superseded in part by [0017](0017-dial-back-for-sessions.md): "Nothing listens on the Mac for
+  the guest" holds for the network; on vsock, the daemon's dial-back listener is an exception.
 
 ## Context
 

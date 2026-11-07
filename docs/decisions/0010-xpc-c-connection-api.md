@@ -2,6 +2,9 @@
 
 - Status: Accepted
 - Date: 2026-10-22
+- Superseded in part by [0017](0017-dial-back-for-sessions.md): a session's connection is
+  no longer opened by the daemon; the guest agent dials it back to the daemon, which hands
+  its descriptor to the client.
 
 ## Context
 
