@@ -172,9 +172,8 @@ host                                    agent
 5. The host draws and registers a session's nonce once its connection to the agent exists,
    just before it sends `dialBack`, so that the time the connect takes does not count. It
    keeps the nonce for 5 seconds from then, and for at most 64 sessions per machine, the
-   agent's connection limit. A nonce is used once, compared in
-   constant time, and never logged. Refusals go to the machine's console log, at most 5 in
-   10 seconds.
+   agent's connection limit. A nonce is used once, compared in constant time, and never
+   logged. Refusals go to the machine's console log, at most 5 in 10 seconds.
 6. If the agent replies `dialBackFailed`, or replies `dialedBack` but no connection with the
    nonce arrives within the 5 seconds, the session fails with `sessionDialBackFailed` or
    `sessionDialBackMissing`. The host never falls back to running the session on a
@@ -237,9 +236,12 @@ host                                   agent
   fails, because the agent may already have closed its side. A write to a closed connection
   fails with EPIPE or ECONNRESET, or on macOS with ENOTCONN when it races the close; the host
   treats all three as the agent having closed its side. On macOS, a socket whose peer has
-  already closed refuses `SO_NOSIGPIPE`, so that a write to it would raise SIGPIPE; a host
-  connection made from such a socket never writes to it, treats it as closed in the same way,
-  and still reads what the agent sent, such as its version and an error.
+  already closed refuses `SO_NOSIGPIPE` and `F_SETNOSIGPIPE`, and unless it suppressed SIGPIPE
+  before the close, a write to it raises SIGPIPE, which ends a process that does not ignore
+  the signal, as the terminal app will not. A host connection made from such a socket never
+  writes to it, treats it as closed in the same way, and still reads what the agent sent, such
+  as its version and an error. `mawd`, the agent, and `maw` while it runs a session or an
+  installation ignore SIGPIPE in any case.
 - **Exit status**: as in ssh, the status is the exit code, or 128 plus the signal number if a
   signal ended the process. SIGINT gives 130.
 - **Host disconnect**: if the host closes the connection before `exited`, the agent sends
