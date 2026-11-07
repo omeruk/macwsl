@@ -30,61 +30,6 @@ import Testing
         #expect(output.standardError == "to-stderr\n")
     }
 
-    @Test func relaysLargeVolumesInBothDirections() async throws {
-        let output = Output()
-        let process = try await agent.client.exec(
-            ExecRequest(argv: ["cat"]), output: output.handler)
-        // 4 MiB: far more than every buffer on the way, so that back-pressure must work.
-        let input = (0..<(4 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 31) }
-        // A thread of its own, not a task: `write` blocks while the input queue is full.
-        async let written: Void = runOnDedicatedThread {
-            var offset = 0
-            while offset < input.count {
-                let end = min(offset + 50_000, input.count)
-                process.write(input[offset..<end])
-                offset = end
-            }
-            process.closeInput()
-        }
-        #expect(try await process.waitForExit() == .exited(code: 0))
-        await written
-        #expect(output.standardOutputBytes == input)
-    }
-
-    /// A reader slower than the connection, such as a decompressor, keeps the agent's input
-    /// backlog full, so that the client must wait for the input window and resume as the
-    /// process drains its pipe.
-    @Test(.timeLimit(.minutes(1)))
-    func relaysLargeInputToASlowReader() async throws {
-        let output = Output()
-        let script = """
-            total=0
-            while :; do
-                n=$(dd bs=65536 count=1 2>/dev/null | wc -c)
-                [ "$n" -eq 0 ] && break
-                total=$((total + n))
-                sleep 0.005
-            done
-            echo "$total"
-            """
-        let process = try await agent.client.exec(
-            ExecRequest(argv: ["/bin/sh", "-c", script]), output: output.handler)
-        // 8 MiB: 32 times the agent's input limit.
-        let size = 8 << 20
-        // A thread of its own: `write` blocks, which must not hold a cooperative thread.
-        startDetachedThread {
-            let chunk = [UInt8](repeating: 0x5A, count: 32 << 10)
-            var written = 0
-            while written < size {
-                process.write(chunk)
-                written += chunk.count
-            }
-            process.closeInput()
-        }
-        #expect(try await process.waitForExit() == .exited(code: 0))
-        #expect(output.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "\(size)")
-    }
-
     @Test func runsWithoutAnyEnvironmentFromTheHost() async throws {
         let output = Output()
         let process = try await agent.client.exec(
@@ -127,92 +72,7 @@ import Testing
         #expect(status.shellStatus == 130)
     }
 
-    @Test func endsTheSessionWhenAProcessExitsWithoutClosingItsOutput() async throws {
-        // The background sleep keeps the pipes open; the session ends after its grace period.
-        let started = ContinuousClock.now
-        let process = try await agent.client.exec(
-            ExecRequest(argv: ["/bin/sh", "-c", "sleep 30 & exit 4"]), output: Output().handler)
-        #expect(try await process.waitForExit() == .exited(code: 4))
-        #expect(ContinuousClock.now - started < .seconds(10))
-    }
-
     // MARK: Control messages ahead of unread input
-
-    /// Ctrl-C reaches a process that never reads its standard input, however much input waits
-    /// for it. Before the input window, the agent stopped reading the connection once 256 KiB
-    /// waited, and the signal stayed behind the rest for good.
-    @Test(.timeLimit(.minutes(1)), arguments: [nil, TerminalSize(rows: 24, columns: 80)])
-    func deliversASignalAheadOfUnreadInput(terminal: TerminalSize?) async throws {
-        let process = try await agent.client.exec(
-            ExecRequest(argv: ["sleep", "1000"], terminal: terminal), output: Output().handler)
-        let flood = InputFlood(process)
-        let queued = await flood.waitUntilBlocked()
-        #expect(queued >= AgentProtocol.inputWindow)
-
-        let sent = ContinuousClock.now
-        process.send(.int)
-        let status = await exitStatus(of: process, within: .seconds(5))
-        let delay = ContinuousClock.now - sent
-        #expect(status == .signaled(signal: Signal.int.linuxNumber))
-        #expect(delay < .seconds(1), "the signal took \(delay)")
-    }
-
-    /// Ctrl-C reaches a process whose output nobody reads within 100 ms. The output handler
-    /// blocks, as `maw`'s write to a standard output that nobody reads does; before, it blocked
-    /// the client's I/O thread, and the signal was never sent. The process's trap creates a
-    /// file, so that the test sees the signal arrive without reading any output.
-    ///
-    /// The cases run one after the other: each keeps a `yes` at full CPU, and two at once on a
-    /// small CI runner delayed the signal to about 200 ms.
-    @Test(
-        .serialized, .timeLimit(.minutes(1)), arguments: [nil, TerminalSize(rows: 24, columns: 80)])
-    func deliversASignalWhileTheOutputIsNotRead(terminal: TerminalSize?) async throws {
-        let marker = "/tmp/maw-test-signal-\(getpid())-\(UInt32.random(in: 0...UInt32.max))"
-        defer { unlink(marker) }
-        let output = UnreadOutput()
-        let process = try await agent.client.exec(
-            ExecRequest(
-                argv: ["/bin/sh", "-c", "trap 'touch \"$0\"; exit 130' INT; yes", marker],
-                terminal: terminal),
-            output: output.handler)
-        #expect(await output.waitUntilBlocked())
-        // Long enough for every buffer on the way to fill.
-        try await Task.sleep(for: .milliseconds(300))
-
-        let sent = ContinuousClock.now
-        process.send(.int)
-        while access(marker, F_OK) != 0 && ContinuousClock.now - sent < .seconds(5) {
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        let delay = ContinuousClock.now - sent
-        #expect(access(marker, F_OK) == 0, "the signal did not arrive")
-        #expect(delay < .milliseconds(100), "the signal took \(delay)")
-
-        output.release()
-        #expect(await exitStatus(of: process, within: .seconds(5)) == .exited(code: 130))
-    }
-
-    /// A resize reaches a terminal whose process reads none of a large paste.
-    @Test(.timeLimit(.minutes(1)))
-    func resizesATerminalAheadOfUnreadInput() async throws {
-        let output = Output()
-        let process = try await agent.client.exec(
-            ExecRequest(
-                argv: [
-                    "/bin/sh", "-c",
-                    "trap 'stty size' WINCH; echo ready; while :; do sleep 0.02; done",
-                ],
-                terminal: TerminalSize(rows: 24, columns: 80)),
-            output: output.handler)
-        #expect(await output.waitForOutput(containing: "ready"))
-        let flood = InputFlood(process)
-        #expect(await flood.waitUntilBlocked() >= AgentProtocol.inputWindow)
-
-        process.resize(TerminalSize(rows: 30, columns: 100))
-        #expect(await output.waitForOutput(containing: "30 100", timeout: .seconds(1)))
-        process.send(.kill)
-        _ = await exitStatus(of: process, within: .seconds(5))
-    }
 
     /// A host that sends more input than the window allows is closed with a protocol error.
     @Test func closesAConnectionThatExceedsTheInputWindow() async throws {
@@ -367,6 +227,162 @@ import Testing
     @Test func passesTheSelfTest() async {
         let failures = await SelfTest.run(system: .testing())
         #expect(failures.isEmpty, "\(failures)")
+    }
+}
+
+extension ExecSessionTests {
+    /// Tests that assert latency. A suite named `Latency` puts them in the latency group, which
+    /// runs one test at a time and never beside a load generator (scripts/test-groups.sh).
+    @Suite struct Latency {
+        let agent = TestAgent()
+
+        @Test func endsTheSessionWhenAProcessExitsWithoutClosingItsOutput() async throws {
+            // The background sleep keeps the pipes open; the session ends after its grace period.
+            let started = ContinuousClock.now
+            let process = try await agent.client.exec(
+                ExecRequest(argv: ["/bin/sh", "-c", "sleep 30 & exit 4"]), output: Output().handler)
+            #expect(try await process.waitForExit() == .exited(code: 4))
+            #expect(ContinuousClock.now - started < .seconds(10))
+        }
+
+        /// Ctrl-C reaches a process that never reads its standard input, however much input waits
+        /// for it. Before the input window, the agent stopped reading the connection once 256 KiB
+        /// waited, and the signal stayed behind the rest for good.
+        @Test(.timeLimit(.minutes(1)), arguments: [nil, TerminalSize(rows: 24, columns: 80)])
+        func deliversASignalAheadOfUnreadInput(terminal: TerminalSize?) async throws {
+            let process = try await agent.client.exec(
+                ExecRequest(argv: ["sleep", "1000"], terminal: terminal), output: Output().handler)
+            let flood = InputFlood(process)
+            let queued = await flood.waitUntilBlocked()
+            #expect(queued >= AgentProtocol.inputWindow)
+
+            let sent = ContinuousClock.now
+            process.send(.int)
+            let status = await exitStatus(of: process, within: .seconds(5))
+            let delay = ContinuousClock.now - sent
+            #expect(status == .signaled(signal: Signal.int.linuxNumber))
+            #expect(delay < .seconds(1), "the signal took \(delay)")
+        }
+
+        /// Ctrl-C reaches a process whose output nobody reads within 100 ms. The output handler
+        /// blocks, as `maw`'s write to a standard output that nobody reads does; before, it blocked
+        /// the client's I/O thread, and the signal was never sent. The process's trap creates a
+        /// file, so that the test sees the signal arrive without reading any output.
+        ///
+        /// The cases run one after the other: each keeps a `yes` at full CPU, and two at once on a
+        /// small CI runner delayed the signal to about 200 ms.
+        @Test(
+            .serialized, .timeLimit(.minutes(1)),
+            arguments: [nil, TerminalSize(rows: 24, columns: 80)])
+        func deliversASignalWhileTheOutputIsNotRead(terminal: TerminalSize?) async throws {
+            let marker = "/tmp/maw-test-signal-\(getpid())-\(UInt32.random(in: 0...UInt32.max))"
+            defer { unlink(marker) }
+            let output = UnreadOutput()
+            let process = try await agent.client.exec(
+                ExecRequest(
+                    argv: ["/bin/sh", "-c", "trap 'touch \"$0\"; exit 130' INT; yes", marker],
+                    terminal: terminal),
+                output: output.handler)
+            #expect(await output.waitUntilBlocked())
+            // Long enough for every buffer on the way to fill.
+            try await Task.sleep(for: .milliseconds(300))
+
+            let sent = ContinuousClock.now
+            process.send(.int)
+            while access(marker, F_OK) != 0 && ContinuousClock.now - sent < .seconds(5) {
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            let delay = ContinuousClock.now - sent
+            #expect(access(marker, F_OK) == 0, "the signal did not arrive")
+            #expect(delay < .milliseconds(100), "the signal took \(delay)")
+
+            output.release()
+            #expect(await exitStatus(of: process, within: .seconds(5)) == .exited(code: 130))
+        }
+
+        /// A resize reaches a terminal whose process reads none of a large paste.
+        @Test(.timeLimit(.minutes(1)))
+        func resizesATerminalAheadOfUnreadInput() async throws {
+            let output = Output()
+            let process = try await agent.client.exec(
+                ExecRequest(
+                    argv: [
+                        "/bin/sh", "-c",
+                        "trap 'stty size' WINCH; echo ready; while :; do sleep 0.02; done",
+                    ],
+                    terminal: TerminalSize(rows: 24, columns: 80)),
+                output: output.handler)
+            #expect(await output.waitForOutput(containing: "ready"))
+            let flood = InputFlood(process)
+            #expect(await flood.waitUntilBlocked() >= AgentProtocol.inputWindow)
+
+            process.resize(TerminalSize(rows: 30, columns: 100))
+            #expect(await output.waitForOutput(containing: "30 100", timeout: .seconds(1)))
+            process.send(.kill)
+            _ = await exitStatus(of: process, within: .seconds(5))
+        }
+    }
+
+    /// Tests that generate heavy load. A suite named `Load` puts them in the load group, which
+    /// runs one test at a time and never beside a latency test (scripts/test-groups.sh).
+    @Suite struct Load {
+        let agent = TestAgent()
+
+        @Test func relaysLargeVolumesInBothDirections() async throws {
+            let output = Output()
+            let process = try await agent.client.exec(
+                ExecRequest(argv: ["cat"]), output: output.handler)
+            // 4 MiB: far more than every buffer on the way, so that back-pressure must work.
+            let input = (0..<(4 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 31) }
+            // A thread of its own, not a task: `write` blocks while the input queue is full.
+            async let written: Void = runOnDedicatedThread {
+                var offset = 0
+                while offset < input.count {
+                    let end = min(offset + 50_000, input.count)
+                    process.write(input[offset..<end])
+                    offset = end
+                }
+                process.closeInput()
+            }
+            #expect(try await process.waitForExit() == .exited(code: 0))
+            await written
+            #expect(output.standardOutputBytes == input)
+        }
+
+        /// A reader slower than the connection, such as a decompressor, keeps the agent's input
+        /// backlog full, so that the client must wait for the input window and resume as the
+        /// process drains its pipe.
+        @Test(.timeLimit(.minutes(1)))
+        func relaysLargeInputToASlowReader() async throws {
+            let output = Output()
+            let script = """
+                total=0
+                while :; do
+                    n=$(dd bs=65536 count=1 2>/dev/null | wc -c)
+                    [ "$n" -eq 0 ] && break
+                    total=$((total + n))
+                    sleep 0.005
+                done
+                echo "$total"
+                """
+            let process = try await agent.client.exec(
+                ExecRequest(argv: ["/bin/sh", "-c", script]), output: output.handler)
+            // 8 MiB: 32 times the agent's input limit.
+            let size = 8 << 20
+            // A thread of its own: `write` blocks, which must not hold a cooperative thread.
+            startDetachedThread {
+                let chunk = [UInt8](repeating: 0x5A, count: 32 << 10)
+                var written = 0
+                while written < size {
+                    process.write(chunk)
+                    written += chunk.count
+                }
+                process.closeInput()
+            }
+            #expect(try await process.waitForExit() == .exited(code: 0))
+            #expect(
+                output.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "\(size)")
+        }
     }
 }
 

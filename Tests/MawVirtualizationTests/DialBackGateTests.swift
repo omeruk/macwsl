@@ -223,52 +223,6 @@ import os
         ]
     }()
 
-    @Test(arguments: malformedFrames)
-    func refusesAShortOrMalformedNonceFrame(_ name: String, _ bytes: [UInt8]) throws {
-        let gate = TestGate()
-        _ = try gate.gate.expect()
-        let pair = try SocketPair()
-        try pair.send(bytes)
-        pair.closeGuestSide()
-
-        #expect(gate.gate.admit(sourcePort: 1023) == nil)
-        let started = ContinuousClock.now
-        let refusal = try #require(gate.gate.authenticate(pair.host))
-        #expect(ContinuousClock.now - started < .seconds(1))
-        switch refusal {
-        case .malformedNonceFrame, .nonceNotReceived: break
-        default: Issue.record("\(name): refused because \(refusal)")
-        }
-        #expect(pair.host.rawValue == -1)
-    }
-
-    /// A connection that sends nothing, or part of a frame, is closed after 2 s.
-    @Test(arguments: [0, 36])
-    func waitsAtMostTwoSecondsForTheNonce(sending count: Int) async throws {
-        let gate = TestGate(limits: DialBackGate.Limits())
-        #expect(gate.gate.limits.nonceReadTimeout == .seconds(2))
-        let pending = try gate.gate.expect()
-        let pair = try SocketPair()
-        try pair.send(Array(Frame.dialBackNonce(pending.nonce).encoded.prefix(count)))
-
-        #expect(gate.gate.admit(sourcePort: 1023) == nil)
-        // On a thread of its own, as the listener does: a 2-second block on the cooperative
-        // pool would hold up other tests' tasks. Timed on that thread, so that the time the
-        // task takes to resume is not counted.
-        let host = pair.host
-        let (refusal, elapsed) = await runOnDedicatedThread {
-            let started = ContinuousClock.now
-            let refusal = gate.gate.authenticate(host)
-            return (refusal, ContinuousClock.now - started)
-        }
-        // The header is read first, then the payload.
-        let received = count < Frame.headerSize ? count : count - Frame.headerSize
-        #expect(refusal == .nonceNotReceived("timed out after \(received) bytes"))
-        #expect(elapsed >= .seconds(2))
-        #expect(elapsed < .seconds(3))
-        #expect(pair.host.rawValue == -1)
-    }
-
     // MARK: Pending sessions
 
     @Test func keepsAtMostSixtyFourSessionsWaiting() throws {
@@ -303,29 +257,6 @@ import os
         #expect(await gate.connection(for: pending) == nil)
         #expect(ContinuousClock.now - started >= .milliseconds(200))
         #expect(gate.admit(sourcePort: 1023) == .noPendingRequest)
-    }
-
-    /// A session whose nonce expired while it waited learns so when another session registers
-    /// its nonce first: the expiry that `expect()` performs resumes the waiter it removes.
-    @Test func endsAnExpiredWaitWhenAnotherSessionRegisters() async throws {
-        let gate = TestGate()
-        let first = try gate.gate.expect()
-        let ended = Locked<OwnedDescriptor??>(nil)
-        Task {
-            let descriptor = await gate.gate.connection(for: first)
-            ended.update { $0 = .some(descriptor) }
-        }
-        try await Task.sleep(for: .milliseconds(50))
-        gate.clock.advance(by: .seconds(6))
-        let second = try gate.gate.expect()
-        defer { gate.gate.cancel(second) }
-        // The first wait's own expiry sleeps 5 s of real time; this one must end well before.
-        let deadline = ContinuousClock.now + .seconds(2)
-        while ended.value == nil && ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let result = try #require(ended.value, "the first wait has not ended")
-        #expect(result == nil)
     }
 
     @Test func endsTheWaitWhenTheTaskIsCancelled() async throws {
@@ -430,18 +361,6 @@ import os
         #expect(agent.connections.value == 1)
     }
 
-    /// The nonce's lifetime starts once the host's connection to the agent exists: a connect
-    /// that takes longer than the lifetime does not make the dial arrive too late.
-    @Test func startsTheNonceLifetimeAfterTheConnect() async throws {
-        var limits = DialBackGate.Limits()
-        limits.nonceLifetime = .milliseconds(300)
-        let gate = DialBackGate(limits: limits) { _ in }
-        let agent = FakeAgent(gate: gate, reply: .dial, connectDelay: .milliseconds(500))
-        let descriptor = try await gate.openSessionConnection(through: agent.client)
-        #expect(
-            try SocketPair.readExactly(descriptor.rawValue, count: 9) == Frame.version().encoded)
-    }
-
     /// When no nonce can be registered, no request reaches the agent.
     @Test func sendsNoRequestWhenEverySessionPlaceIsTaken() async throws {
         let gate = TestGate()
@@ -459,6 +378,94 @@ import os
         }
         #expect(agent.served.value == 1)
         #expect(agent.requests.value.isEmpty)
+    }
+}
+
+extension DialBackGateTests {
+    /// Tests that assert latency. A suite named `Latency` puts them in the latency group, which
+    /// runs one test at a time and never beside a load generator (scripts/test-groups.sh).
+    @Suite struct Latency {
+        @Test(arguments: malformedFrames)
+        func refusesAShortOrMalformedNonceFrame(_ name: String, _ bytes: [UInt8]) throws {
+            let gate = TestGate()
+            _ = try gate.gate.expect()
+            let pair = try SocketPair()
+            try pair.send(bytes)
+            pair.closeGuestSide()
+
+            #expect(gate.gate.admit(sourcePort: 1023) == nil)
+            let started = ContinuousClock.now
+            let refusal = try #require(gate.gate.authenticate(pair.host))
+            #expect(ContinuousClock.now - started < .seconds(1))
+            switch refusal {
+            case .malformedNonceFrame, .nonceNotReceived: break
+            default: Issue.record("\(name): refused because \(refusal)")
+            }
+            #expect(pair.host.rawValue == -1)
+        }
+
+        /// A connection that sends nothing, or part of a frame, is closed after 2 s.
+        @Test(arguments: [0, 36])
+        func waitsAtMostTwoSecondsForTheNonce(sending count: Int) async throws {
+            let gate = TestGate(limits: DialBackGate.Limits())
+            #expect(gate.gate.limits.nonceReadTimeout == .seconds(2))
+            let pending = try gate.gate.expect()
+            let pair = try SocketPair()
+            try pair.send(Array(Frame.dialBackNonce(pending.nonce).encoded.prefix(count)))
+
+            #expect(gate.gate.admit(sourcePort: 1023) == nil)
+            // On a thread of its own, as the listener does: a 2-second block on the cooperative
+            // pool would hold up other tests' tasks. Timed on that thread, so that the time the
+            // task takes to resume is not counted.
+            let host = pair.host
+            let (refusal, elapsed) = await runOnDedicatedThread {
+                let started = ContinuousClock.now
+                let refusal = gate.gate.authenticate(host)
+                return (refusal, ContinuousClock.now - started)
+            }
+            // The header is read first, then the payload.
+            let received = count < Frame.headerSize ? count : count - Frame.headerSize
+            #expect(refusal == .nonceNotReceived("timed out after \(received) bytes"))
+            #expect(elapsed >= .seconds(2))
+            #expect(elapsed < .seconds(3))
+            #expect(pair.host.rawValue == -1)
+        }
+
+        /// A session whose nonce expired while it waited learns so when another session registers
+        /// its nonce first: the expiry that `expect()` performs resumes the waiter it removes.
+        @Test func endsAnExpiredWaitWhenAnotherSessionRegisters() async throws {
+            let gate = TestGate()
+            let first = try gate.gate.expect()
+            let ended = Locked<OwnedDescriptor??>(nil)
+            Task {
+                let descriptor = await gate.gate.connection(for: first)
+                ended.update { $0 = .some(descriptor) }
+            }
+            try await Task.sleep(for: .milliseconds(50))
+            gate.clock.advance(by: .seconds(6))
+            let second = try gate.gate.expect()
+            defer { gate.gate.cancel(second) }
+            // The first wait's own expiry sleeps 5 s of real time; this one must end well before.
+            let deadline = ContinuousClock.now + .seconds(2)
+            while ended.value == nil && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let result = try #require(ended.value, "the first wait has not ended")
+            #expect(result == nil)
+        }
+
+        /// The nonce's lifetime starts once the host's connection to the agent exists: a connect
+        /// that takes longer than the lifetime does not make the dial arrive too late.
+        @Test func startsTheNonceLifetimeAfterTheConnect() async throws {
+            var limits = DialBackGate.Limits()
+            limits.nonceLifetime = .milliseconds(300)
+            let gate = DialBackGate(limits: limits) { _ in }
+            let agent = FakeAgent(gate: gate, reply: .dial, connectDelay: .milliseconds(500))
+            let descriptor = try await gate.openSessionConnection(through: agent.client)
+            #expect(
+                try SocketPair.readExactly(descriptor.rawValue, count: 9) == Frame.version().encoded
+            )
+        }
     }
 }
 

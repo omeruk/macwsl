@@ -78,39 +78,6 @@ import Testing
         }
     }
 
-    @Test func survivesTenThousandRandomFrames() async throws {
-        let agent = TestAgent()
-        var random = Generator(state: 0x4D57)
-        var framesSent = 0
-        var connections = 0
-
-        while framesSent < 10_000 {
-            let descriptor = try agent.connect()
-            var bytes: [UInt8] = []
-            if Bool.random(using: &random) {
-                bytes += Frame.version().encoded
-            }
-            let count = Int.random(in: 1...20, using: &random)
-            for _ in 0..<count {
-                bytes += Self.randomFrame(using: &random)
-            }
-            framesSent += count
-            connections += 1
-
-            let closed = await runOnDedicatedThread { [bytes] () -> Bool in
-                Self.sendThenWaitForClose(bytes, on: descriptor)
-            }
-            #expect(closed, "connection \(connections) was not closed by the agent")
-        }
-
-        // The agent still serves well-formed requests.
-        let info = try await agent.client.info()
-        #expect(info.protocolVersion == ProtocolVersion.current)
-        let process = try await agent.client.exec(
-            ExecRequest(argv: ["true"]), output: Output().handler)
-        #expect(try await process.waitForExit() == .exited(code: 0))
-    }
-
     /// Writes `bytes`, half-closes the connection, and reads until the agent closes it.
     /// Returns false if the agent has not closed it within 10 seconds.
     static func sendThenWaitForClose(_ bytes: [UInt8], on descriptor: OwnedDescriptor) -> Bool {
@@ -141,5 +108,44 @@ import Testing
             }
         }
         return false
+    }
+}
+
+extension FuzzTests {
+    /// Tests that generate heavy load. A suite named `Load` puts them in the load group, which
+    /// runs one test at a time and never beside a latency test (scripts/test-groups.sh).
+    @Suite struct Load {
+        @Test func survivesTenThousandRandomFrames() async throws {
+            let agent = TestAgent()
+            var random = Generator(state: 0x4D57)
+            var framesSent = 0
+            var connections = 0
+
+            while framesSent < 10_000 {
+                let descriptor = try agent.connect()
+                var bytes: [UInt8] = []
+                if Bool.random(using: &random) {
+                    bytes += Frame.version().encoded
+                }
+                let count = Int.random(in: 1...20, using: &random)
+                for _ in 0..<count {
+                    bytes += FuzzTests.randomFrame(using: &random)
+                }
+                framesSent += count
+                connections += 1
+
+                let closed = await runOnDedicatedThread { [bytes] () -> Bool in
+                    FuzzTests.sendThenWaitForClose(bytes, on: descriptor)
+                }
+                #expect(closed, "connection \(connections) was not closed by the agent")
+            }
+
+            // The agent still serves well-formed requests.
+            let info = try await agent.client.info()
+            #expect(info.protocolVersion == ProtocolVersion.current)
+            let process = try await agent.client.exec(
+                ExecRequest(argv: ["true"]), output: Output().handler)
+            #expect(try await process.waitForExit() == .exited(code: 0))
+        }
     }
 }

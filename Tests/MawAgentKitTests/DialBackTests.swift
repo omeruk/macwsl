@@ -76,23 +76,6 @@ import Testing
         #expect(descriptor.rawValue >= 0)
     }
 
-    /// A connection that never completes is given up at the timeout, not waited for.
-    @Test func givesUpAtTheTimeout() async {
-        let fake = FakeDialSystem(connectResult: EINPROGRESS, neverWritable: true)
-        // On a thread of its own: the dial waits for its timeout.
-        let (result, elapsed) = await runOnDedicatedThread {
-            () -> (Result<OwnedDescriptor, DialBackError>, Duration) in
-            let start = ContinuousClock.now
-            let result = Result { () throws(DialBackError) in
-                try DialBackDialer(system: fake.system, timeout: .milliseconds(200)).dial()
-            }
-            return (result, ContinuousClock.now - start)
-        }
-        #expect(throws: DialBackError.timedOut(.milliseconds(200))) { try result.get() }
-        #expect(elapsed >= .milliseconds(200) && elapsed < .seconds(2), "\(elapsed)")
-        #expect(fake.allSocketsClosed)
-    }
-
     @Test func describesEachFailure() {
         #expect(DialBackError.noFreePort.description == "no source port below 1024 is free")
         #expect(
@@ -101,6 +84,29 @@ import Testing
         #expect(
             DialBackError.bindFailed(port: 1023, SystemError("bind", code: EACCES)).description
                 == "cannot bind source port 1023: bind: Permission denied")
+    }
+}
+
+extension DialBackDialerTests {
+    /// Tests that assert latency. A suite named `Latency` puts them in the latency group, which
+    /// runs one test at a time and never beside a load generator (scripts/test-groups.sh).
+    @Suite struct Latency {
+        /// A connection that never completes is given up at the timeout, not waited for.
+        @Test func givesUpAtTheTimeout() async {
+            let fake = FakeDialSystem(connectResult: EINPROGRESS, neverWritable: true)
+            // On a thread of its own: the dial waits for its timeout.
+            let (result, elapsed) = await runOnDedicatedThread {
+                () -> (Result<OwnedDescriptor, DialBackError>, Duration) in
+                let start = ContinuousClock.now
+                let result = Result { () throws(DialBackError) in
+                    try DialBackDialer(system: fake.system, timeout: .milliseconds(200)).dial()
+                }
+                return (result, ContinuousClock.now - start)
+            }
+            #expect(throws: DialBackError.timedOut(.milliseconds(200))) { try result.get() }
+            #expect(elapsed >= .milliseconds(200) && elapsed < .seconds(2), "\(elapsed)")
+            #expect(fake.allSocketsClosed)
+        }
     }
 }
 

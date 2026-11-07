@@ -38,20 +38,6 @@ import Testing
         #expect(result.status == 128 + SIGTERM)
     }
 
-    @Test func killsAProgramThatDoesNotFinishInTime() async throws {
-        // A duration of its own, so that pgrep finds this sleep and no other.
-        let duration = "1000.\(Int.random(in: 100_000...999_999))"
-        let started = ContinuousClock.now
-        await #expect(throws: MawError.launchctlTimedOut(command: "sleep \(duration)", seconds: 1))
-        {
-            _ = try await Self.run([duration], executable: "/bin/sleep", timeout: .seconds(1))
-        }
-        #expect(ContinuousClock.now - started < .seconds(5))
-        let search = try await Self.run(
-            ["-f", "^/bin/sleep \(duration)$"], executable: "/usr/bin/pgrep")
-        #expect(search.status == 1, "The program is still running: \(search.output)")
-    }
-
     /// `bootout` returns while launchd still lists the job; the wait ends once it does not.
     @Test func waitsUntilLaunchdNoLongerListsTheJob() async throws {
         var answers = [true, true, true, false]
@@ -72,18 +58,6 @@ import Testing
             return false
         }
         #expect(asked == 1)
-    }
-
-    @Test func reportsAJobThatLaunchdDoesNotRemoveInTime() async {
-        let started = ContinuousClock.now
-        await #expect(throws: MawError.launchAgentNotRemoved(service: "gui/501/test", seconds: 1)) {
-            try await Launchctl.waitUntilRemoved(
-                service: "gui/501/test", timeout: .seconds(1), interval: .milliseconds(50),
-                clock: SuspendingClock()
-            ) { () throws(MawError) in true }
-        }
-        let waited = ContinuousClock.now - started
-        #expect(waited >= .seconds(1) && waited < .seconds(5))
     }
 
     /// The limit counts only the time of its clock: by default `SuspendingClock`, which stands
@@ -109,48 +83,89 @@ import Testing
         }
     }
 
-    /// NOTE_EXIT can arrive before `waitpid` with WNOHANG finds the exit. `run` then waited
-    /// for events until its timeout although the program had exited, in about 1 of 1,500
-    /// calls, and returned the status late; a `launchctl print` from before a job's removal
-    /// then reported the job as still loaded. 6,000 short programs on four threads, each
-    /// with a 10-second timeout, must all return at once.
-    @Test(.timeLimit(.minutes(1)))
-    func returnsAsSoonAsTheProgramHasExited() async {
-        let durations = await withTaskGroup(of: [Duration].self) { group in
-            for worker in 0..<4 {
-                group.addTask {
-                    await runOnDedicatedThread { () -> [Duration] in
-                        (0..<1500).map { index in
-                            let started = ContinuousClock.now
-                            if (index + worker).isMultiple(of: 2) {
-                                _ = try? Launchctl.run(
-                                    [], executable: "/usr/bin/true", timeout: .seconds(10))
-                            } else {
-                                _ = try? Launchctl.run(
-                                    ["print", "\(Launchctl.domain)/dev.maw.no-such-service"],
-                                    timeout: .seconds(10))
-                            }
-                            return ContinuousClock.now - started
-                        }
-                    }
-                }
-            }
-            var all: [Duration] = []
-            for await some in group {
-                all += some
-            }
-            return all
-        }
-        let slow = durations.filter { $0 > .seconds(2) }
-        #expect(slow.isEmpty, "\(slow.count) of \(durations.count) calls took over 2 s: \(slow)")
-    }
-
     @Test func reportsAProgramThatCannotBeStarted() {
         #expect {
             _ = try Launchctl.run([], executable: "/nonexistent/launchctl", timeout: .seconds(10))
         } throws: { error in
             guard case .launchAgentFailed(let reason) = error as? MawError else { return false }
             return reason.contains("could not be started")
+        }
+    }
+}
+
+extension LaunchctlTests {
+    /// Tests that assert latency. A suite named `Latency` puts them in the latency group, which
+    /// runs one test at a time and never beside a load generator (scripts/test-groups.sh).
+    @Suite struct Latency {
+        @Test func killsAProgramThatDoesNotFinishInTime() async throws {
+            // A duration of its own, so that pgrep finds this sleep and no other.
+            let duration = "1000.\(Int.random(in: 100_000...999_999))"
+            let started = ContinuousClock.now
+            await #expect(
+                throws: MawError.launchctlTimedOut(command: "sleep \(duration)", seconds: 1)
+            ) {
+                _ = try await LaunchctlTests.run(
+                    [duration], executable: "/bin/sleep", timeout: .seconds(1))
+            }
+            #expect(ContinuousClock.now - started < .seconds(5))
+            let search = try await LaunchctlTests.run(
+                ["-f", "^/bin/sleep \(duration)$"], executable: "/usr/bin/pgrep")
+            #expect(search.status == 1, "The program is still running: \(search.output)")
+        }
+
+        @Test func reportsAJobThatLaunchdDoesNotRemoveInTime() async {
+            let started = ContinuousClock.now
+            await #expect(
+                throws: MawError.launchAgentNotRemoved(service: "gui/501/test", seconds: 1)
+            ) {
+                try await Launchctl.waitUntilRemoved(
+                    service: "gui/501/test", timeout: .seconds(1), interval: .milliseconds(50),
+                    clock: SuspendingClock()
+                ) { () throws(MawError) in true }
+            }
+            let waited = ContinuousClock.now - started
+            #expect(waited >= .seconds(1) && waited < .seconds(5))
+        }
+    }
+
+    /// Tests that generate heavy load. A suite named `Load` puts them in the load group, which
+    /// runs one test at a time and never beside a latency test (scripts/test-groups.sh).
+    @Suite struct Load {
+        /// NOTE_EXIT can arrive before `waitpid` with WNOHANG finds the exit. `run` then waited
+        /// for events until its timeout although the program had exited, in about 1 of 1,500
+        /// calls, and returned the status late; a `launchctl print` from before a job's removal
+        /// then reported the job as still loaded. 6,000 short programs on four threads, each
+        /// with a 10-second timeout, must all return at once.
+        @Test(.timeLimit(.minutes(1)))
+        func returnsAsSoonAsTheProgramHasExited() async {
+            let durations = await withTaskGroup(of: [Duration].self) { group in
+                for worker in 0..<4 {
+                    group.addTask {
+                        await runOnDedicatedThread { () -> [Duration] in
+                            (0..<1500).map { index in
+                                let started = ContinuousClock.now
+                                if (index + worker).isMultiple(of: 2) {
+                                    _ = try? Launchctl.run(
+                                        [], executable: "/usr/bin/true", timeout: .seconds(10))
+                                } else {
+                                    _ = try? Launchctl.run(
+                                        ["print", "\(Launchctl.domain)/dev.maw.no-such-service"],
+                                        timeout: .seconds(10))
+                                }
+                                return ContinuousClock.now - started
+                            }
+                        }
+                    }
+                }
+                var all: [Duration] = []
+                for await some in group {
+                    all += some
+                }
+                return all
+            }
+            let slow = durations.filter { $0 > .seconds(2) }
+            #expect(
+                slow.isEmpty, "\(slow.count) of \(durations.count) calls took over 2 s: \(slow)")
         }
     }
 }

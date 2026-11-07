@@ -4,17 +4,18 @@ import Testing
 
 @testable import MawVirtualization
 
+/// Every line of `lines`, once the stream ends.
+private func collect(_ lines: AsyncStream<String>) async -> [String] {
+    var collected: [String] = []
+    for await line in lines {
+        collected.append(line)
+    }
+    return collected
+}
+
 @Suite struct ConsoleTests {
     private func contents(_ url: URL) -> String {
         (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-    }
-
-    private func collect(_ lines: AsyncStream<String>) async -> [String] {
-        var collected: [String] = []
-        for await line in lines {
-            collected.append(line)
-        }
-        return collected
     }
 
     // MARK: Back-pressure policy
@@ -35,21 +36,6 @@ import Testing
         // The stream kept only the 3 newest lines; the log has all 10.
         #expect(await collect(console.lines) == ["line 8", "line 9", "line 10"])
         #expect(contents(log) == (1...10).map { "line \($0)\n" }.joined())
-    }
-
-    @Test func deliversEveryLineToAConsumerThatKeepsUp() async throws {
-        let directory = try TemporaryDirectory()
-        let console = try Console(logURL: directory.file("test-console.log"), lineBufferLimit: 3)
-        let consumer = Task { await collect(console.lines) }
-        console.start()
-
-        for number in 1...10 {
-            console.ingest(Data("line \(number)\n".utf8))
-            // Give the consumer time to take each line before the next one arrives.
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        console.closeGuestSide()
-        #expect(await consumer.value == (1...10).map { "line \($0)" })
     }
 
     @Test func copiesOutputToTheOutputHandle() async throws {
@@ -191,5 +177,27 @@ import Testing
     @Test func decodesInvalidUTF8Lossily() {
         var splitter = LineSplitter(maximumLineLength: 100)
         #expect(splitter.append([0x61, 0xFF, 0x62, 0x0A]) == ["a\u{FFFD}b"])
+    }
+}
+
+extension ConsoleTests {
+    /// Tests that assert latency. A suite named `Latency` puts them in the latency group, which
+    /// runs one test at a time and never beside a load generator (scripts/test-groups.sh).
+    @Suite struct Latency {
+        @Test func deliversEveryLineToAConsumerThatKeepsUp() async throws {
+            let directory = try TemporaryDirectory()
+            let console = try Console(
+                logURL: directory.file("test-console.log"), lineBufferLimit: 3)
+            let consumer = Task { await collect(console.lines) }
+            console.start()
+
+            for number in 1...10 {
+                console.ingest(Data("line \(number)\n".utf8))
+                // Give the consumer time to take each line before the next one arrives.
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            console.closeGuestSide()
+            #expect(await consumer.value == (1...10).map { "line \($0)" })
+        }
     }
 }

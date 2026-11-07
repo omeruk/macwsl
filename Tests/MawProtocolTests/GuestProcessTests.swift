@@ -192,79 +192,6 @@ import Testing
         #expect(received.value == size)
     }
 
-    /// The client never has more input outstanding than the window, and a signal and a resize
-    /// overtake the input it holds back, while `stdinEOF` stays behind it.
-    @Test(.timeLimit(.minutes(1)))
-    func keepsInputWithinTheWindowAndSendsControlMessagesAheadOfIt() async throws {
-        let (host, peer) = try HandshakeTests.socketPair()
-        let agentConnection = try FrameConnection(peer)
-        let client = GuestAgentClient { () throws(MawError) in host }
-        startDetachedThread {
-            _ = try? agentConnection.exchangeVersions(until: .now + .seconds(5))
-            _ = try? agentConnection.receiveControl(until: .now + .seconds(5), expecting: "exec")
-            agentConnection.enqueue(.control(.started(pid: 7)))
-            try? agentConnection.flush(until: .now + .seconds(5))
-        }
-        let process = try await client.exec(ExecRequest(argv: ["sleep", "1000"])) { _, _ in }
-        // Three windows and the end: more than the window and the client's queue together.
-        let size = 3 * AgentProtocol.inputWindow
-        startDetachedThread {
-            process.write([UInt8](repeating: 0x79, count: size))
-            process.closeInput()
-        }
-
-        // What arrives without any `stdinConsumed`: the window's worth of input, no more.
-        @Sendable func receive(for duration: Duration) -> (input: Int, messages: [ControlMessage]) {
-            var input = 0
-            var messages: [ControlMessage] = []
-            let deadline = ContinuousClock.now + duration
-            while let frame = try? agentConnection.receiveFrame(until: deadline) {
-                if frame.type == .stdin {
-                    input += frame.payload.count
-                } else if let message = try? frame.controlMessage() {
-                    messages.append(message)
-                }
-            }
-            return (input, messages)
-        }
-        let first = await runOnDedicatedThread { receive(for: .milliseconds(500)) }
-        #expect(first.input == AgentProtocol.inputWindow)
-        #expect(first.messages.isEmpty)
-
-        process.send(.int)
-        process.resize(TerminalSize(rows: 30, columns: 100))
-        let second = await runOnDedicatedThread { receive(for: .milliseconds(300)) }
-        #expect(second.input == 0)
-        #expect(second.messages == [.signal(.int), .resize(TerminalSize(rows: 30, columns: 100))])
-
-        // Consumed input makes room for as much again; the end follows the last of the input.
-        var remaining = size - AgentProtocol.inputWindow
-        var received = 0
-        var messages: [ControlMessage] = []
-        agentConnection.enqueue(.stdinConsumed(UInt32(AgentProtocol.inputWindow)))
-        try agentConnection.flush(until: .now + .seconds(5))
-        while remaining > 0 {
-            let next = await runOnDedicatedThread { receive(for: .milliseconds(200)) }
-            #expect(next.input <= AgentProtocol.inputWindow)
-            guard next.input > 0 else { break }
-            received += next.input
-            remaining -= next.input
-            messages += next.messages
-            agentConnection.enqueue(.stdinConsumed(UInt32(next.input)))
-            try agentConnection.flush(until: .now + .seconds(5))
-        }
-        #expect(received == size - AgentProtocol.inputWindow)
-        if messages.isEmpty {
-            messages = await runOnDedicatedThread { receive(for: .milliseconds(200)) }.messages
-        }
-        #expect(messages == [.stdinEOF])
-
-        agentConnection.enqueue(.control(.exited(.exited(code: 0))))
-        try agentConnection.flush(until: .now + .seconds(5))
-        #expect(try await process.waitForExit() == .exited(code: 0))
-        peer.close()
-    }
-
     /// The process's exit status, or `nil` if it has not ended within `timeout`.
     static func exitStatus(of process: GuestProcess, within timeout: Duration) async
         -> MawProtocol.ExitStatus?
@@ -288,6 +215,89 @@ import Testing
                 reason: "exec: the connection was closed unexpectedly")
         ) {
             try await process.waitForExit()
+        }
+    }
+}
+
+extension GuestProcessTests {
+    /// Tests that assert latency. A suite named `Latency` puts them in the latency group, which
+    /// runs one test at a time and never beside a load generator (scripts/test-groups.sh).
+    @Suite struct Latency {
+        /// The client never has more input outstanding than the window, and a signal and a resize
+        /// overtake the input it holds back, while `stdinEOF` stays behind it.
+        @Test(.timeLimit(.minutes(1)))
+        func keepsInputWithinTheWindowAndSendsControlMessagesAheadOfIt() async throws {
+            let (host, peer) = try HandshakeTests.socketPair()
+            let agentConnection = try FrameConnection(peer)
+            let client = GuestAgentClient { () throws(MawError) in host }
+            startDetachedThread {
+                _ = try? agentConnection.exchangeVersions(until: .now + .seconds(5))
+                _ = try? agentConnection.receiveControl(
+                    until: .now + .seconds(5), expecting: "exec")
+                agentConnection.enqueue(.control(.started(pid: 7)))
+                try? agentConnection.flush(until: .now + .seconds(5))
+            }
+            let process = try await client.exec(ExecRequest(argv: ["sleep", "1000"])) { _, _ in }
+            // Three windows and the end: more than the window and the client's queue together.
+            let size = 3 * AgentProtocol.inputWindow
+            startDetachedThread {
+                process.write([UInt8](repeating: 0x79, count: size))
+                process.closeInput()
+            }
+
+            // What arrives without any `stdinConsumed`: the window's worth of input, no more.
+            @Sendable func receive(for duration: Duration) -> (
+                input: Int, messages: [ControlMessage]
+            ) {
+                var input = 0
+                var messages: [ControlMessage] = []
+                let deadline = ContinuousClock.now + duration
+                while let frame = try? agentConnection.receiveFrame(until: deadline) {
+                    if frame.type == .stdin {
+                        input += frame.payload.count
+                    } else if let message = try? frame.controlMessage() {
+                        messages.append(message)
+                    }
+                }
+                return (input, messages)
+            }
+            let first = await runOnDedicatedThread { receive(for: .milliseconds(500)) }
+            #expect(first.input == AgentProtocol.inputWindow)
+            #expect(first.messages.isEmpty)
+
+            process.send(.int)
+            process.resize(TerminalSize(rows: 30, columns: 100))
+            let second = await runOnDedicatedThread { receive(for: .milliseconds(300)) }
+            #expect(second.input == 0)
+            #expect(
+                second.messages == [.signal(.int), .resize(TerminalSize(rows: 30, columns: 100))])
+
+            // Consumed input makes room for as much again; the end follows the last of the input.
+            var remaining = size - AgentProtocol.inputWindow
+            var received = 0
+            var messages: [ControlMessage] = []
+            agentConnection.enqueue(.stdinConsumed(UInt32(AgentProtocol.inputWindow)))
+            try agentConnection.flush(until: .now + .seconds(5))
+            while remaining > 0 {
+                let next = await runOnDedicatedThread { receive(for: .milliseconds(200)) }
+                #expect(next.input <= AgentProtocol.inputWindow)
+                guard next.input > 0 else { break }
+                received += next.input
+                remaining -= next.input
+                messages += next.messages
+                agentConnection.enqueue(.stdinConsumed(UInt32(next.input)))
+                try agentConnection.flush(until: .now + .seconds(5))
+            }
+            #expect(received == size - AgentProtocol.inputWindow)
+            if messages.isEmpty {
+                messages = await runOnDedicatedThread { receive(for: .milliseconds(200)) }.messages
+            }
+            #expect(messages == [.stdinEOF])
+
+            agentConnection.enqueue(.control(.exited(.exited(code: 0))))
+            try agentConnection.flush(until: .now + .seconds(5))
+            #expect(try await process.waitForExit() == .exited(code: 0))
+            peer.close()
         }
     }
 }

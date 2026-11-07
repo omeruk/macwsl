@@ -35,13 +35,6 @@ import Testing
         #expect(outcome.status == 0)
     }
 
-    @Test func terminatesTheProgramWhenTheConsumerStops() async throws {
-        let started = ContinuousClock.now
-        let (outcome, _) = try await Self.run("/usr/bin/yes", [], consumeAtMost: 0)
-        #expect(outcome.status == 128 + SIGTERM)
-        #expect(ContinuousClock.now - started < .seconds(5))
-    }
-
     @Test func givesTheProgramOnlyItsStandardDescriptors() async throws {
         // A descriptor of this process without close-on-exec must not reach the child. A high
         // number keeps it apart from the descriptors the shell opens itself.
@@ -57,6 +50,20 @@ import Testing
     @Test func reportsAProgramThatCannotStart() {
         #expect(throws: POSIXError.self) {
             try StreamingProcess.run("/no/such/program", []) { _ in true }
+        }
+    }
+}
+
+extension StreamingProcessTests {
+    /// Tests that assert latency. A suite named `Latency` puts them in the latency group, which
+    /// runs one test at a time and never beside a load generator (scripts/test-groups.sh).
+    @Suite struct Latency {
+        @Test func terminatesTheProgramWhenTheConsumerStops() async throws {
+            let started = ContinuousClock.now
+            let (outcome, _) = try await StreamingProcessTests.run(
+                "/usr/bin/yes", [], consumeAtMost: 0)
+            #expect(outcome.status == 128 + SIGTERM)
+            #expect(ContinuousClock.now - started < .seconds(5))
         }
     }
 }
