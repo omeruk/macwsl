@@ -69,6 +69,14 @@
         /// The virtual size of a new distribution's disk.
         public static let diskSize = ByteSize.gibibytes(256)
 
+        /// The names no distribution may have, in lowercase. A distribution's console log is
+        /// `<name>.log` in the log directory, so each is the name of a file maw writes there:
+        /// the initramfs machine's console log, the daemon's log, and `mawd debug-boot`'s
+        /// console log. They are compared ignoring case, as APFS compares file names.
+        static let reservedNames: Set<String> = [
+            MachineID.initramfs.name, MawPaths.daemonLogName, MawPaths.debugBootConsoleLogName,
+        ]
+
         private let catalog: DistroCatalog
         private let store: DistributionStore
         private let images: any ImageSource
@@ -179,8 +187,7 @@
                 entry = catalog.recommendedEntry
             }
             let name = name ?? entry.name
-            // The initramfs machine's name, which also names its console log.
-            guard name.rawValue.lowercased() != MachineID.initramfs.name else {
+            guard !Self.reservedNames.contains(name.rawValue.lowercased()) else {
                 throw .invalidDistroName(name.rawValue, reason: "the name is reserved for maw")
             }
             guard !store.isInstalled(name) else {

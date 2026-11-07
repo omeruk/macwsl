@@ -171,7 +171,7 @@ mawd uninstall
 ```
 
 Logs are in `~/Library/Logs/maw`: `mawd.log` for the daemon, `<distribution>.log` for each
-distribution's console, including how each shutdown went, and `install-<distribution>.log` for
+distribution's console, including how each shutdown went, and `install/<distribution>.log` for
 its installation. [`docs/daemon.md`](docs/daemon.md) describes the daemon in detail.
 
 ## Booting the guest on your Mac

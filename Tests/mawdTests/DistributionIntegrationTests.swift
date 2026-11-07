@@ -222,7 +222,7 @@ struct DistributionIntegrationTests {
     func cancelsDuringAStepAndLeavesNothing(_ step: String) async throws {
         let name = "\(maw.prefix)-cancel"
         // The provisioning machine's console log, which its boot creates.
-        let consoleLog = maw.logDirectory.appending(path: "install-\(name).log")
+        let consoleLog = MawPaths.installLogFile(for: try DistroName(name), in: maw.logDirectory)
         try? FileManager.default.removeItem(at: consoleLog)
         let install = try maw.install(name)
         // Looked for often, so that Ctrl-C lands within the image check, which takes about
@@ -251,6 +251,11 @@ struct DistributionIntegrationTests {
             #expect(
                 !FileManager.default.fileExists(atPath: consoleLog.path(percentEncoded: false)),
                 "The provisioning machine booted after Ctrl-C.")
+        } else if step != "Creating the virtual disk" {
+            // The machine had booted, and its console log is where the check above looks.
+            #expect(
+                FileManager.default.fileExists(atPath: consoleLog.path(percentEncoded: false)),
+                "No console log at \(consoleLog.path(percentEncoded: false)).")
         }
         try await maw.remove(name)
     }

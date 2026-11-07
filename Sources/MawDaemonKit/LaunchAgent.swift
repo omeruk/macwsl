@@ -57,7 +57,8 @@
         }
 
         public var logFile: URL {
-            logDirectory.appending(path: "mawd.log", directoryHint: .notDirectory)
+            logDirectory.appending(
+                path: "\(MawPaths.daemonLogName).log", directoryHint: .notDirectory)
         }
 
         /// The property list. launchd starts the program when a client connects to the Mach

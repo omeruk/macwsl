@@ -31,9 +31,11 @@
             self.log = log
         }
 
+        /// Starts the machine. Its console log starts afresh: the previous attempt's is removed
+        /// first.
         public func boot(disk: URL) async throws(MawError) {
-            let guest = try GuestFiles(directory: kernelDirectory)
             try? FileManager.default.removeItem(at: consoleLog)
+            let guest = try GuestFiles(directory: kernelDirectory)
             let configuration = VMConfiguration(
                 kernelURL: guest.kernelURL, initramfsURL: guest.initramfsURL,
                 consoleLogURL: consoleLog,

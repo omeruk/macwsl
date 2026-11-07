@@ -107,15 +107,16 @@ check_agent_starts_in() {
     '
 }
 
-# Checks every console log of the run. Returns non-zero if a boot started the agent twice.
+# Checks every console log of the run, the installations' in install/ included. Returns
+# non-zero if a boot started the agent twice.
 check_agent_starts() {
     restarted=0
-    for console_log in "$log_directory"/*.log; do
+    for console_log in "$log_directory"/*.log "$log_directory"/install/*.log; do
         case "$console_log" in
             */mawd.log) continue ;;
         esac
         [ -f "$console_log" ] || continue
-        check_agent_starts_in "$(basename "$console_log")" < "$console_log" || restarted=1
+        check_agent_starts_in "${console_log#"$log_directory"/}" < "$console_log" || restarted=1
     done
     if [ -f "$debug_boot_log" ]; then
         size=$(wc -c < "$debug_boot_log")

@@ -161,11 +161,18 @@ import os
         }
     }
 
-    @Test func refusesTheInitramfsMachinesName() async {
-        await #expect(
-            throws: MawError.invalidDistroName("Initramfs", reason: "the name is reserved for maw")
-        ) {
-            try await installer().install(request(name: "Initramfs"), progress: { _ in })
+    /// The names of the files maw writes to the log directory, in any case: a distribution's
+    /// console log, `<name>.log`, would be one of them.
+    @Test(arguments: [
+        "Initramfs", "mawd", "MAWD", "Mawd", "debug-boot-console", "Debug-Boot-Console",
+    ])
+    func refusesTheNameOfALogFileOfMaw(_ name: String) async throws {
+        let error = MawError.invalidDistroName(name, reason: "the name is reserved for maw")
+        await #expect(throws: error) {
+            try await installer().check(distribution: nil, name: try DistroName(name))
+        }
+        await #expect(throws: error) {
+            try await installer().install(request(name: name), progress: { _ in })
         }
     }
 

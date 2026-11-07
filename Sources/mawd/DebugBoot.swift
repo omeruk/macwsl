@@ -199,7 +199,8 @@ struct DebugBoot: AsyncParsableCommand {
         let configuration = VMConfiguration(
             kernelURL: guest.kernelURL,
             initramfsURL: guest.initramfsURL,
-            consoleLogURL: MawPaths().logsDirectory.appending(path: "\(Self.name)-console.log"),
+            consoleLogURL: MawPaths().logsDirectory.appending(
+                path: "\(MawPaths.debugBootConsoleLogName).log"),
             cpuCount: cpus ?? VMConfiguration.defaultCPUCount(),
             memorySize: memory ?? VMConfiguration.defaultMemorySize,
             commandLine: VMConfiguration.commandLine(appending: kernelArguments),

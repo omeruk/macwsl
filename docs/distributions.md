@@ -58,7 +58,10 @@ directory; the daemon also removes staging directories left by a crash when it s
 under its own label (docs/daemon.md). No distribution can be named `.staging`, since a name
 starts with a letter or digit. The first installed distribution becomes the default.
 
-The provisioning machine's console goes to `~/Library/Logs/maw/install-<name>.log`. Two
+The provisioning machine's console goes to `~/Library/Logs/maw/install/<name>.log`. Earlier
+builds wrote `install-<name>.log` beside the other logs; maw leaves those files where they are.
+No distribution can be named `mawd`, `debug-boot-console`, or `initramfs`, in any case, since
+its console log would be one of maw's own log files. Two
 installations of the same image share one download: the second waits for the first's.
 
 ## What provisioning changes in the root file system
@@ -140,7 +143,7 @@ and [docs/protocol.md](protocol.md) specifies the environment a session gets.
 | `~/Library/Application Support/maw/state.json` | The default distribution. |
 | `~/Library/Caches/maw/images/<sha256>.tar.gz` | Verified images, and `.partial` downloads with their validator. |
 | `~/Library/Logs/maw/<name>.log` | Each distribution's console. |
-| `~/Library/Logs/maw/install-<name>.log` | The console of the machine that provisioned the distribution. |
+| `~/Library/Logs/maw/install/<name>.log` | The console of the machine that provisioned the distribution. |
 
 ## Removing a distribution by hand
 

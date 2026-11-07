@@ -73,8 +73,7 @@ struct Serve: AsyncParsableCommand {
                 guard canRunVirtualMachines else { throw .virtualizationEntitlementMissing }
                 return VirtualProvisioningMachine(
                     kernelDirectory: paths.kernelDirectory,
-                    consoleLog: settings.logDirectoryURL.appending(
-                        path: "install-\(name.rawValue).log"),
+                    consoleLog: MawPaths.installLogFile(for: name, in: settings.logDirectoryURL),
                     log: log)
             },
             freeSpace: FreeSpace.probe,

@@ -92,7 +92,10 @@ A dial-back can fail in three ways, each with its own error:
 
 Each machine writes its console to `~/Library/Logs/maw/<machine>.log`, for example
 `Ubuntu-24.04.log`, together with the daemon's notes about it (lines starting with `[mawd]`).
-The provisioning machine of an installation writes to `install-<name>.log`.
+The provisioning machine of an installation writes to `install/<name>.log`, in a directory of
+its own, so that it never shares a file with a distribution's console log: a distribution named
+`install-foo` writes `install-foo.log`. No distribution may be named after another file there
+(`mawd`, `debug-boot-console`, `initramfs`, in any case).
 
 ## The daemon
 
@@ -294,7 +297,7 @@ Phase 11b, which connects the terminal app to the daemon, adds the app's identif
 |------|---------|
 | `~/Library/Logs/maw/mawd.log` | The daemon's own log: start, machines starting and stopping and why, sessions opened and released, errors. launchd sends the daemon's standard output and error here. |
 | `~/Library/Logs/maw/<machine>.log` | One machine's console, with the daemon's notes, including how each shutdown went. |
-| `~/Library/Logs/maw/install-<name>.log` | The console of the machine that provisioned `<name>`, from its last installation attempt. |
+| `~/Library/Logs/maw/install/<name>.log` | The console of the machine that provisioned `<name>`, from its last installation attempt. Earlier builds wrote `install-<name>.log`; those files stay where they are. |
 
 The daemon also logs to the unified log, subsystem `dev.maw`, categories `daemon` and `xpc`:
 
