@@ -8,8 +8,8 @@ enum Action: Equatable, Sendable {
     case run([String], Session)
     /// `maw -e <command> [<arguments>...]`: run a command directly, without a shell.
     case exec([String], Session)
-    /// `--install [<distro>]`. `nil` installs the recommended distribution.
-    case install(DistroName?)
+    /// `--install [<distro>] [--name <name>] [--user <user>]`.
+    case install(InstallOptions)
     case list(ListMode)
     case setDefault(DistroName)
     case terminate(DistroName)
@@ -71,4 +71,21 @@ enum ListMode: Equatable, Sendable {
     case installed(verbose: Bool)
     /// Distributions available to install.
     case online
+}
+
+/// What `--install` installs, under which name, and for which user.
+struct InstallOptions: Equatable, Sendable {
+    /// A catalog name or alias; `nil` installs the recommended distribution.
+    var distro: DistroName?
+    /// The name to install it under; `nil` is the catalog entry's name.
+    var name: DistroName?
+    /// The new account's name. With it, the password is read from standard input; without
+    /// it, maw asks for both on the terminal.
+    var user: String?
+
+    init(distro: DistroName? = nil, name: DistroName? = nil, user: String? = nil) {
+        self.distro = distro
+        self.name = name
+        self.user = user
+    }
 }

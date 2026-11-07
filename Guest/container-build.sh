@@ -88,6 +88,7 @@ cat > "$out/manifest.json" << EOF
   "initramfs": {
     "busybox": { "version": "$BUSYBOX_VERSION", "sourceSha256": "$BUSYBOX_SHA256" },
     "e2fsprogs": { "version": "$E2FSPROGS_VERSION", "sourceSha256": "$E2FSPROGS_SHA256" },
+    "libarchive": { "version": "$LIBARCHIVE_VERSION", "sourceSha256": "$LIBARCHIVE_SHA256" },
     "agent": $agent_json
   }
 }

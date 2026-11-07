@@ -16,6 +16,8 @@
         public enum Event: Sendable, Equatable {
             /// A session's machine stopped.
             case sessionEnded(SessionEnded)
+            /// This connection's installation moved on.
+            case installProgress(InstallProgress)
             /// The daemon exited or closed the connection.
             case connectionLost
         }
@@ -71,11 +73,15 @@
                 for await event in connection.events {
                     switch event {
                     case .message(let message):
-                        if let event = try? InterfaceCoding.decode(
-                            DaemonEvent.self, from: message, as: .client),
-                            case .sessionEnded(let ended) = event
+                        switch try? InterfaceCoding.decode(
+                            DaemonEvent.self, from: message, as: .client)
                         {
+                        case .sessionEnded(let ended):
                             continuation.yield(.sessionEnded(ended))
+                        case .installProgress(let progress):
+                            continuation.yield(.installProgress(progress))
+                        case nil:
+                            break
                         }
                     case .interrupted, .invalidated:
                         // After an interruption, libxpc would send the next request to a new
@@ -126,17 +132,22 @@
         /// loaded, or launchd refused the connection.
         static func unavailable(label: String, paths: MawPaths) -> MawError {
             let plist = paths.launchAgentFile(label: label).path(percentEncoded: false)
-            guard FileManager.default.fileExists(atPath: plist), Launchctl.isLoaded(label) else {
-                return .daemonNotInstalled(label: label)
+            do throws(MawError) {
+                guard FileManager.default.fileExists(atPath: plist), try Launchctl.isLoaded(label)
+                else {
+                    return .daemonNotInstalled(label: label)
+                }
+            } catch {
+                return error
             }
             return .daemonUnreachable(reason: "launchd refused the connection to \(label)")
         }
 
         // MARK: Requests
 
-        /// Starts the machine if needed and returns a connection to its guest agent. The
-        /// session lasts until this client is closed.
-        public func openSession(on machine: MachineID) async throws(MawError) -> DaemonSession {
+        /// Starts the machine if needed and returns a connection to its guest agent. `nil` is the
+        /// default distribution's machine. The session lasts until this client is closed.
+        public func openSession(on machine: MachineID?) async throws(MawError) -> DaemonSession {
             let request = DaemonRequest.openSession(machine)
             let (reply, object) = try await send(request)
             guard case .sessionOpened(let info) = reply else {
@@ -161,6 +172,40 @@
                 throw .daemonProtocolError(reason: "the reply to shutdown is not shutdownComplete")
             }
             return summary
+        }
+
+        /// Installs a distribution and returns when it is installed. `events` carries its
+        /// progress meanwhile. Closing the client, or `cancelInstall()`, cancels it.
+        public func install(_ request: InstallRequest) async throws(MawError) -> InstallSummary {
+            guard case .installed(let summary) = try await send(.install(request)).reply else {
+                throw .daemonProtocolError(reason: "the reply to install is not installed")
+            }
+            return summary
+        }
+
+        /// Checks what can be checked about an installation before its account is known, and
+        /// throws the error that `install` would throw for it.
+        public func checkInstall(distribution: String?, name: DistroName?) async throws(MawError) {
+            guard
+                case .installPossible = try await send(
+                    .checkInstall(distribution: distribution, name: name)
+                ).reply
+            else {
+                throw .daemonProtocolError(
+                    reason: "the reply to checkInstall is not installPossible")
+            }
+        }
+
+        /// Cancels this client's installation and returns once the daemon has removed its
+        /// traces. Returns whether one was running.
+        @discardableResult
+        public func cancelInstall() async throws(MawError) -> Bool {
+            guard case .installCancelled(let wasRunning) = try await send(.cancelInstall).reply
+            else {
+                throw .daemonProtocolError(
+                    reason: "the reply to cancelInstall is not installCancelled")
+            }
+            return wasRunning
         }
 
         /// Closes the connection, which ends its sessions.
@@ -219,7 +264,7 @@
         /// A client for the guest agent that runs one request over `agentConnection`.
         public func agentClient() -> GuestAgentClient {
             let connection = agentConnection
-            return GuestAgentClient { () throws(MawError) in
+            return GuestAgentClient(guestName: info.machine.name) { () throws(MawError) in
                 guard connection.rawValue >= 0 else {
                     throw .guestAgentFailed(reason: "the session's connection was already used")
                 }

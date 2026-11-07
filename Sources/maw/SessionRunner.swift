@@ -24,11 +24,35 @@ struct SessionRunner {
     /// What ended the session.
     enum Ending: Sendable {
         case exited(Result<ExitStatus, MawError>)
+        /// The connection ended before the command's exit status, with the error that the
+        /// guest process reported (`GuestProcess.connectionEndedBeforeExit`).
+        case connectionEnded(MawError)
         case daemon(DaemonClient.Event)
         case signal(Int32)
     }
 
+    /// Runs the session and returns the command's exit status.
     func run() async throws -> Int32 {
+        try await Self.endingOpenLines { try await runSession() }
+    }
+
+    /// Runs `body`. An error that it throws is printed after the session's output, so when
+    /// that output left a terminal's line open, a line feed goes to standard error first
+    /// (`TerminalLine`), and the message starts on a line of its own.
+    static func endingOpenLines<T>(
+        on line: TerminalLine = .session, _ body: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await body()
+        } catch {
+            if Maw.failure(for: error)?.output.isEmpty == false {
+                FileHandle.standardError.write(Data(line.separatorBeforeMessage().utf8))
+            }
+            throw error
+        }
+    }
+
+    private func runSession() async throws -> Int32 {
         // Before anything else, so that output to a closed pipe (`| head`) cannot kill maw.
         signal(SIGPIPE, SIG_IGN)
         let client = try await DaemonClient.connect()
@@ -36,7 +60,10 @@ struct SessionRunner {
         let events = EventRelay(client.events)
         let session = try await client.openSession(on: plan.machine)
         let request = ExecRequest(
-            argv: plan.argv,
+            program: plan.program, user: plan.user,
+            locale: GuestLocale.preferred(
+                languageCode: Locale.current.language.languageCode?.identifier,
+                regionCode: Locale.current.region?.identifier),
             environment: mode.environment(host: ProcessInfo.processInfo.environment),
             workingDirectory: plan.workingDirectory,
             terminal: mode == .terminal
@@ -49,7 +76,7 @@ struct SessionRunner {
         case .terminal:
             ending = try await runOnTerminal(request, session: session, events: events)
         }
-        return try await status(after: ending, events: events)
+        return try await Self.status(after: ending, events: events, machine: session.info.machine)
     }
 
     // MARK: Modes
@@ -98,19 +125,32 @@ struct SessionRunner {
 
     // MARK: Ending
 
-    /// The exit status for `ending`, or the error that explains it.
-    private func status(after ending: Ending, events: EventRelay) async throws -> Int32 {
+    /// The exit status for `ending`, or the error that explains it. Called once the terminal,
+    /// if any, has been restored, so that the error is printed on a terminal in its normal
+    /// mode.
+    static func status(after ending: Ending, events: EventRelay, machine: MachineID) async throws
+        -> Int32
+    {
         switch ending {
         case .exited(.success(let status)):
             return status.shellStatus
         case .exited(.failure(let error)):
             // The guest connection broke. The daemon usually knows why.
             if let event = await events.next(within: Self.endingReasonTimeout) {
-                throw Self.error(for: event, machine: plan.machine)
+                throw Self.error(for: event, machine: machine)
             }
             throw error
+        case .connectionEnded(let error):
+            // A machine that stopped ends its sessions' connections too, and the daemon says so.
+            if let event = await events.next(within: Self.endingReasonTimeout) {
+                throw Self.error(for: event, machine: machine)
+            }
+            Logger.cli.debug(
+                "\(machine.name, privacy: .public): the session's connection ended before the exit status: \(error.description, privacy: .public)"
+            )
+            throw MawError.sessionConnectionEnded(distribution: machine.name)
         case .daemon(let event):
-            throw Self.error(for: event, machine: plan.machine)
+            throw Self.error(for: event, machine: machine)
         case .signal(let number):
             return 128 + number
         }
@@ -122,6 +162,9 @@ struct SessionRunner {
             .machineStopped(machine: ended.machine.name, reason: ended.reason)
         case .connectionLost:
             .daemonConnectionLost(during: "the session on \(machine.name)")
+        case .installProgress:
+            // A session's connection never installs; EventRelay drops these.
+            .daemonProtocolError(reason: "installation progress arrived during a session")
         }
     }
 
@@ -142,7 +185,12 @@ struct SessionRunner {
         }
         return await withTaskGroup(of: Ending?.self) { group in
             group.addTask {
-                for await result in exits { return .exited(result) }
+                for await result in exits {
+                    if case .failure(let error) = result, process.connectionEndedBeforeExit {
+                        return .connectionEnded(error)
+                    }
+                    return .exited(result)
+                }
                 return nil
             }
             group.addTask {
@@ -174,7 +222,9 @@ struct SessionRunner {
     static func writeOutput(
         _ stream: GuestAgentClient.OutputStream, _ bytes: UnsafeRawBufferPointer
     ) {
-        try? writeAll(bytes, to: stream == .stdout ? STDOUT_FILENO : STDERR_FILENO)
+        let descriptor = stream == .stdout ? STDOUT_FILENO : STDERR_FILENO
+        try? writeAll(bytes, to: descriptor)
+        TerminalLine.session.wrote(bytes, to: descriptor)
     }
 
     /// Copies standard input to the command on a thread of its own, then ends its input.
@@ -209,6 +259,7 @@ final class EventRelay: Sendable {
     init(_ events: AsyncStream<DaemonClient.Event>) {
         Task { [self] in
             for await event in events {
+                if case .installProgress = event { continue }
                 settle(event)
             }
             settle(nil)

@@ -6,6 +6,7 @@ import MawDaemonKit
 import MawTerminalIO
 import MawVirtualization
 import MawXPC
+import Virtualization
 
 /// `mawd serve`: the daemon. launchd runs it through the LaunchAgent that `mawd install`
 /// writes, when a client connects to its Mach service.
@@ -27,6 +28,7 @@ struct Serve: AsyncParsableCommand {
         signal(SIGPIPE, SIG_IGN)
         let log = DaemonLog { line in FileHandle.standardError.write(Data(line.utf8)) }
         let label = settings.label
+        let daemonLabel = try DaemonLabel(label)
         let paths = MawPaths()
         guard let lock = try DaemonLock.acquire(at: paths.daemonLockFile(label: label)) else {
             throw ValidationError("Another mawd serve already runs for \(label).")
@@ -56,20 +58,38 @@ struct Serve: AsyncParsableCommand {
                 await lifetime.setMachinesActive(active)
             }
         }
+        let store = DistributionStore(paths: paths, daemonLabel: daemonLabel)
+        removeStagingLeftovers(store: store, label: label, paths: paths, log: log)
         let registry = MachineRegistry(
             clock: clock, idleTimeout: settings.machineIdleDuration, log: log,
             factory: VirtualMachineHandle.factory(
                 kernelDirectory: paths.kernelDirectory, logDirectory: settings.logDirectoryURL,
-                log: log, canRunVirtualMachines: canRunVirtualMachines),
+                store: store, log: log, canRunVirtualMachines: canRunVirtualMachines),
             activityChanged: { activityContinuation.yield($0) })
+        let installer = Installer(
+            store: store,
+            images: ImageCache(directory: settings.imageCacheDirectoryURL, log: log),
+            makeMachine: { (name: DistroName) throws(MawError) -> any ProvisioningMachine in
+                guard canRunVirtualMachines else { throw .virtualizationEntitlementMissing }
+                return VirtualProvisioningMachine(
+                    kernelDirectory: paths.kernelDirectory,
+                    consoleLog: MawPaths.installLogFile(for: name, in: settings.logDirectoryURL),
+                    log: log)
+            },
+            freeSpace: FreeSpace.probe,
+            startMachine: { machine throws(MawError) in try await registry.start(machine) },
+            makeMACAddress: { VZMACAddress.randomLocallyAdministered().string },
+            log: log)
         let service = DaemonService(
             clock: clock, registry: registry, lifetime: lifetime,
-            canRunVirtualMachines: canRunVirtualMachines, log: log)
+            canRunVirtualMachines: canRunVirtualMachines, store: store, installer: installer,
+            log: log)
 
         let signals = SignalMonitor([SIGTERM, SIGINT, SIGHUP])
         Task {
             for await number in signals.signals {
                 log.notice("received signal \(number); stopping every machine")
+                await service.cancelInstallations()
                 let summary = await registry.shutdown(reason: "the maw daemon is stopping")
                 log.notice(
                     "stopped \(summary.stoppedMachines.count) machines and "
@@ -83,6 +103,33 @@ struct Serve: AsyncParsableCommand {
         listener.activate()
         await service.serve(listener)
         withExtendedLifetime(lock) {}
+    }
+
+    /// Removes the staging directories that an installation left behind when the daemon could
+    /// not clean up, such as one interrupted by a crash or a power loss: this daemon's own,
+    /// which no other process uses while it holds its lock, and those of earlier builds, whose
+    /// names carry no label, only while no other daemon runs. A daemon creates staging
+    /// directories only while it holds its lock, so with no other lock held, none of them
+    /// belongs to an installation in progress.
+    private func removeStagingLeftovers(
+        store: DistributionStore, label: String, paths: MawPaths, log: DaemonLog
+    ) {
+        for leftover in store.removeStagingLeftovers() {
+            log.notice("removed \(leftover), left by an interrupted installation")
+        }
+        let legacy = store.legacyStagingDirectories()
+        guard !legacy.isEmpty else { return }
+        let others = DaemonLock.labelsHeld(in: paths.applicationSupportDirectory)
+            .filter { $0 != label }
+        guard others.isEmpty else {
+            log.notice(
+                "kept \(legacy.count) staging directories of an earlier build while "
+                    + "\(others.joined(separator: ", ")) runs; a later start removes them")
+            return
+        }
+        for leftover in store.removeLegacyStagingDirectories() {
+            log.notice("removed \(leftover), left by an interrupted installation")
+        }
     }
 }
 
@@ -101,9 +148,15 @@ struct DaemonSettings: ParsableArguments {
     @Option(name: .customLong("daemon-idle-timeout"), help: .hidden)
     var daemonIdleTimeout: Int?
 
+    @Option(name: .customLong("image-cache-directory"), help: .hidden)
+    var imageCacheDirectory: String?
+
     func validate() throws {
-        if label.isEmpty || label.contains("/") {
-            throw ValidationError("--label must be a launchd label such as dev.maw.mawd.")
+        do {
+            _ = try DaemonLabel(label)
+        } catch {
+            throw ValidationError(
+                "--label must be a launchd label such as dev.maw.mawd: \(error.reason).")
         }
         for (name, value) in [
             ("--machine-idle-timeout", machineIdleTimeout),
@@ -118,6 +171,14 @@ struct DaemonSettings: ParsableArguments {
     var logDirectoryURL: URL {
         logDirectory.map { URL(filePath: $0, directoryHint: .isDirectory) }
             ?? MawPaths().logsDirectory
+    }
+
+    var imageCacheDirectoryOverride: URL? {
+        imageCacheDirectory.map { URL(filePath: $0, directoryHint: .isDirectory) }
+    }
+
+    var imageCacheDirectoryURL: URL {
+        imageCacheDirectoryOverride ?? MawPaths().imageCacheDirectory
     }
 
     var machineIdleDuration: Duration {

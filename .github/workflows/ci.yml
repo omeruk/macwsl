@@ -31,8 +31,28 @@ jobs:
       - name: Build
         run: swift build -Xswiftc -warnings-as-errors
 
-      - name: Test
-        run: swift test -Xswiftc -warnings-as-errors
+      - name: Build tests
+        id: build-tests
+        run: swift build --build-tests -Xswiftc -warnings-as-errors
+
+      # Three groups, so that a test that generates heavy load never runs at the same time as a
+      # test that asserts latency (docs/decisions/0018-test-groups.md). Each group runs once the
+      # tests are built, even if an earlier group failed, and the last step fails unless every
+      # test ran in exactly one group.
+      - name: Test the general group, in parallel
+        run: scripts/test-groups.sh run general "$RUNNER_TEMP/test-results"
+
+      - name: Test the latency group, one test at a time
+        if: ${{ !cancelled() && steps.build-tests.outcome == 'success' }}
+        run: scripts/test-groups.sh run latency "$RUNNER_TEMP/test-results"
+
+      - name: Test the load group, one test at a time
+        if: ${{ !cancelled() && steps.build-tests.outcome == 'success' }}
+        run: scripts/test-groups.sh run load "$RUNNER_TEMP/test-results"
+
+      - name: Check that every test ran in exactly one group
+        if: ${{ !cancelled() && steps.build-tests.outcome == 'success' }}
+        run: scripts/test-groups.sh check "$RUNNER_TEMP/test-results"
 
       - name: Lint
         run: swift format lint --strict --recursive Sources Tests Package.swift

@@ -53,6 +53,8 @@ FUSE_FS=y
 VIRTIO_FS=y
 VSOCKETS=y
 VIRTIO_VSOCKETS=y
+# Only the host may reach the guest agent over vsock (docs/security.md).
+VSOCKETS_LOOPBACK=n
 
 # Filesystems.
 EXT4_FS=y

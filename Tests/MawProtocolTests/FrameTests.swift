@@ -107,6 +107,55 @@ import Testing
         }
     }
 
+    @Test func readsStdinConsumedFrames() throws {
+        #expect(Frame.stdinConsumed(65_536).encoded == [0, 0, 0, 4, 0x03, 0, 1, 0, 0])
+        #expect(try Frame.stdinConsumed(0xFFFF_FFFF).consumedByteCount() == 0xFFFF_FFFF)
+        #expect(throws: FrameError.malformedStdinConsumed(size: 5)) {
+            try Frame(type: .stdinConsumed, payload: [0, 0, 0, 1, 0]).consumedByteCount()
+        }
+        #expect(throws: FrameError.unexpectedType(0x01, expected: "stdinConsumed")) {
+            try Frame.version().consumedByteCount()
+        }
+    }
+
+    @Test func readsDialBackNonceFrames() throws {
+        let nonce = try #require(DialBackNonce(bytes: Array(0..<32)))
+        let encoded = Frame.dialBackNonce(nonce).encoded
+        #expect(encoded == [0, 0, 0, 32, 0x04] + Array(0..<32))
+        var decoder = FrameDecoder()
+        decoder.append(encoded)
+        #expect(try decoder.nextFrame()?.dialBackNonce() == nonce)
+        #expect(throws: FrameError.malformedDialBackNonce(size: 31)) {
+            try Frame(type: .dialBackNonce, payload: Array(repeating: 0, count: 31))
+                .dialBackNonce()
+        }
+        #expect(throws: FrameError.unexpectedType(0x01, expected: "dialBackNonce")) {
+            try Frame.version().dialBackNonce()
+        }
+    }
+
+    /// A nonce frame of any other size fails as soon as its header is complete, without waiting
+    /// for the payload it declares.
+    @Test func rejectsANonceFrameOfAnotherSize() {
+        for size in [0, 1, 16, 31, 33, 64, AgentProtocol.maximumPayloadSize] {
+            var decoder = FrameDecoder()
+            decoder.append(Frame.header(type: .dialBackNonce, payloadSize: size))
+            #expect(throws: FrameError.malformedDialBackNonce(size: size)) {
+                try decoder.nextFrame()
+            }
+        }
+    }
+
+    @Test func reportsATruncatedNonceFrameAtEndOfFile() throws {
+        let bytes = Frame.dialBackNonce(.random()).encoded
+        for cut in 1..<bytes.count {
+            var decoder = FrameDecoder()
+            decoder.append(bytes[..<cut])
+            #expect(try decoder.nextFrame() == nil)
+            #expect(throws: FrameError.truncated(buffered: cut)) { try decoder.finish() }
+        }
+    }
+
     @Test func compactsItsBufferOverManyFrames() throws {
         var decoder = FrameDecoder()
         let frame = Frame(type: .stdout, payload: [UInt8](repeating: 1, count: 1_000))

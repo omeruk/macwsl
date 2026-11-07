@@ -123,3 +123,52 @@ import Testing
         #expect(Maw.failure(for: ExitCode.success) == nil)
     }
 }
+
+/// Messages that were wider than 80 columns, as `maw` prints them, with the "maw: " prefix.
+@Suite struct MessageWidthTests {
+    func expectWithinEightyColumns(
+        _ error: MawError, printing expected: String,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) throws {
+        let output = try #require(Maw.failure(for: error)?.output)
+        #expect(output == expected, sourceLocation: sourceLocation)
+        for line in output.split(separator: "\n") {
+            #expect(line.count <= 80, "\(line)", sourceLocation: sourceLocation)
+        }
+    }
+
+    @Test func fitsTheCancellation() throws {
+        try expectWithinEightyColumns(
+            .installationCancelled(try DistroName("Ubuntu-24.04")),
+            printing: """
+                maw: The installation of Ubuntu-24.04 was cancelled.
+                Nothing was installed. Run maw --install to start again; an interrupted
+                download resumes where it stopped.
+
+                """)
+    }
+
+    @Test func fitsAPasswordWithAControlCharacter() throws {
+        try expectWithinEightyColumns(
+            .invalidPassword(reason: "it contains a line break\nor a control character"),
+            printing: """
+                maw: The password cannot be used: it contains a line break
+                or a control character.
+                Type the same non-empty password twice. With --user, give it as the first
+                line of standard input.
+
+                """)
+    }
+
+    @Test func fitsAnUnconfirmedCancellation() throws {
+        try expectWithinEightyColumns(
+            .installationCancellationUnconfirmed(try DistroName("Ubuntu-24.04")),
+            printing: """
+                maw: The daemon has not yet confirmed the cancellation of the installation of
+                Ubuntu-24.04. The installation may still be ending.
+                Wait a moment, then run maw -d Ubuntu-24.04 -e true. It succeeds if
+                Ubuntu-24.04 was installed after all, and otherwise says that it is not.
+
+                """)
+    }
+}

@@ -1,0 +1,49 @@
+#!/bin/sh
+# Checks a distribution's root file system before /init mounts it, and decides whether the
+# distribution boots.
+#
+# Usage: maw-check-root <device>
+#
+# Runs `e2fsck -p` on the device, whose messages go to the console log, and then prints
+# e2fsck's exit status on the console in a line of its own:
+#
+#   maw-initramfs: root-check e2fsck-status=<status>
+#
+# mawd reads that line, and only that line, to tell a failed check from other power-offs
+# before the guest agent answers (Sources/MawCore/RootFileSystemCheck.swift). A line that
+# explains the status follows it.
+#
+# e2fsck's exit status is a sum of these values (e2fsck(8)):
+#
+#   0    no errors
+#   1    errors corrected
+#   2    errors corrected; the system should be rebooted
+#   4    errors left uncorrected
+#   8    operational error, which includes a device that cannot be opened and a superblock
+#        that cannot be read
+#   16   usage or syntax error
+#   32   cancelled
+#   128  shared library error
+#
+# Exits with 0 if the file system may be mounted: a status below 4, with no errors or only
+# corrected ones. A reboot is not needed, because the file system is not mounted yet.
+# Otherwise exits with 1, and the distribution does not boot. Nothing but e2fsck -p writes to
+# the device: with a status of 4 or more, it has stopped, and its repairs up to then stay.
+
+device=$1
+
+e2fsck -p "$device"
+status=$?
+echo "maw-initramfs: root-check e2fsck-status=$status" >&2
+
+if [ "$status" -eq 0 ]; then
+    exit 0
+elif [ "$status" -lt 4 ]; then
+    echo "maw-initramfs: e2fsck -p corrected errors on $device (exit status $status)" >&2
+    exit 0
+elif [ "$status" -lt 8 ]; then
+    echo "maw-initramfs: e2fsck -p left errors uncorrected on $device (exit status $status)" >&2
+else
+    echo "maw-initramfs: e2fsck -p could not check $device (exit status $status)" >&2
+fi
+exit 1

@@ -38,7 +38,8 @@ messages, and clean resource handling over feature count.
 - **mawd**: per-user LaunchAgent (`dev.maw.mawd`) that launchd starts on demand. Owns VM
   lifecycle (start, stop, idle shutdown, sleep/wake handling). Exposes an XPC Mach service
   through libxpc's C connection API (`docs/decisions/0010-xpc-c-connection-api.md`). For
-  interactive sessions it connects to the guest over vsock and hands the connection's file
+  interactive sessions the guest agent dials a connection back to mawd over vsock
+  (`docs/decisions/0017-dial-back-for-sessions.md`), and mawd hands that connection's file
   descriptor to the client over XPC, so terminal bytes do not pass through the daemon.
   Until the app bundle exists (phase 13), `mawd install` registers it with `launchctl
   bootstrap`; phase 13 moves the registration to `SMAppService`
@@ -87,7 +88,9 @@ prompts/                 phase prompts used to build this project
 
 - `~/Library/Application Support/maw/distros/<name>/disk.img` sparse raw ext4 disk
 - `~/Library/Application Support/maw/distros/<name>/distro.json` metadata
+- `~/Library/Application Support/maw/state.json` daemon settings, such as the default distro
 - `~/Library/Application Support/maw/kernel/` kernel and initramfs
+- `~/Library/Caches/maw/images/` verified distribution images and partial downloads
 - `~/Library/Logs/maw/` daemon and per-VM console logs
 - `~/.mawconfig` global settings (like `.wslconfig`): memory, CPUs, swap, idle timeout
 - `/etc/maw.conf` inside each distro (like `wsl.conf`): default user, automount, boot
@@ -98,7 +101,10 @@ prompts/                 phase prompts used to build this project
 ```sh
 swift build                                   # host targets
 swift test                                    # unit tests
-swift build --swift-sdk aarch64-swift-linux-musl --product maw-agent   # guest agent
+scripts/test-groups.sh all .build/test-results  # the tests in the groups CI uses (decision
+                                                # record 0018), after swift build --build-tests
+scripts/build-guest-agent.sh                  # guest agent, with the swift.org toolchain
+                                              # and Static Linux SDK pinned in Guest/agent/SWIFT
 swift format lint --recursive Sources Tests   # lint
 ./scripts/sign-dev.sh                         # build and ad-hoc sign maw and mawd
 .build/debug/mawd install                     # register the daemon with launchd

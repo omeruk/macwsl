@@ -12,6 +12,13 @@ extension Maw {
         let request = requests.first
         try validateListModifiers(for: request)
         try validateSessionOptions(for: request)
+        if managing.name != nil,
+            !(request.map { if case .install = $0 { true } else { false } } ?? false)
+        {
+            throw ValidationError(
+                "\(CLIOption.name.displayName) can only be used with \(CLIOption.install.displayName)."
+            )
+        }
 
         let session = Session(
             distro: running.distribution, user: running.user, directory: running.directory)
@@ -36,7 +43,9 @@ extension Maw {
             }
             return .exec(command, session)
         case .install:
-            return try .install(installTarget())
+            return .install(
+                InstallOptions(distro: try installTarget(), name: managing.name, user: running.user)
+            )
         case .list:
             try expectNoOperands(after: CLIOption.list.displayName)
             return .list(managing.online ? .online : .installed(verbose: managing.verbose))
@@ -112,7 +121,11 @@ extension Maw {
         ]
         for (option, isSet) in given where isSet {
             let accepted =
-                option == .distribution ? request.acceptsDistribution : request.acceptsSession
+                switch option {
+                case .distribution: request.acceptsDistribution
+                case .user: request.acceptsUser
+                default: request.acceptsSession
+                }
             if !accepted {
                 throw ValidationError(
                     "\(request.displayName) cannot be combined with \(option.displayName).")
@@ -195,7 +208,15 @@ private enum Request {
         }
     }
 
-    /// Whether `-u` and `--cd` apply.
+    /// Whether `-u` applies. `--install -u <user>` names the account to create.
+    var acceptsUser: Bool {
+        switch self {
+        case .install, .exec, .command: true
+        default: false
+        }
+    }
+
+    /// Whether `--cd` applies.
     var acceptsSession: Bool {
         switch self {
         case .exec, .command: true

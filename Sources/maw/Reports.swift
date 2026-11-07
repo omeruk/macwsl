@@ -44,6 +44,36 @@ enum Reports {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    /// `maw --list --online`:
+    ///
+    /// ```
+    /// The distributions that maw --install can install. * marks the one it installs when no
+    /// name is given.
+    ///
+    ///     NAME          ALSO      DESCRIPTION        DOWNLOAD
+    ///   * Ubuntu-24.04  Ubuntu    Ubuntu 24.04 LTS   388.3 MB
+    /// ```
+    static func online(_ catalog: DistroCatalog) -> String {
+        let rows =
+            [["  NAME", "ALSO", "DESCRIPTION", "DOWNLOAD"]]
+            + catalog.entries.map { entry in
+                [
+                    (entry.name == catalog.recommended ? "* " : "  ") + entry.name.rawValue,
+                    entry.aliases.isEmpty
+                        ? "-" : entry.aliases.map(\.rawValue).joined(separator: ", "),
+                    entry.displayName,
+                    ByteSize(bytes: entry.image.size).approximateDescription,
+                ]
+            }
+        let lines =
+            [
+                "The distributions that maw --install can install. * marks the one it installs "
+                    + "when no name is given.",
+                "",
+            ] + table(rows).map { "  " + $0 }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
     /// `maw --status` when the daemon does not run.
     static let daemonNotRunning =
         "The maw daemon is not running. It starts when a command needs a virtual machine.\n"

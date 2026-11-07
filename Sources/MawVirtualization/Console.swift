@@ -32,9 +32,9 @@
         static let maximumLineLength = 64 << 10
 
         /// The guest writes its console output into this pipe.
-        let fromGuest = Pipe()
+        let fromGuest = Pipe.closedOnExec()
         /// The guest reads its console input from this pipe.
-        let toGuest = Pipe()
+        let toGuest = Pipe.closedOnExec()
 
         /// Lines of guest output, without line terminators. See the back-pressure policy.
         let lines: AsyncStream<String>
@@ -273,6 +273,22 @@
         private static func line(from bytes: [UInt8]) -> String {
             let trimmed = bytes.last == UInt8(ascii: "\r") ? bytes.dropLast() : bytes[...]
             return String(decoding: trimmed, as: UTF8.self)
+        }
+    }
+
+    extension Pipe {
+        /// A pipe whose two descriptors are closed on exec, so that no program the process
+        /// starts inherits them. Foundation's `Pipe` leaves the flag clear. macOS has no
+        /// `pipe2`, so the flag is set just after the pipe is created; the daemon's own
+        /// `posix_spawn` calls also pass `POSIX_SPAWN_CLOEXEC_DEFAULT`.
+        public static func closedOnExec() -> Pipe {
+            let pipe = Pipe()
+            for descriptor in [
+                pipe.fileHandleForReading.fileDescriptor, pipe.fileHandleForWriting.fileDescriptor,
+            ] {
+                _ = fcntl(descriptor, F_SETFD, fcntl(descriptor, F_GETFD) | FD_CLOEXEC)
+            }
+            return pipe
         }
     }
 #endif

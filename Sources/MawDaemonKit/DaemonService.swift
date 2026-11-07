@@ -1,8 +1,10 @@
 #if os(macOS)
     import Darwin
+    import Foundation
     import MawCore
     import MawProtocol
     import MawXPC
+    import os
 
     /// Serves the daemon's XPC interface (docs/daemon.md): one task per client connection,
     /// which handles that connection's requests in order and releases its session leases when
@@ -13,19 +15,30 @@
 
         public let registry: MachineRegistry<C>
         public let lifetime: DaemonLifetime<C>
+        /// The installed distributions, which resolve the default for a session.
+        public let store: DistributionStore?
+        public let installer: Installer?
         private let clock: C
         private let started: C.Instant
         private let info: DaemonInfo
         private let canRunVirtualMachines: Bool
         private let log: DaemonLog
+        /// Every connection's running installation, so that the daemon can cancel them all when
+        /// it stops. An installation that finishes before it is registered is remembered in
+        /// `finished` until then.
+        private let installations = OSAllocatedUnfairLock(
+            initialState: (running: [UUID: Task<Bool, Never>](), finished: Set<UUID>()))
 
         public init(
             clock: C, registry: MachineRegistry<C>, lifetime: DaemonLifetime<C>,
-            canRunVirtualMachines: Bool, log: DaemonLog = DaemonLog()
+            canRunVirtualMachines: Bool, store: DistributionStore? = nil,
+            installer: Installer? = nil, log: DaemonLog = DaemonLog()
         ) {
             self.clock = clock
             self.registry = registry
             self.lifetime = lifetime
+            self.store = store
+            self.installer = installer
             self.canRunVirtualMachines = canRunVirtualMachines
             self.log = log
             started = clock.now
@@ -50,6 +63,8 @@
             let processID = peer.peerProcessID
             var greeted = false
             var leases: [Lease] = []
+            // This connection's installation; at most one at a time.
+            var installation: (id: UUID, task: Task<Bool, Never>)?
 
             for await event in peer.events {
                 guard case .message(let message) = event else {
@@ -75,7 +90,8 @@
                                     + "this daemon is \(MawVersion.current)")
                         }
                         reply = .welcome(info)
-                    case .openSession(let machine):
+                    case .openSession(let requested):
+                        let machine = try resolve(requested)
                         let (lease, connection) = try await registry.openSession(on: machine) {
                             lease, reason in
                             Self.notify(peer, that: lease, ended: reason)
@@ -90,6 +106,34 @@
                         log.notice("shutdown requested by process \(processID)")
                         reply = .shutdownComplete(
                             await registry.shutdown(reason: Self.shutdownReason))
+                    case .install(let request):
+                        guard let installer else {
+                            throw .notImplemented(feature: "--install", phase: "05")
+                        }
+                        if let installation, isRunning(installation.id) {
+                            throw .daemonProtocolError(
+                                reason: "this connection is already installing a distribution")
+                        }
+                        installation = startInstallation(
+                            request, with: installer, replyingTo: message, on: peer)
+                        continue
+                    case .checkInstall(let distribution, let name):
+                        guard let installer else {
+                            throw .notImplemented(feature: "--install", phase: "05")
+                        }
+                        try await installer.check(distribution: distribution, name: name)
+                        reply = .installPossible
+                    case .cancelInstall:
+                        var wasCancelled = false
+                        if let installation, isRunning(installation.id) {
+                            log.notice("process \(processID) cancelled its installation")
+                            installation.task.cancel()
+                            // An installation that had already registered the distribution
+                            // finishes regardless, and reports it as installed.
+                            wasCancelled = !(await installation.task.value)
+                        }
+                        installation = nil
+                        reply = .installCancelled(wasRunning: wasCancelled)
                     }
                 } catch {
                     reply = .failure(error)
@@ -98,6 +142,13 @@
                 descriptor?.close()
             }
 
+            if let installation, isRunning(installation.id) {
+                // The client went away: the installation stops and removes its traces.
+                log.notice(
+                    "process \(processID) closed its connection; cancelling its installation")
+                installation.task.cancel()
+                _ = await installation.task.value
+            }
             for lease in leases {
                 await registry.release(lease)
             }
@@ -107,6 +158,81 @@
                         + (leases.count == 1 ? "session" : "sessions"))
             }
             await lifetime.clientDisconnected()
+        }
+
+        /// The machine a session runs on: the requested one, or the default distribution's.
+        func resolve(_ requested: MachineID?) throws(MawError) -> MachineID {
+            if case .distribution(let name) = requested, let store {
+                // APFS ignores case, so `-d ubuntu-24.04` finds Ubuntu-24.04's files. The machine
+                // must carry the stored spelling, or one disk would get two machines.
+                guard let metadata = try store.metadata(for: name) else {
+                    throw .distributionNotInstalled(name)
+                }
+                return .distribution(metadata.name)
+            }
+            if let requested {
+                return requested
+            }
+            guard let name = store?.defaultDistribution() else {
+                throw .noDistributionInstalled
+            }
+            return .distribution(name)
+        }
+
+        /// Runs an installation on a task of its own, so that this connection can still cancel
+        /// it, and replies to `request` when it ends.
+        private func startInstallation(
+            _ install: InstallRequest, with installer: Installer, replyingTo request: XPCObject,
+            on peer: XPCConnection
+        ) -> (id: UUID, task: Task<Bool, Never>) {
+            let id = UUID()
+            let task = Task {
+                defer {
+                    installations.withLock {
+                        if $0.running.removeValue(forKey: id) == nil {
+                            $0.finished.insert(id)
+                        }
+                    }
+                }
+                let reply: DaemonReply
+                do throws(MawError) {
+                    let summary = try await installer.install(install) { progress in
+                        if let object = try? InterfaceCoding.encode(
+                            DaemonEvent.installProgress(progress))
+                        {
+                            peer.send(object)
+                        }
+                    }
+                    reply = .installed(summary)
+                } catch {
+                    reply = .failure(error)
+                }
+                self.send(reply, to: request, on: peer, descriptor: nil)
+                if case .installed = reply { return true }
+                return false
+            }
+            installations.withLock {
+                if $0.finished.remove(id) == nil {
+                    $0.running[id] = task
+                }
+            }
+            return (id, task)
+        }
+
+        /// Whether the installation `id` has not finished yet.
+        private func isRunning(_ id: UUID) -> Bool {
+            installations.withLock { $0.running[id] != nil }
+        }
+
+        /// Cancels every installation and waits until each has removed its traces.
+        public func cancelInstallations() async {
+            let running = installations.withLock { Array($0.running.values) }
+            for task in running {
+                task.cancel()
+            }
+            for task in running {
+                _ = await task.value
+            }
         }
 
         func status() async -> DaemonStatus {

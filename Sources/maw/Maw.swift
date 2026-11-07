@@ -18,7 +18,7 @@ struct Maw: AsyncParsableCommand {
             maw [-d <distro>] [-u <user>] [--cd <directory>] [<command> [<argument>...]]
             maw [-d <distro>] [-u <user>] [--cd <directory>] -- <command> [<argument>...]
             maw [-d <distro>] [-u <user>] [--cd <directory>] -e <command> [<argument>...]
-            maw --install [<distro>]
+            maw --install [<distro>] [--name <name>] [-u <user>]
             maw --list [--verbose | --online]
             maw --set-default <distro>
             maw --terminate <distro>
@@ -91,7 +91,14 @@ struct Maw: AsyncParsableCommand {
             try await Self.shutDown()
         case .version:
             await Self.showVersion()
-        case .install, .list, .setDefault, .terminate, .export, .importDistro, .unregister:
+        case .install(let options):
+            let status = try await InstallCommand(options: options).run()
+            if status != 0 {
+                throw ExitCode(status)
+            }
+        case .list(.online):
+            print(Reports.online(DistroCatalog.builtIn), terminator: "")
+        case .list, .setDefault, .terminate, .export, .importDistro, .unregister:
             throw MawError.notImplemented(feature: action.displayName, phase: action.phase)
         }
     }
@@ -221,6 +228,14 @@ struct ManagingOptions: ParsableArguments {
                 recommended distribution. --list --online shows what is available.
                 """))
     var install = false
+
+    @Option(
+        name: CLIOption.name.names,
+        parsing: .unconditional,
+        help: ArgumentHelp(
+            "With --install: install the distribution under <name>.", valueName: "name"),
+        transform: { try DistroName($0) })
+    var name: DistroName?
 
     @Flag(name: CLIOption.list.names, help: "List installed distributions.")
     var list = false

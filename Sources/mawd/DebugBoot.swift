@@ -199,7 +199,8 @@ struct DebugBoot: AsyncParsableCommand {
         let configuration = VMConfiguration(
             kernelURL: guest.kernelURL,
             initramfsURL: guest.initramfsURL,
-            consoleLogURL: MawPaths().logsDirectory.appending(path: "\(Self.name)-console.log"),
+            consoleLogURL: MawPaths().logsDirectory.appending(
+                path: "\(MawPaths.debugBootConsoleLogName).log"),
             cpuCount: cpus ?? VMConfiguration.defaultCPUCount(),
             memorySize: memory ?? VMConfiguration.defaultMemorySize,
             commandLine: VMConfiguration.commandLine(appending: kernelArguments),
@@ -264,7 +265,7 @@ struct DebugBoot: AsyncParsableCommand {
     /// Connects the terminal to the guest console in raw mode until the guest stops, the user
     /// detaches (see `ConsoleEscapes`), or a signal arrives. The terminal is restored on every path (see `RawMode`).
     private func runInteractive(_ configuration: VMConfiguration) async throws {
-        let toGuest = Pipe()
+        let toGuest = Pipe.closedOnExec()
         let machine = try VirtualMachine(
             name: Self.name, configuration: configuration,
             consoleIO: .init(input: toGuest.fileHandleForReading, output: .standardOutput))

@@ -50,6 +50,8 @@ import Testing
     @Test func rejectsUserAndDirectoryOutsideASession() {
         #expect(failure("-l", "-u", "root") == "--list (-l) cannot be combined with --user (-u).")
         #expect(failure("--install", "--cd", "/") == "--install cannot be combined with --cd.")
+        #expect(failure("-l", "--name", "Work") == "--name can only be used with --install.")
+        #expect(failure("--name", "Work") == "--name can only be used with --install.")
         #expect(
             failure("-t", "Ubuntu", "-d", "Debian")
                 == "--terminate (-t) cannot be combined with --distribution (-d).")

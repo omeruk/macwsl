@@ -55,17 +55,28 @@ public final class FrameConnection: @unchecked Sendable {
     private var decoder = FrameDecoder()
     private var outbox = ByteBuffer()
     private var readBuffer = [UInt8](repeating: 0, count: 64 << 10)
+    /// Whether a write to the descriptor cannot raise SIGPIPE. Where it can, the connection
+    /// never writes, and `flush` reports `closed` instead.
+    private let writesAreSafe: Bool
 
     /// Takes ownership of a connected socket and makes it non-blocking.
+    ///
+    /// On Darwin, a write to a socket whose peer has closed raises SIGPIPE unless the socket
+    /// suppresses it, and macOS refuses to suppress it once the peer has closed: `SO_NOSIGPIPE`
+    /// and `F_SETNOSIGPIPE` then fail with EINVAL, and only a socket that suppressed SIGPIPE
+    /// before the close is safe. A process that does not ignore SIGPIPE, as an app does not,
+    /// would end at the first write. A connection whose descriptor still raises SIGPIPE
+    /// therefore never writes to it, as if every write met the closed peer, while it still
+    /// reads what the peer sent before closing, such as an agent's version and its error.
+    /// Pipes, which tests use, take `F_SETNOSIGPIPE`. On Linux, `maw_send` suppresses SIGPIPE
+    /// on each send to a socket instead.
     public init(_ descriptor: OwnedDescriptor) throws(ConnectionError) {
         self.descriptor = descriptor
+        writesAreSafe = maw_suppress_sigpipe(descriptor.rawValue) == 0
         let error = maw_set_nonblocking(descriptor.rawValue)
         guard error == 0 else {
             throw .system(SystemError("fcntl(O_NONBLOCK)", code: error))
         }
-        // Not every descriptor is a socket (tests use pipes); a failure only means that
-        // `maw_send` covers SIGPIPE instead.
-        _ = maw_suppress_sigpipe(descriptor.rawValue)
     }
 
     public var rawDescriptor: Int32 { descriptor.rawValue }
@@ -95,9 +106,12 @@ public final class FrameConnection: @unchecked Sendable {
     }
 
     /// Writes as much queued output as the socket accepts. Returns whether all of it was
-    /// written.
+    /// written. Throws `closed`, without writing, if the descriptor could not suppress SIGPIPE.
     @discardableResult
     public func flush() throws(ConnectionError) -> Bool {
+        guard writesAreSafe || pendingOutputCount == 0 else {
+            throw .closed
+        }
         while pendingOutputCount > 0 {
             let sent = outbox.withUnsafeBytes { buffer in
                 maw_send(rawDescriptor, buffer.baseAddress!, buffer.count)
@@ -106,7 +120,8 @@ public final class FrameConnection: @unchecked Sendable {
                 switch errno {
                 case EINTR: continue
                 case EAGAIN, EWOULDBLOCK: return false
-                case EPIPE, ECONNRESET: throw .closed
+                // macOS reports ENOTCONN instead of EPIPE when the send races the peer's close.
+                case EPIPE, ECONNRESET, ENOTCONN: throw .closed
                 default: throw .system(SystemError("send"))
                 }
             }
@@ -197,12 +212,16 @@ public final class FrameConnection: @unchecked Sendable {
         }
     }
 
-    /// Sends this side's protocol version and returns the peer's. Both sides send first, so
-    /// neither waits for the other.
-    public func exchangeVersions(until deadline: ContinuousClock.Instant?) throws(ConnectionError)
-        -> UInt32
-    {
+    /// Sends this side's protocol version, followed by `frames`, and returns the peer's. Both
+    /// sides send first, so neither waits for the other. The host sends its request in
+    /// `frames`, so that the request does not wait for the agent's version (docs/protocol.md).
+    public func exchangeVersions(
+        until deadline: ContinuousClock.Instant?, thenSending frames: [Frame] = []
+    ) throws(ConnectionError) -> UInt32 {
         enqueue(.version())
+        for frame in frames {
+            enqueue(frame)
+        }
         try flush(until: deadline)
         let frame = try receiveFrame(until: deadline, expecting: "the protocol version")
         do throws(FrameError) {

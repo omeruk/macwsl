@@ -42,6 +42,78 @@ public struct MawPaths: Sendable, Equatable {
         distroDirectory(for: name).appending(path: "distro.json", directoryHint: .notDirectory)
     }
 
+    /// `~/Library/Application Support/maw/distros/.staging`, holding each daemon's staging
+    /// directories. Distribution names cannot start with `.`, so it never collides with one.
+    public var stagingRoot: URL {
+        distrosDirectory.appending(path: Self.stagingRootName, directoryHint: .isDirectory)
+    }
+
+    /// `~/Library/Application Support/maw/distros/.staging/<label>`, the staging directories of
+    /// the daemon with `label`, which only that daemon creates and removes.
+    public func stagingDirectory(label: DaemonLabel) -> URL {
+        stagingRoot.appending(path: label.rawValue, directoryHint: .isDirectory)
+    }
+
+    /// `~/Library/Application Support/maw/distros/.staging/<label>/<name>-<id>`, where an
+    /// installation by the daemon with `label` builds a distribution before it renames the
+    /// directory to `distroDirectory(for:)`.
+    public func stagingDirectory(for name: DistroName, id: UUID, label: DaemonLabel) -> URL {
+        stagingDirectory(label: label).appending(
+            path: "\(name.rawValue)-\(id.uuidString)", directoryHint: .isDirectory)
+    }
+
+    /// The name of `stagingRoot`.
+    public static let stagingRootName = ".staging"
+
+    /// The prefix of the staging directories of earlier builds, `distros/.staging-<name>-<id>`,
+    /// which carried no label.
+    public static let legacyStagingPrefix = ".staging-"
+
+    /// `~/Library/Application Support/maw/state.json`, the daemon's settings, such as the
+    /// default distribution.
+    public var stateFile: URL {
+        applicationSupportDirectory.appending(path: "state.json", directoryHint: .notDirectory)
+    }
+
+    /// `~/Library/Caches/maw/images`, holding verified distribution images and partial
+    /// downloads.
+    public var imageCacheDirectory: URL {
+        homeDirectory.appending(path: "Library/Caches/maw/images", directoryHint: .isDirectory)
+    }
+
+    /// `~/Library/Logs/maw/install/<name>.log`, the console of the machine that provisions
+    /// the distribution `name`.
+    public func installLogFile(for name: DistroName) -> URL {
+        Self.installLogFile(for: name, in: logsDirectory)
+    }
+
+    // MARK: Log names
+
+    /// The daemon's log is `mawd.log`, where launchd sends its output.
+    public static let daemonLogName = "mawd"
+    /// `mawd debug-boot` writes its machine's console to `debug-boot-console.log`.
+    public static let debugBootConsoleLogName = "debug-boot-console"
+    /// The directory, in a logs directory, of the provisioning machines' console logs. They
+    /// have a directory of their own, so that no installation's log has the name of another
+    /// file: a distribution named `install-foo` writes its console to `install-foo.log`.
+    public static let installLogDirectoryName = "install"
+
+    /// `<log directory>/<machine>.log`, the console log of the machine named `machine`: a
+    /// distribution's, or `initramfs`. A machine must not be named after another file in the
+    /// directory, such as `mawd` (`daemonLogName`).
+    public static func consoleLogFile(forMachineNamed machine: String, in logDirectory: URL)
+        -> URL
+    {
+        logDirectory.appending(path: "\(machine).log", directoryHint: .notDirectory)
+    }
+
+    /// `<log directory>/install/<name>.log`, the console of the machine that provisions the
+    /// distribution `name`.
+    public static func installLogFile(for name: DistroName, in logDirectory: URL) -> URL {
+        logDirectory.appending(path: installLogDirectoryName, directoryHint: .isDirectory)
+            .appending(path: "\(name.rawValue).log", directoryHint: .notDirectory)
+    }
+
     /// `~/Library/Application Support/maw/kernel`, holding the guest kernel and initramfs.
     public var kernelDirectory: URL {
         applicationSupportDirectory.appending(path: "kernel", directoryHint: .isDirectory)
@@ -54,7 +126,7 @@ public struct MawPaths: Sendable, Equatable {
 
     /// `~/Library/Logs/maw/mawd.log`, where launchd sends the daemon's output.
     public var daemonLogFile: URL {
-        logsDirectory.appending(path: "mawd.log", directoryHint: .notDirectory)
+        logsDirectory.appending(path: "\(Self.daemonLogName).log", directoryHint: .notDirectory)
     }
 
     /// `~/Library/LaunchAgents/<label>.plist`, the daemon's LaunchAgent.

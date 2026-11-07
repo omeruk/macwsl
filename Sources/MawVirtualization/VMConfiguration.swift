@@ -10,13 +10,34 @@
     public struct VMConfiguration: Sendable, Equatable {
         /// A disk image attached as a virtio block device (`/dev/vda`, `/dev/vdb`, ...), in order.
         public struct Disk: Sendable, Equatable {
+            /// How the guest's flushes reach the Mac's storage.
+            public enum Synchronization: Sendable, Equatable {
+                /// `F_FULLFSYNC`: a flush returns once the data is on the drive's permanent
+                /// storage, so that it survives a crash or power loss of the Mac.
+                case full
+                /// `fsync`: a flush returns once the drive has the data, which may still be in
+                /// its volatile cache.
+                case fsync
+            }
+
             public var url: URL
             public var isReadOnly: Bool
+            public var synchronization: Synchronization
 
-            public init(url: URL, isReadOnly: Bool = false) {
+            public init(
+                url: URL, isReadOnly: Bool = false, synchronization: Synchronization = .full
+            ) {
                 self.url = url
                 self.isReadOnly = isReadOnly
+                self.synchronization = synchronization
             }
+        }
+
+        /// A virtio network device.
+        public enum Network: Sendable, Equatable {
+            /// Outbound connections through the Mac, with NAT; the guest configures itself with
+            /// DHCP. `macAddress` is fixed per distribution, so that its address stays the same.
+            case nat(macAddress: String)
         }
 
         /// The CPU counts and memory sizes a virtual machine may have.
@@ -47,6 +68,7 @@
         public var initramfsURL: URL
         public var commandLine: String
         public var disks: [Disk]
+        public var network: Network?
         /// Where the guest's console output is written. See `VirtualMachine`.
         public var consoleLogURL: URL
 
@@ -57,7 +79,8 @@
             cpuCount: Int = VMConfiguration.defaultCPUCount(),
             memorySize: ByteSize = VMConfiguration.defaultMemorySize,
             commandLine: String = VMConfiguration.baseCommandLine,
-            disks: [Disk] = []
+            disks: [Disk] = [],
+            network: Network? = nil
         ) {
             self.kernelURL = kernelURL
             self.initramfsURL = initramfsURL
@@ -66,6 +89,16 @@
             self.memorySize = memorySize
             self.commandLine = commandLine
             self.disks = disks
+            self.network = network
+        }
+
+        /// The resources of a distribution's machine until phase 12 makes them configurable:
+        /// every CPU of the Mac and half of its memory, as WSL gives its virtual machine.
+        public static func distributionResources(
+            hostCPUCount: Int = ProcessInfo.processInfo.processorCount,
+            hostMemory: UInt64 = ProcessInfo.processInfo.physicalMemory
+        ) -> (cpuCount: Int, memorySize: ByteSize) {
+            (max(1, hostCPUCount), ByteSize(bytes: hostMemory / 2).roundedDownToMebibytes)
         }
 
         /// `console=hvc0`, followed by `extra` if it contains anything but whitespace.

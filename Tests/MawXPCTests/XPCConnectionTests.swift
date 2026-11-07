@@ -89,6 +89,8 @@ import XPC
             InterfaceCoding.encode(DaemonRequest.openSession(.initramfs))
         ).get()
         let descriptor = try #require(InterfaceCoding.descriptor(in: reply))
+        // No program that the receiver starts inherits it.
+        #expect(fcntl(descriptor.rawValue, F_GETFD) & FD_CLOEXEC != 0)
         let text = Array("ping".utf8)
         #expect(write(descriptor.rawValue, text, text.count) == text.count)
         var buffer = [UInt8](repeating: 0, count: 4)

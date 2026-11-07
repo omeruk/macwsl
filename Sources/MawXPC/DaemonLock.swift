@@ -9,13 +9,17 @@
     /// wants to know whether the daemon runs, such as `maw --status`, checks this lock instead.
     /// The kernel releases a `flock` when its holder exits, however it exits.
     public final class DaemonLock: Sendable {
-        private let descriptor: Int32
+        let descriptor: Int32
 
         private init(descriptor: Int32) {
             self.descriptor = descriptor
         }
 
+        /// Unlocks before closing. Closing alone releases a `flock` only when no other
+        /// descriptor refers to the open file, and a child that another thread is starting has
+        /// a copy of every descriptor until its `execve`, close-on-exec or not.
         deinit {
+            flock(descriptor, LOCK_UN)
             close(descriptor)
         }
 
@@ -42,6 +46,18 @@
                 return nil
             }
             return DaemonLock(descriptor: descriptor)
+        }
+
+        /// The labels of the daemons that hold their lock among the `<label>.lock` files in
+        /// `directory` (`MawPaths.applicationSupportDirectory`), sorted.
+        public static func labelsHeld(in directory: URL) -> [String] {
+            let names =
+                (try? FileManager.default.contentsOfDirectory(
+                    atPath: directory.path(percentEncoded: false))) ?? []
+            return names.filter { $0.hasSuffix(".lock") && $0.count > ".lock".count }
+                .filter { isHeld(at: directory.appending(path: $0, directoryHint: .notDirectory)) }
+                .map { String($0.dropLast(".lock".count)) }
+                .sorted()
         }
 
         /// Whether a process holds the lock. A missing file means no daemon has run.

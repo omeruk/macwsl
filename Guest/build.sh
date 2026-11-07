@@ -211,6 +211,7 @@ echo "build.sh: using $runtime with $image"
 fetch "$LINUX_URL" "$LINUX_SHA256"
 fetch "$BUSYBOX_URL" "$BUSYBOX_SHA256"
 fetch "$E2FSPROGS_URL" "$E2FSPROGS_SHA256"
+fetch "$LIBARCHIVE_URL" "$LIBARCHIVE_SHA256"
 
 prepare_builder "$runtime" "$image"
 

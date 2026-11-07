@@ -152,7 +152,7 @@ final class FakeMachine: MachineHandle, @unchecked Sendable {
         continuation?.resume()
     }
 
-    func connectToAgent() async throws(MawError) -> OwnedDescriptor {
+    func openSessionConnection() async throws(MawError) -> OwnedDescriptor {
         var fds: [Int32] = [-1, -1]
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0 else {
             throw .guestAgentUnavailable(reason: "socketpair failed")

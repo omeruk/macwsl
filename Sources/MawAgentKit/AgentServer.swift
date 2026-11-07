@@ -20,18 +20,31 @@ public struct AgentConfiguration: Sendable {
     public var maximumConnections: Int
     /// How long a new connection may take to send its version and its request.
     public var requestTimeout: Duration
-    /// The environment every exec session starts from.
-    public var defaultEnvironment: [String: String]
+    /// The guest's files that sessions are planned from: accounts, `maw.conf`, locales.
+    public var system: GuestSystem
+    /// How long a login shell waits for the system bus, so that `systemd-logind` can register
+    /// it, when the machine has only just started.
+    public var systemBusTimeout: Duration
+    /// Opens the connection to the host that a `dialBack` request asks for. The guest dials
+    /// over vsock (`DialBackDialer`); tests supply their own.
+    public var dialBack: @Sendable () throws(DialBackError) -> OwnedDescriptor
 
     public init(
-        maximumConnections: Int = 64,
+        maximumConnections: Int = AgentProtocol.maximumConnections,
         requestTimeout: Duration = .seconds(10),
-        defaultEnvironment: [String: String] = AgentEnvironment.defaults,
+        system: GuestSystem = .live,
+        systemBusTimeout: Duration = .seconds(2),
+        dialBack: @escaping @Sendable () throws(DialBackError) -> OwnedDescriptor = {
+            () throws(DialBackError) -> OwnedDescriptor in
+            try DialBackDialer().dial()
+        },
         powerOff: @escaping @Sendable () throws(SystemError) -> Void
     ) {
         self.maximumConnections = maximumConnections
         self.requestTimeout = requestTimeout
-        self.defaultEnvironment = defaultEnvironment
+        self.system = system
+        self.systemBusTimeout = systemBusTimeout
+        self.dialBack = dialBack
         self.powerOff = powerOff
     }
 }
@@ -51,13 +64,22 @@ public final class AgentServer: @unchecked Sendable {
         self.configuration = configuration
     }
 
-    /// Accepts connections on `listener` until accepting fails for a reason other than a
-    /// transient one, then throws.
+    /// Accepts connections from the host on the vsock `listener` until accepting fails for a
+    /// reason other than a transient one, then throws.
+    ///
+    /// Only the host may connect. The agent runs commands as root, and processes inside the
+    /// guest can reach a vsock port too, through the loopback transport, so a connection from
+    /// any other context ID is closed before a byte is read (docs/security.md).
     public func acceptConnections(on listener: OwnedDescriptor) throws(SystemError) -> Never {
         while true {
-            let descriptor = maw_accept(listener.rawValue)
+            var peer: UInt32 = 0
+            let descriptor = maw_vsock_accept_host(listener.rawValue, &peer)
             if descriptor < 0 {
                 switch errno {
+                case EPERM:
+                    logger.warning(
+                        "refused a connection from vsock context \(peer), which is not the host")
+                    continue
                 case EINTR, ECONNABORTED, EAGAIN:
                     continue
                 case EMFILE, ENFILE, ENOBUFS, ENOMEM:
@@ -105,16 +127,32 @@ public final class AgentServer: @unchecked Sendable {
             logger.error("cannot use a new connection: \(error)")
             return
         }
+        serve(connection, dialed: false)
+    }
+
+    /// Serves `connection`. After a `dialBack` request, closes it and serves the connection
+    /// the agent dialed, on the same thread and in the same slot of `maximumConnections`.
+    private func serve(_ connection: FrameConnection, dialed: Bool) {
+        let next: FrameConnection?
         do {
-            try converse(on: connection)
+            next = try converse(on: connection, dialed: dialed)
         } catch {
             report(error, on: connection)
+            return
         }
+        guard let next else { return }
+        connection.descriptor.close()
+        defer { next.descriptor.close() }
+        serve(next, dialed: true)
     }
 
     // MARK: Conversation
 
-    private func converse(on connection: FrameConnection) throws(ConnectionError) {
+    /// Answers the connection's one request. Returns the connection the agent dialed, after a
+    /// `dialBack` request that succeeded.
+    private func converse(on connection: FrameConnection, dialed: Bool) throws(ConnectionError)
+        -> FrameConnection?
+    {
         let deadline = ContinuousClock.now + configuration.requestTimeout
         let remote = try connection.exchangeVersions(until: deadline)
         guard remote == ProtocolVersion.current else {
@@ -144,19 +182,71 @@ public final class AgentServer: @unchecked Sendable {
         case .exec(let execRequest):
             let child: ChildProcess
             do {
-                child = try ChildProcess.spawn(
-                    execRequest, defaults: configuration.defaultEnvironment)
+                let plan = try SessionPlanner.plan(execRequest, system: configuration.system)
+                if plan.waitsForSystemBus {
+                    waitForSystemBus()
+                }
+                child = try ChildProcess.spawn(plan, terminal: execRequest.terminal)
             } catch {
-                connection.enqueue(.control(.error(AgentError(error.code, error.message))))
+                connection.enqueue(
+                    .control(.error(AgentError(error.code, error.message, user: error.user))))
                 break
             }
             try ExecSession(connection: connection, child: child, logger: logger).run()
-            return
+            return nil
+        case .dialBack(let nonce):
+            // A dialed connection is the host's session; it does not ask for another.
+            guard !dialed else {
+                throw .unexpectedMessage(
+                    "dialBack is not valid on a connection that the agent dialed")
+            }
+            if let dialedConnection = dial(replyingOn: connection) {
+                dialedConnection.enqueue(.dialBackNonce(nonce))
+                connection.enqueue(.control(.dialedBack))
+                try connection.flush(until: .now + configuration.requestTimeout)
+                return dialedConnection
+            }
         default:
             throw .unexpectedMessage(
-                "expected a request (exec, info, or shutdown), received \(request.name)")
+                "expected a request (exec, info, shutdown, or dialBack), received \(request.name)")
         }
         try connection.flush(until: .now + configuration.requestTimeout)
+        return nil
+    }
+
+    /// Opens the connection that a `dialBack` request asks for. On failure, queues a
+    /// `dialBackFailed` error on `connection` and returns `nil`.
+    private func dial(replyingOn connection: FrameConnection) -> FrameConnection? {
+        let reason: String
+        do throws(DialBackError) {
+            let descriptor = try configuration.dialBack()
+            do {
+                return try FrameConnection(descriptor)
+            } catch {
+                descriptor.close()
+                reason = "cannot use the dialed connection: \(error)"
+            }
+        } catch {
+            reason = error.description
+        }
+        logger.warning("cannot dial the host back: \(reason)")
+        connection.enqueue(.control(.error(AgentError(.dialBackFailed, reason))))
+        return nil
+    }
+
+    /// Waits until the system bus's socket exists, for at most `systemBusTimeout`. Right after
+    /// boot, a login shell can be requested before `dbus.socket` listens; `pam_systemd` would
+    /// then skip the session's registration. Once the socket exists, `pam_systemd` waits for
+    /// `systemd-logind` itself.
+    private func waitForSystemBus() {
+        let deadline = ContinuousClock.now + configuration.systemBusTimeout
+        while !configuration.system.exists(SessionPlanner.systemBusSocket) {
+            guard ContinuousClock.now < deadline else {
+                logger.notice("the system bus is not available; the session is not registered")
+                return
+            }
+            usleep(20_000)
+        }
     }
 
     /// Logs a failed conversation and tells the peer why, if it can still hear.

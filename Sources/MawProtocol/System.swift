@@ -1,3 +1,5 @@
+import CMawSystem
+
 #if canImport(Darwin)
     import Darwin
 #elseif canImport(Glibc)
@@ -25,6 +27,13 @@ public struct SystemError: Error, Equatable, Sendable, CustomStringConvertible {
         guard let text = strerror(code) else { return "error \(code)" }
         return String(cString: text)
     }
+}
+
+/// `dup(2)` with close-on-exec set on the duplicate (`F_DUPFD_CLOEXEC`), so that no program the
+/// process starts inherits it. `dup` leaves the flag clear. Returns the duplicate, or -1 with
+/// `errno` set.
+public func duplicateClosingOnExec(_ descriptor: Int32) -> Int32 {
+    maw_duplicate(descriptor)
 }
 
 /// Repeats a system call that failed with EINTR. Returns the call's result.

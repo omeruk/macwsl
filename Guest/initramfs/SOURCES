@@ -10,3 +10,11 @@ BUSYBOX_SHA256=3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4
 E2FSPROGS_VERSION=1.47.4
 E2FSPROGS_URL=https://www.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.xz
 E2FSPROGS_SHA256=fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b
+# libarchive, for bsdtar: it extracts a distribution's root file system with its owners,
+# permissions, extended attributes, and ACLs, which busybox tar does not keep. The tarball's
+# OpenPGP signature (libarchive-3.8.10.tar.xz.asc) was verified against the release key of
+# Martin Matuska, 659C84C0E23EA1FA97E0B58CC040B508D63D2B36, and the same sha256 was obtained
+# from github.com and libarchive.org.
+LIBARCHIVE_VERSION=3.8.10
+LIBARCHIVE_URL=https://github.com/libarchive/libarchive/releases/download/v3.8.10/libarchive-3.8.10.tar.xz
+LIBARCHIVE_SHA256=56cad765459d5ee25a3b761f90c47d99379d28297fbfb72d908880d6b875fb96

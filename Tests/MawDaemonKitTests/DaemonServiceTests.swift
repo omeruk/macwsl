@@ -154,12 +154,13 @@ import Testing
         let daemon = Daemon()
         let connection = daemon.rawConnection()
         defer { connection.cancel() }
+        let current = DaemonInterface.version
         let hello = try InterfaceCoding.encode(
-            DaemonRequest.hello(clientVersion: "9.0.0"), version: 2)
+            DaemonRequest.hello(clientVersion: "9.0.0"), version: current + 1)
         let reply = try await connection.request(hello).get()
         #expect(
             try InterfaceCoding.decode(DaemonReply.self, from: reply, as: .client)
-                == .failure(.daemonVersionMismatch(client: 2, daemon: 1)))
+                == .failure(.daemonVersionMismatch(client: current + 1, daemon: current)))
     }
 
     /// A listener that answers `hello` with `welcome` at interface `version`, then, with
@@ -201,8 +202,10 @@ import Testing
     }
 
     @Test func reportsADaemonOfAnotherInterfaceVersion() async throws {
-        let daemon = ScriptedDaemon(version: 2)
-        await #expect(throws: MawError.daemonVersionMismatch(client: 1, daemon: 2)) {
+        let current = DaemonInterface.version
+        let daemon = ScriptedDaemon(version: current + 1)
+        await #expect(throws: MawError.daemonVersionMismatch(client: current, daemon: current + 1))
+        {
             try await daemon.connect()
         }
     }

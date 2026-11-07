@@ -1,0 +1,153 @@
+#if os(macOS)
+    import Foundation
+    import MawCore
+
+    /// The installed distributions on disk, and which one is the default.
+    ///
+    /// A distribution is installed when `distros/<name>/distro.json` exists. An installation
+    /// builds it in a staging directory and renames that directory into place as its last step,
+    /// so that an interrupted installation never leaves a half-installed distribution: what is
+    /// left is a staging directory, which `removeStagingLeftovers()` deletes. Staging directories
+    /// belong to the daemon with `daemonLabel` (StagingDirectories.swift).
+    public struct DistributionStore: Sendable {
+        /// `state.json`: the daemon's settings.
+        struct State: Codable, Equatable {
+            var defaultDistribution: DistroName?
+        }
+
+        public let paths: MawPaths
+        /// The label of the daemon that uses this store, which names its staging directories.
+        public let daemonLabel: DaemonLabel
+
+        public init(paths: MawPaths, daemonLabel: DaemonLabel) {
+            self.paths = paths
+            self.daemonLabel = daemonLabel
+        }
+
+        /// Every installed distribution's metadata, by name. Unreadable entries are skipped, and
+        /// so is `.staging`, which no distribution name can match.
+        public func installed() -> [DistroMetadata] {
+            let entries =
+                (try? FileManager.default.contentsOfDirectory(
+                    at: paths.distrosDirectory, includingPropertiesForKeys: nil)) ?? []
+            return entries.compactMap { entry -> DistroMetadata? in
+                guard let name = try? DistroName(entry.lastPathComponent) else { return nil }
+                return try? metadata(for: name)
+            }.sorted { $0.name < $1.name }
+        }
+
+        /// The metadata of `name`, or `nil` if it is not installed.
+        public func metadata(for name: DistroName) throws(MawError) -> DistroMetadata? {
+            let file = paths.metadataFile(for: name)
+            guard FileManager.default.fileExists(atPath: file.path(percentEncoded: false)) else {
+                return nil
+            }
+            do {
+                return try DistroMetadata.decode(Data(contentsOf: file))
+            } catch {
+                throw .fileNotAccessible(
+                    path: file.path(percentEncoded: false), reason: error.localizedDescription)
+            }
+        }
+
+        public func isInstalled(_ name: DistroName) -> Bool {
+            FileManager.default.fileExists(
+                atPath: paths.metadataFile(for: name).path(percentEncoded: false))
+        }
+
+        /// The entry in `distros/` that `name` would be installed as, if it exists but is not
+        /// an installed distribution, as a partial manual removal leaves it: a directory without
+        /// `distro.json`, or anything else under that name. Names are compared ignoring case,
+        /// as APFS does, so that `twin/` is found for `Twin`.
+        public func leftoverEntry(for name: DistroName) -> URL? {
+            let wanted = name.rawValue.lowercased()
+            let entries =
+                (try? FileManager.default.contentsOfDirectory(
+                    atPath: paths.distrosDirectory.path(percentEncoded: false))) ?? []
+            guard let entry = entries.first(where: { $0.lowercased() == wanted }) else {
+                return nil
+            }
+            if let found = try? DistroName(entry), isInstalled(found) {
+                return nil
+            }
+            return paths.distrosDirectory.appending(path: entry)
+        }
+
+        /// The default distribution: the one `state.json` names if it is installed, otherwise
+        /// the first installed one by name, otherwise `nil`.
+        ///
+        /// Every session without `-d` asks for it. When `state.json` names a distribution that
+        /// `installed()` lists under that name, only that distribution's entry is read; every
+        /// other case reads the whole listing, with the same result.
+        public func defaultDistribution() -> DistroName? {
+            let chosen = readState().defaultDistribution
+            if let chosen, isListedUnderItsOwnName(chosen) {
+                return chosen
+            }
+            let installed = self.installed().map(\.name)
+            if let chosen, installed.contains(chosen) {
+                return chosen
+            }
+            return installed.first
+        }
+
+        /// Whether `installed()` lists `name`, decided from `name`'s own entry: `distros/` can
+        /// be listed, the entry that `distros/<name>` resolves to is stored under a valid
+        /// distribution name, and its metadata carries `name`. APFS ignores case, and folds
+        /// characters such as the Kelvin sign into ASCII letters, so the spelling that
+        /// `installed()` sees is read from the entry rather than assumed.
+        private func isListedUnderItsOwnName(_ name: DistroName) -> Bool {
+            guard
+                FileManager.default.isReadableFile(
+                    atPath: paths.distrosDirectory.path(percentEncoded: false)),
+                let stored = try? paths.distroDirectory(for: name).resourceValues(forKeys: [
+                    .nameKey
+                ]).name,
+                (try? DistroName(stored)) != nil,
+                let metadata = try? metadata(for: name)
+            else {
+                return false
+            }
+            return metadata.name == name
+        }
+
+        public func setDefaultDistribution(_ name: DistroName) throws(MawError) {
+            var state = readState()
+            state.defaultDistribution = name
+            do {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                try FileManager.default.createDirectory(
+                    at: paths.applicationSupportDirectory, withIntermediateDirectories: true)
+                try encoder.encode(state).write(to: paths.stateFile, options: .atomic)
+            } catch {
+                throw .fileNotAccessible(
+                    path: paths.stateFile.path(percentEncoded: false),
+                    reason: error.localizedDescription)
+            }
+        }
+
+        /// Writes `metadata` into `staging` and renames it to the distribution's directory.
+        /// The rename is the moment the distribution becomes installed.
+        public func commit(staging: URL, metadata: DistroMetadata) throws(MawError) {
+            let destination = paths.distroDirectory(for: metadata.name)
+            do {
+                try metadata.encoded().write(
+                    to: staging.appending(path: "distro.json"), options: .atomic)
+                try FileManager.default.moveItem(at: staging, to: destination)
+            } catch {
+                throw .provisioningFailed(
+                    step: "registering the distribution", reason: error.localizedDescription)
+            }
+        }
+
+        private func readState() -> State {
+            guard let data = try? Data(contentsOf: paths.stateFile),
+                let state = try? JSONDecoder().decode(State.self, from: data)
+            else {
+                return State()
+            }
+            return state
+        }
+    }
+#endif
