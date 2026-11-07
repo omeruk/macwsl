@@ -47,7 +47,7 @@ step, redrawn in place only on a terminal:
 
 | Step | What happens |
 |------|--------------|
-| Checking | The name must be unknown, and nothing else may be in `distros/` under it in any case: a directory left without `distro.json`, as a partial manual removal leaves it, is refused and never changed, since it may hold a disk. The user name valid by Ubuntu's rules (lowercase letter first, then lowercase letters, digits, `-` and `_`, at most 32 characters, not a name the image already uses), the password a non-empty single line, and the volume must have room for the rest of the download, the root file system, and 1 GB more. Nothing is downloaded before these checks pass. |
+| Checking | The name must be unknown, and nothing else may be in `distros/` under it in any case: a directory left without `distro.json`, as a partial manual removal leaves it, is refused and never changed, since it may hold a disk. The user name must be valid by Ubuntu's rules (lowercase letter first, then lowercase letters, digits, `-` and `_`, at most 32 characters, not a name the image already uses), the password a non-empty single line, and the volume must have room for the rest of the download, the root file system, and 1 GB more. Nothing is downloaded before these checks pass. |
 | Downloading | Only when the image is not in `~/Library/Caches/maw/images`. An interrupted download is kept and resumed. |
 | Verifying the image | The size and the SHA-256, before every installation. A file that fails is removed. Ctrl-C stops the check before its next 4 MiB read and leaves the file as it is. |
 | Creating the virtual disk | A 256 GiB sparse disk image, readable only by its owner, and the initramfs machine that provisions it. |
@@ -63,13 +63,14 @@ Everything before "Starting" happens in `distros/.staging/<label>/<name>-<id>/`,
 ends the installation, stops the provisioning machine at once, and removes the staging
 directory; the daemon also removes staging directories left by a crash when it starts, only
 under its own label (docs/daemon.md). No distribution can be named `.staging`, since a name
-starts with a letter or digit. The first installed distribution becomes the default.
+starts with a letter or digit. A distribution that registers while none is installed becomes
+the default; of two installations that run at once, the first to register.
 
 The provisioning machine's console goes to `~/Library/Logs/maw/install/<name>.log`. Earlier
 builds wrote `install-<name>.log` beside the other logs; maw leaves those files where they are.
 No distribution can be named `mawd`, `debug-boot-console`, or `initramfs`, in any case, since
-its console log would be one of maw's own log files. Two
-installations of the same image share one download: the second waits for the first's.
+its console log would be one of maw's own log files. Two installations of the same image share
+one download: the second waits for the first's.
 
 ## What provisioning changes in the root file system
 
