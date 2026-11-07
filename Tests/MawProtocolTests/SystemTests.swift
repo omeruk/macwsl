@@ -1,3 +1,4 @@
+import CMawSystem
 import Testing
 
 @testable import MawProtocol
@@ -37,4 +38,23 @@ import Testing
         #expect(duplicateClosingOnExec(-1) == -1)
         #expect(errno == EBADF)
     }
+
+    #if os(macOS)
+        /// `maw_suppress_sigpipe` reports whether writes to a socket whose peer has closed are
+        /// safe: macOS refuses `SO_NOSIGPIPE` once the peer has closed, and a socket that
+        /// suppressed SIGPIPE before the close still does.
+        @Test func reportsWhetherWritesAreSafeOnceThePeerHasClosed() throws {
+            var late: [Int32] = [-1, -1]
+            try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &late) == 0)
+            defer { close(late[0]) }
+            close(late[1])
+            #expect(maw_suppress_sigpipe(late[0]) == EINVAL)
+
+            var early: [Int32] = [-1, -1]
+            try #require(maw_socketpair(&early) == 0)
+            defer { close(early[0]) }
+            close(early[1])
+            #expect(maw_suppress_sigpipe(early[0]) == 0)
+        }
+    #endif
 }

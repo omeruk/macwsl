@@ -70,7 +70,13 @@ int maw_suppress_sigpipe(int fd) {
     if (fcntl(fd, F_SETNOSIGPIPE, 1) == 0) {
         return 0;
     }
-    return errno;
+    int error = errno;
+    // Once a socket's peer has closed, both calls fail with EINVAL, but the flag can still be
+    // read: a socket that suppressed SIGPIPE before the close still does.
+    if (fcntl(fd, F_GETNOSIGPIPE) == 1) {
+        return 0;
+    }
+    return error;
 #else
     (void)fd;
     return 0;

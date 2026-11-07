@@ -85,6 +85,9 @@ int maw_duplicate(int fd);
 
 /// Stops writes to a socket or pipe whose reader has gone from raising SIGPIPE, where the
 /// platform allows that per descriptor (Darwin). Elsewhere, use `maw_send` for sockets.
+/// Returns 0 if writes to `fd` no longer raise SIGPIPE, or an errno value if they still can:
+/// on Darwin, a socket whose peer has closed refuses the change (EINVAL) unless it already
+/// suppressed SIGPIPE.
 int maw_suppress_sigpipe(int fd);
 
 /// Creates a pipe whose two descriptors are close-on-exec.
