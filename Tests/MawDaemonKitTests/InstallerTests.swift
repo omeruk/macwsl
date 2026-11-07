@@ -335,7 +335,7 @@ final class FakeImageSource: ImageSource, @unchecked Sendable {
         cached = true
     }
 
-    func verify(_ image: CatalogImage) async throws(MawError) -> URL {
+    func verify(_ image: CatalogImage) async throws -> URL {
         lock.withLock { _verifications += 1 }
         return URL(filePath: "/cache/\(image.cacheFileName)")
     }

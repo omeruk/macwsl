@@ -204,6 +204,46 @@ import os
         }
     }
 
+    /// A check cancelled partway through stops before the next piece and throws
+    /// `CancellationError`. It leaves the file as it was, the right image as well as one whose
+    /// SHA-256 differs, which a finished check would remove.
+    @Test(arguments: [false, true])
+    func stopsACancelledCheckWithinOnePiece(damaged: Bool) async throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var content = Self.content
+        if damaged {
+            content[100] ^= 0x01
+        }
+        let file = cache.completeFile(for: Self.image)
+        try content.write(to: file)
+        let pieces = OSAllocatedUnfairLock(initialState: 0)
+        // 48 pieces of 64 KiB. The second waits until the cancellation reaches the reading
+        // task, as a long read of a large image would.
+        let cache = ImageCache(
+            directory: directory, configuration: .ephemeral, log: DaemonLog(),
+            readPiece: { handle in
+                let count = pieces.withLock {
+                    $0 += 1
+                    return $0
+                }
+                if count == 2 {
+                    let deadline = ContinuousClock.now + .seconds(10)
+                    while !Task.isCancelled, ContinuousClock.now < deadline {
+                        usleep(1_000)
+                    }
+                }
+                return try handle.read(upToCount: 64 << 10)
+            })
+        let check = Task { try await cache.verify(Self.image) }
+        try await eventually("the check's second piece") { pieces.withLock { $0 } >= 2 }
+        check.cancel()
+        await #expect(throws: CancellationError.self) {
+            try await check.value
+        }
+        #expect(pieces.withLock { $0 } == 2)
+        #expect(try Data(contentsOf: file) == content)
+    }
+
     @Test func rejectsAMissingFile() async {
         await #expect(
             throws: MawError.imageMissing(

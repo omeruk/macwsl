@@ -15,8 +15,10 @@
             _ image: CatalogImage, progress: @escaping @Sendable (DownloadProgress) -> Void
         ) async throws(MawError)
         /// Checks the cached file's size and SHA-256 and returns it. A file that fails is
-        /// removed, so that the next attempt downloads it again.
-        func verify(_ image: CatalogImage) async throws(MawError) -> URL
+        /// removed, so that the next attempt downloads it again. Throws a `MawError`, or
+        /// `CancellationError` when the calling task is cancelled before the check has a
+        /// result; a cancelled check leaves the file as it is.
+        func verify(_ image: CatalogImage) async throws -> URL
     }
 
     /// What provisioning writes into a new distribution.
@@ -204,7 +206,14 @@
                 }
             }
             return try await timed(.verify, progress: progress) { () throws(MawError) in
-                try await images.verify(image)
+                do {
+                    return try await images.verify(image)
+                } catch let error as MawError {
+                    throw error
+                } catch {
+                    // CancellationError: the check stopped without a result.
+                    throw .installationCancelled(name)
+                }
             }
         }
 

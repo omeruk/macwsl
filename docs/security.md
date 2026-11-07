@@ -140,7 +140,9 @@ against the run's `SHA256SUMS` before installing it and again after.
 - Downloads use HTTPS only; a redirect to another scheme fails. A download that grows beyond
   the pinned size is stopped.
 - **Nothing reads an image before its size and SHA-256 match.** The check runs before every
-  installation, also for a cached image; a file that fails is deleted.
+  installation, also for a cached image; a file that fails is deleted. A cancelled check has
+  no result, so the installation stops without reading the image, and the file stays for the
+  next check.
 - A partial download is resumed only when the server's `ETag` still matches (`If-Range`); the
   final SHA-256 check covers the joined file in any case.
 - maw does not check OpenPGP signatures at installation; it has no OpenPGP implementation. The

@@ -42,7 +42,7 @@ reports progress, one line per step:
 |------|--------------|
 | Checking | The name must be unknown, the user name valid by Ubuntu's rules (lowercase letter first, then lowercase letters, digits, `-` and `_`, at most 32 characters, not a name the image already uses), the password a non-empty single line, and the volume must have room for the rest of the download, the root file system, and 1 GB more. Nothing is downloaded before these checks pass. |
 | Downloading | Only when the image is not in `~/Library/Caches/maw/images`. An interrupted download is kept and resumed. |
-| Verifying the image | The size and the SHA-256, before every installation. A file that fails is removed. |
+| Verifying the image | The size and the SHA-256, before every installation. A file that fails is removed. Ctrl-C stops the check before its next 4 MiB read and leaves the file as it is. |
 | Creating the virtual disk | A 256 GiB sparse disk image, readable only by its owner, and the initramfs machine that provisions it. |
 | Formatting the disk | `mkfs.ext4 -L maw-root -m 1 -E assume_storage_prezeroed=1,nodiscard`. |
 | Extracting the root file system | `/usr/bin/tar` decompresses the image on the Mac and streams it, as a pax archive, to `bsdtar` in the guest, which keeps owners, permissions, and extended attributes. |

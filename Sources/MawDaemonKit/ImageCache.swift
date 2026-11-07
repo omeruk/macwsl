@@ -14,17 +14,36 @@
     /// instead of being spliced together. A finished download is renamed to
     /// `<sha256>.<format>`, which `verify` checks before every use.
     public final class ImageCache: ImageSource {
+        /// Reads the next piece of an image for its SHA-256: `nil` or empty data at the end.
+        typealias PieceReader = @Sendable (FileHandle) throws -> Data?
+
+        /// Reads 4 MiB at a time.
+        static let readFourMebibytes: PieceReader = { try $0.read(upToCount: 4 << 20) }
+
         public let directory: URL
         private let session: URLSession
         private let log: DaemonLog
+        private let readPiece: PieceReader
 
         /// - Parameter configuration: tests pass one with a stub protocol.
-        public init(
+        public convenience init(
             directory: URL, configuration: URLSessionConfiguration = .ephemeral,
             log: DaemonLog = DaemonLog()
         ) {
+            self.init(
+                directory: directory, configuration: configuration, log: log,
+                readPiece: Self.readFourMebibytes)
+        }
+
+        /// - Parameter readPiece: tests pass one that reads small pieces, to cancel a check
+        ///   partway through.
+        init(
+            directory: URL, configuration: URLSessionConfiguration, log: DaemonLog,
+            readPiece: @escaping PieceReader
+        ) {
             self.directory = directory
             self.log = log
+            self.readPiece = readPiece
             configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
             configuration.urlCache = nil
             configuration.timeoutIntervalForRequest = 30
@@ -116,43 +135,64 @@
 
         // MARK: Verification
 
-        public func verify(_ image: CatalogImage) async throws(MawError) -> URL {
+        /// Checks the size and the SHA-256 of the cached image. A cancelled check throws
+        /// `CancellationError` without a result and leaves the file as it is, whatever it
+        /// contains; the next check reads it again.
+        public func verify(_ image: CatalogImage) async throws -> URL {
+            try Task.checkCancellation()
             let file = completeFile(for: image)
             let path = file.path(percentEncoded: false)
             guard let size = Self.size(of: file) else {
-                throw .imageMissing(path: path)
+                throw MawError.imageMissing(path: path)
             }
             guard size == image.size else {
                 try? FileManager.default.removeItem(at: file)
-                throw .imageSizeMismatch(path: path, expected: image.size, actual: size)
+                throw MawError.imageSizeMismatch(path: path, expected: image.size, actual: size)
             }
             let digest: String
             do {
-                digest = try await Self.sha256(of: file)
+                digest = try await Self.sha256(of: file, readingWith: readPiece)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
-                throw .imageMissing(path: path)
+                throw MawError.imageMissing(path: path)
             }
+            // A cancellation that arrived after the last piece: still no result.
+            try Task.checkCancellation()
             guard digest == image.sha256 else {
                 try? FileManager.default.removeItem(at: file)
                 log.error("\(path) has the SHA-256 \(digest), not \(image.sha256); removed")
-                throw .imageChecksumMismatch(path: path, expected: image.sha256, actual: digest)
+                throw MawError.imageChecksumMismatch(
+                    path: path, expected: image.sha256, actual: digest)
             }
             return file
         }
 
-        /// The file's SHA-256 in lowercase hexadecimal, read in 4 MiB pieces off the caller's
+        /// The file's SHA-256 in lowercase hexadecimal, read piece by piece off the caller's
         /// executor.
-        static func sha256(of file: URL) async throws -> String {
-            try await Task.detached(priority: .userInitiated) {
+        ///
+        /// Cancelling the calling task cancels the reading task, which checks for it before
+        /// each piece: it stops within one piece and throws `CancellationError`.
+        static func sha256(
+            of file: URL, readingWith readPiece: @escaping PieceReader = readFourMebibytes
+        ) async throws -> String {
+            let hashing = Task.detached(priority: .userInitiated) {
                 let handle = try FileHandle(forReadingFrom: file)
                 defer { try? handle.close() }
                 var hasher = SHA256()
-                while let chunk = try handle.read(upToCount: 4 << 20), !chunk.isEmpty {
+                while true {
                     try Task.checkCancellation()
-                    hasher.update(data: chunk)
+                    guard let piece = try readPiece(handle), !piece.isEmpty else { break }
+                    hasher.update(data: piece)
                 }
+                try Task.checkCancellation()
                 return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-            }.value
+            }
+            return try await withTaskCancellationHandler {
+                try await hashing.value
+            } onCancel: {
+                hashing.cancel()
+            }
         }
 
         static func size(of file: URL) -> UInt64? {
