@@ -44,7 +44,7 @@ struct RootFileSystemIntegrationTests {
         let result = try await maw.session(["-e", "true"], in: name)
         #expect(result.status == 0, "\(result.standardError)")
 
-        let boot = try String(decoding: contents(of: consoleLog, from: logStart), as: UTF8.self)
+        let boot = try consoleText(of: consoleLog, from: logStart)
         let check = boot.split(separator: "\n").compactMap {
             RootFileSystemCheck(consoleLine: String($0))
         }.last
@@ -84,7 +84,7 @@ struct RootFileSystemIntegrationTests {
                 == "maw: \(expected.errorDescription ?? "")\n\(expected.recoverySuggestion ?? "")\n",
             "\(result.standardError)")
 
-        let boot = try String(decoding: contents(of: consoleLog, from: logStart), as: UTF8.self)
+        let boot = try consoleText(of: consoleLog, from: logStart)
         #expect(boot.contains("maw-initramfs: root-check e2fsck-status=8\n"), "\(boot)")
         #expect(
             boot.contains("maw-initramfs: e2fsck -p could not check /dev/vda (exit status 8)"),
@@ -118,6 +118,13 @@ struct RootFileSystemIntegrationTests {
         let attributes = try FileManager.default.attributesOfItem(
             atPath: url.path(percentEncoded: false))
         return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+    }
+
+    /// The console log from `offset` on, with the guest's CRLF line endings as LF, as the
+    /// daemon's line splitter reads them.
+    private func consoleText(of url: URL, from offset: UInt64) throws -> String {
+        String(decoding: try contents(of: url, from: offset), as: UTF8.self)
+            .replacing("\r\n", with: "\n")
     }
 
     private func contents(of url: URL, from offset: UInt64) throws -> Data {
