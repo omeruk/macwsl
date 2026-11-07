@@ -121,6 +121,9 @@
             let isDefault = store.defaultDistribution() == nil
             do throws(MawError) {
                 let image = try await obtainImage(entry.image, for: name, progress: progress)
+                // A check that had its result when the cancellation came returns it; the
+                // provisioning machine must not boot after that.
+                try checkCancellation(name)
                 let metadata = try await provision(
                     entry: entry, name: name, image: image, user: user, request: request,
                     staging: staging, progress: progress)

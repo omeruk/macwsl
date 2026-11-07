@@ -244,6 +244,28 @@ import os
         }
     }
 
+    /// Ctrl-C while the image is checked ends the installation before the provisioning
+    /// machine boots, also when the check still returns its result.
+    @Test func neverBootsWhenCancelledDuringTheCheck() async throws {
+        images.cached = true
+        images.blocksVerification = true
+        let installer = installer()
+        let request = request()
+        let task = Task { () async throws -> InstallSummary in
+            try await installer.install(request, progress: { _ in })
+        }
+        let images = self.images
+        try await eventually("the check") { images.verifications > 0 }
+        task.cancel()
+        let result = await task.result
+        #expect(throws: MawError.installationCancelled(try DistroName("Ubuntu-24.04"))) {
+            try result.get()
+        }
+        #expect(machine.calls.isEmpty)
+        #expect(stagingDirectories.isEmpty)
+        #expect(!store.isInstalled(try DistroName("Ubuntu-24.04")))
+    }
+
     @Test func refusesASecondInstallationOfTheSameName() async throws {
         machine.blockingStep = "extract"
         let installer = installer()
@@ -304,6 +326,7 @@ final class FakeImageSource: ImageSource, @unchecked Sendable {
     private var _downloads = 0
     private var _verifications = 0
     private var _blocksDownload = false
+    private var _blocksVerification = false
 
     var cached: Bool {
         get { lock.withLock { _cached } }
@@ -312,6 +335,12 @@ final class FakeImageSource: ImageSource, @unchecked Sendable {
     var blocksDownload: Bool {
         get { lock.withLock { _blocksDownload } }
         set { lock.withLock { _blocksDownload = newValue } }
+    }
+    /// The check returns its result only once its task is cancelled, as a check does whose
+    /// last piece was read when the cancellation came.
+    var blocksVerification: Bool {
+        get { lock.withLock { _blocksVerification } }
+        set { lock.withLock { _blocksVerification = newValue } }
     }
     var downloads: Int { lock.withLock { _downloads } }
     var verifications: Int { lock.withLock { _verifications } }
@@ -337,6 +366,12 @@ final class FakeImageSource: ImageSource, @unchecked Sendable {
 
     func verify(_ image: CatalogImage) async throws -> URL {
         lock.withLock { _verifications += 1 }
+        if blocksVerification {
+            let deadline = ContinuousClock.now + .seconds(10)
+            while !Task.isCancelled, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }
         return URL(filePath: "/cache/\(image.cacheFileName)")
     }
 }
