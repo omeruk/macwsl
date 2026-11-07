@@ -356,8 +356,8 @@
         }
 
         /// A client for the guest agent whose connections come from `connectToAgent`. Only
-        /// for `info` and `shutdown`, whose replies are small: a session's output on such a
-        /// connection could stall the machine's vsock device (docs/protocol.md).
+        /// for `info`, `shutdown`, and `dialBack`, whose replies are small: a session's output
+        /// on such a connection could stall the machine's vsock device (docs/protocol.md).
         public nonisolated func agentClient(
             connectTimeout: Duration, replyTimeout: Duration = .seconds(10)
         ) -> GuestAgentClient {

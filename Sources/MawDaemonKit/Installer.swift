@@ -135,9 +135,9 @@
                     entry: entry, name: name, image: image, user: user, request: request,
                     staging: staging, progress: progress)
                 try checkCancellation(name)
-                // The first installed distribution becomes the default. Deciding that and
-                // registering the distribution involve no suspension, so no other installation
-                // on this actor can register between them.
+                // A distribution that registers while none is installed becomes the default.
+                // Deciding that and registering the distribution involve no suspension, so no
+                // other installation on this actor can register between them.
                 isDefault = store.defaultDistribution() == nil
                 try store.commit(staging: staging, metadata: metadata)
                 if isDefault {
