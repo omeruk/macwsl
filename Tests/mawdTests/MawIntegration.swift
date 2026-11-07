@@ -137,6 +137,15 @@ struct MawIntegration: Sendable {
             .filter { $0.hasPrefix("\(name)-") }.map { "\(staging)/\($0)" }
     }
 
+    /// The lines of the test daemon's log from the last one that contains `marker` on.
+    func daemonLogLines(since marker: String) throws -> [String] {
+        let log = try String(
+            contentsOf: logDirectory.appending(path: "mawd.log"), encoding: .utf8)
+        let lines = log.split(separator: "\n").map(String.init)
+        guard let start = lines.lastIndex(where: { $0.contains(marker) }) else { return [] }
+        return Array(lines[start...])
+    }
+
     /// The test distribution's row in `--status`, or an empty string.
     func machineRow() async throws -> String {
         let status = try await run(["--status"])

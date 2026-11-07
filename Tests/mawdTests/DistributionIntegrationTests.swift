@@ -221,9 +221,14 @@ struct DistributionIntegrationTests {
     ])
     func cancelsDuringAStepAndLeavesNothing(_ step: String) async throws {
         let name = "\(maw.prefix)-cancel"
+        // The provisioning machine's console log, which its boot creates.
+        let consoleLog = maw.logDirectory.appending(path: "install-\(name).log")
+        try? FileManager.default.removeItem(at: consoleLog)
         let install = try maw.install(name)
+        // Looked for often, so that Ctrl-C lands within the image check, which takes about
+        // 230 ms for the cached Ubuntu image.
         let reached = await install.waitForLine(
-            where: { $0.hasPrefix(step) }, timeout: .seconds(60))
+            where: { $0.hasPrefix(step) }, every: .milliseconds(5), timeout: .seconds(60))
         try #require(reached, "\(install.output)")
         let interrupted = ContinuousClock.now
         install.signal(SIGINT)
@@ -235,6 +240,18 @@ struct DistributionIntegrationTests {
             result.standardError.contains("maw: The installation of \(name) was cancelled."),
             "\(result.standardError)")
         #expect(maw.traces(of: name).isEmpty, "\(maw.traces(of: name))")
+        if step == "Verifying the image" {
+            // The check stopped partway: the daemon never logged its duration. The
+            // provisioning machine never booted, so its console log does not exist.
+            let lines = try maw.daemonLogLines(since: "\(name): installation started")
+            try #require(!lines.isEmpty, "The daemon's log has no line for \(name).")
+            #expect(
+                !lines.contains { $0.contains("installation step verify:") },
+                "The check finished after Ctrl-C:\n\(lines.joined(separator: "\n"))")
+            #expect(
+                !FileManager.default.fileExists(atPath: consoleLog.path(percentEncoded: false)),
+                "The provisioning machine booted after Ctrl-C.")
+        }
         try await maw.remove(name)
     }
 

@@ -363,15 +363,20 @@ final class DebugBootProcess: @unchecked Sendable {
     /// When the process exited, as its termination handler observed it.
     var exitedAt: ContinuousClock.Instant? { exitTime.withLock { $0 } }
 
-    /// Waits until a line of output satisfies `predicate`. Returns whether one did.
-    func waitForLine(where predicate: (String) -> Bool, timeout: Duration) async -> Bool {
-        await waitForLine(in: \.output, where: predicate, timeout: timeout)
+    /// Waits until a line of output satisfies `predicate`, looking every `interval`. Returns
+    /// whether one did.
+    func waitForLine(
+        where predicate: (String) -> Bool, every interval: Duration = .milliseconds(50),
+        timeout: Duration
+    ) async -> Bool {
+        await waitForLine(in: \.output, where: predicate, every: interval, timeout: timeout)
     }
 
-    /// Waits until a line of `stream` (`\.output` or `\.standardError`) satisfies `predicate`.
+    /// Waits until a line of `stream` (`\.output` or `\.standardError`) satisfies `predicate`,
+    /// looking every `interval`.
     func waitForLine(
         in stream: KeyPath<DebugBootProcess, String>, where predicate: (String) -> Bool,
-        timeout: Duration
+        every interval: Duration = .milliseconds(50), timeout: Duration
     ) async -> Bool {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
@@ -381,7 +386,7 @@ final class DebugBootProcess: @unchecked Sendable {
             if !process.isRunning {
                 break
             }
-            try? await Task.sleep(for: .milliseconds(50))
+            try? await Task.sleep(for: interval)
         }
         return Self.lines(of: self[keyPath: stream]).contains(where: predicate)
     }
