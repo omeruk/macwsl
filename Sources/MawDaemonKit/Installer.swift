@@ -117,8 +117,7 @@
             defer { active.remove(key) }
             log.notice("\(name): installation started for user \(user)")
 
-            // The first installed distribution becomes the default.
-            let isDefault = store.defaultDistribution() == nil
+            let isDefault: Bool
             do throws(MawError) {
                 let image = try await obtainImage(entry.image, for: name, progress: progress)
                 // A check that had its result when the cancellation came returns it; the
@@ -128,7 +127,14 @@
                     entry: entry, name: name, image: image, user: user, request: request,
                     staging: staging, progress: progress)
                 try checkCancellation(name)
+                // The first installed distribution becomes the default. Deciding that and
+                // registering the distribution involve no suspension, so no other installation
+                // on this actor can register between them.
+                isDefault = store.defaultDistribution() == nil
                 try store.commit(staging: staging, metadata: metadata)
+                if isDefault {
+                    try? store.setDefaultDistribution(name)
+                }
             } catch {
                 removeStaging(staging)
                 if Task.isCancelled {
@@ -139,9 +145,6 @@
                 throw error
             }
 
-            if isDefault {
-                try? store.setDefaultDistribution(name)
-            }
             log.notice("\(name): installed")
             // The first boot is part of the installation, so that the first session is warm.
             // A failure here does not undo the installation; the next session reports it.

@@ -110,6 +110,34 @@ import os
         )
     }
 
+    /// Two first installations at once: the one that registers first becomes the default, and
+    /// only its summary says so.
+    @Test func makesOnlyTheFirstToRegisterOfTwoInstallationsTheDefault() async throws {
+        let slow = FakeProvisioningMachine()
+        slow.heldStep = "extract"
+        let fast = FakeProvisioningMachine()
+        let installer = Installer(
+            store: store, images: images,
+            makeMachine: { (name: DistroName) throws(MawError) -> any ProvisioningMachine in
+                name.rawValue == "Slow" ? slow : fast
+            },
+            freeSpace: { _ in (100 << 30, "Macintosh HD") },
+            startMachine: { _ throws(MawError) in }, makeMACAddress: { "02:00:00:00:00:01" })
+        let slowRequest = request(name: "Slow")
+        let slowInstallation = Task { () async throws -> InstallSummary in
+            try await installer.install(slowRequest, progress: { _ in })
+        }
+        try await eventually("the slow installation's extract step") {
+            slow.calls.contains("extract")
+        }
+        let fastSummary = try await installer.install(request(name: "Fast"), progress: { _ in })
+        slow.release()
+        let slowSummary = try await slowInstallation.value
+        #expect(fastSummary.isDefault)
+        #expect(!slowSummary.isDefault)
+        #expect(store.defaultDistribution()?.rawValue == "Fast")
+    }
+
     @Test func keepsTheFirstDistributionAsTheDefault() async throws {
         _ = try await installer().install(request(), progress: { _ in })
         let second = try await installer().install(request(name: "Second"), progress: { _ in })
@@ -410,6 +438,8 @@ final class FakeProvisioningMachine: ProvisioningMachine, @unchecked Sendable {
     private var _configuration: GuestConfiguration?
     private var _failingStep: String?
     private var _blockingStep: String?
+    private var _heldStep: String?
+    private var _released = false
 
     var calls: [String] { lock.withLock { _calls } }
     var configuration: GuestConfiguration? { lock.withLock { _configuration } }
@@ -422,8 +452,23 @@ final class FakeProvisioningMachine: ProvisioningMachine, @unchecked Sendable {
         set { lock.withLock { _blockingStep = newValue } }
     }
 
+    /// A step that waits until `release()`, then succeeds.
+    var heldStep: String? {
+        get { lock.withLock { _heldStep } }
+        set { lock.withLock { _heldStep = newValue } }
+    }
+
+    func release() {
+        lock.withLock { _released = true }
+    }
+
     private func step(_ name: String) async throws(MawError) {
         lock.withLock { _calls.append(name) }
+        if heldStep == name {
+            while !lock.withLock({ _released }) {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }
         if failingStep == name {
             throw .provisioningFailed(step: name + "ing", reason: "the fake failed")
         }
