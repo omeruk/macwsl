@@ -223,10 +223,64 @@ struct DistributionIntegrationTests {
         let name = "\(maw.prefix)-cancel"
         // The provisioning machine's console log, which its boot creates.
         let consoleLog = MawPaths.installLogFile(for: try DistroName(name), in: maw.logDirectory)
+        guard step == "Verifying the image" else {
+            try await cancel(name, during: step, consoleLog: consoleLog)
+            // The machine had booted, and its console log is where the check for the image
+            // step looks.
+            if step != "Creating the virtual disk" {
+                #expect(
+                    FileManager.default.fileExists(atPath: consoleLog.path(percentEncoded: false)),
+                    "No console log at \(consoleLog.path(percentEncoded: false)).")
+            }
+            try await maw.remove(name)
+            return
+        }
+
+        // The check takes about 230 ms for the cached image, and Ctrl-C can arrive after it
+        // has finished. The daemon's log tells: the check's duration comes before the
+        // cancellation. Such an attempt tests another step, so it is repeated, a few times at
+        // most; what each attempt requires is unchanged.
+        let attempts = 4
+        for attempt in 1...attempts {
+            try await cancel(name, during: step, consoleLog: consoleLog)
+            let lines = try maw.daemonLogLines(since: "\(name): installation started")
+            try #require(!lines.isEmpty, "The daemon's log has no line for \(name).")
+            let log = lines.joined(separator: "\n")
+            let cancelled = try #require(
+                lines.firstIndex { $0.contains("cancelled its installation") },
+                "The daemon's log does not show the cancellation:\n\(log)")
+            let checked = lines.firstIndex { $0.contains("installation step verify:") }
+            if let checked, checked < cancelled, attempt < attempts {
+                print(
+                    "cancelsDuringAStepAndLeavesNothing: attempt \(attempt): Ctrl-C arrived "
+                        + "after the image check had finished; repeating")
+                try await maw.remove(name)
+                continue
+            }
+            // The check stopped partway: the daemon never logged its duration. The
+            // provisioning machine never booted, so its console log does not exist.
+            #expect(
+                checked == nil,
+                "The check finished after Ctrl-C:\n\(lines.joined(separator: "\n"))")
+            #expect(
+                !FileManager.default.fileExists(atPath: consoleLog.path(percentEncoded: false)),
+                "The provisioning machine booted after Ctrl-C.")
+            if checked == nil {
+                print(
+                    "cancelsDuringAStepAndLeavesNothing: Ctrl-C landed within the image check "
+                        + "in attempt \(attempt)")
+            }
+            break
+        }
+        try await maw.remove(name)
+    }
+
+    /// Starts an installation of `name`, presses Ctrl-C once `step` has begun, and checks
+    /// that maw ends within 1 s, reports the cancellation, and leaves nothing behind.
+    private func cancel(_ name: String, during step: String, consoleLog: URL) async throws {
         try? FileManager.default.removeItem(at: consoleLog)
         let install = try maw.install(name)
-        // Looked for often, so that Ctrl-C lands within the image check, which takes about
-        // 230 ms for the cached Ubuntu image.
+        // Looked for often, so that Ctrl-C lands within the image check.
         let reached = await install.waitForLine(
             where: { $0.hasPrefix(step) }, every: .milliseconds(5), timeout: .seconds(60))
         try #require(reached, "\(install.output)")
@@ -240,24 +294,6 @@ struct DistributionIntegrationTests {
             result.standardError.contains("maw: The installation of \(name) was cancelled."),
             "\(result.standardError)")
         #expect(maw.traces(of: name).isEmpty, "\(maw.traces(of: name))")
-        if step == "Verifying the image" {
-            // The check stopped partway: the daemon never logged its duration. The
-            // provisioning machine never booted, so its console log does not exist.
-            let lines = try maw.daemonLogLines(since: "\(name): installation started")
-            try #require(!lines.isEmpty, "The daemon's log has no line for \(name).")
-            #expect(
-                !lines.contains { $0.contains("installation step verify:") },
-                "The check finished after Ctrl-C:\n\(lines.joined(separator: "\n"))")
-            #expect(
-                !FileManager.default.fileExists(atPath: consoleLog.path(percentEncoded: false)),
-                "The provisioning machine booted after Ctrl-C.")
-        } else if step != "Creating the virtual disk" {
-            // The machine had booted, and its console log is where the check above looks.
-            #expect(
-                FileManager.default.fileExists(atPath: consoleLog.path(percentEncoded: false)),
-                "No console log at \(consoleLog.path(percentEncoded: false)).")
-        }
-        try await maw.remove(name)
     }
 
     @Test func cancelsDuringTheDownloadAndKeepsThePartialFile() async throws {
