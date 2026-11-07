@@ -165,7 +165,7 @@ struct InstallCommand {
 
         switch outcome {
         case .installed(let summary):
-            view.finish()
+            view.interrupt()
             output.write("\n" + Self.summary(summary) + "\n")
             restoreDefaultSignalActions()
             await output.waitUntilWritten()
@@ -508,7 +508,8 @@ final class InstallProgressView: @unchecked Sendable {
         lock.withLock { stopped = true }
     }
 
-    /// Ends a step's line that a failure or Ctrl-C interrupted.
+    /// Ends a step's line that is still open: one that a failure or Ctrl-C interrupted, or the
+    /// last one before the summary.
     func interrupt() {
         lock.withLock {
             if current != nil {
@@ -517,10 +518,6 @@ final class InstallProgressView: @unchecked Sendable {
                 drawnLength = 0
             }
         }
-    }
-
-    func finish() {
-        interrupt()
     }
 
     /// The columns a line may use: all but the last, so that the cursor never waits at the
