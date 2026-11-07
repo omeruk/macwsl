@@ -236,3 +236,52 @@ message of its own failed start.
 - The ad-hoc code signing requirement does not identify maw's builds; phase 13.
 - Guest files come from CI artifacts rather than signed releases; phase 13.
 - The password's copies in memory are not wiped (see above).
+- **The agent's port while the agent restarts.**
+  - **The window.** On a distribution's machine, systemd restarts the agent 100 ms after it
+    exits (`Restart=always`, `RestartSec=100ms`, `Guest/initramfs/init`). Its vsock port, 19799
+    (`AgentProtocol.vsockPort`), is above 1023, so in that window any guest process can bind
+    it, without root. The daemon's connections to the agent then reach that process. The
+    restarted agent cannot bind the port and exits, and after five failed starts within
+    10 seconds, systemd's default start limit, it is not started again until the machine
+    stops.
+  - **What the daemon sends on those connections.** Each one begins with the protocol
+    version and carries one request:
+    - `info`, without a payload, which the daemon sends only while it waits for the agent at
+      the machine's start;
+    - `shutdown`, without a payload;
+    - `dialBack`, whose payload is the 32-byte nonce of a session that is opening.
+
+    Commands, their arguments, environment, input and output travel only on connections that
+    the agent dials, never on these.
+  - **What such a process can learn:** the nonces, and when sessions open and when the
+    machine is asked to stop.
+  - **What it can fake:** the replies.
+    - To `dialBack`:
+      - a false `dialedBack` makes the session fail with `sessionDialBackMissing` once the
+        nonce expires, after 5 seconds;
+      - an error makes it fail at once with `sessionDialBackFailed`;
+      - no reply makes it fail after the reply timeout of 10 seconds.
+    - To `shutdown`, a false `shutdownAcknowledged` delays the stop by 5 seconds, and no reply
+      by 10. Virtualization.framework's stop request then still powers the machine off
+      cleanly (`VirtualMachine.stop`).
+    - A false `agentInfo` could only matter during a start.
+  - **What it can block:** every new session of that machine, until the machine stops.
+  - **What it cannot do:** use a nonce. It cannot bind a source port below 1024, so the
+    daemon refuses its dials before reading them, as above.
+  - **What starts the window.** No way was found for a process without root to cause the
+    restart; it can only wait for one that something else causes:
+    - The agent accepts connections only from the host (`maw_vsock_accept_host`), and the
+      kernel has no vsock loopback, so no guest process can send it anything.
+    - It runs as root, so such a process cannot signal it.
+    - `systemctl` needs root to stop or restart it.
+    - The agent exits only when it cannot listen at start, or when `accept` fails for an
+      unexpected reason (`AgentServer.acceptConnections`).
+    - What remains is a crash of the agent, or the kernel's out-of-memory killer, which
+      `OOMScoreAdjust=-900` makes pick the agent nearly last. Neither is known to be within
+      such a process's reach.
+  - **Mitigation, phase 12b.** One of two:
+    - a systemd socket unit, written by `Guest/initramfs/init` beside the agent's service,
+      that holds vsock port 19799 across restarts and hands the listening descriptor to the
+      agent;
+    - an agent port below 1024, which only a process with `CAP_NET_BIND_SERVICE` can bind,
+      and which changes the protocol.
