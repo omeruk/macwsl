@@ -70,3 +70,37 @@ about 10 MB.
 - Commands are not logind sessions. They get `XDG_RUNTIME_DIR` when the user's runtime
   directory exists, which linger provides.
 - A user who removes linger (`loginctl disable-linger`) gets slower shells, as measured above.
+
+## Consequence for phase 07
+
+Phase 07 will send the Mac's working directory with every `maw` call. Under this decision, a
+login shell with a working directory (`--cd`) skips `runuser -l`, because `runuser -l` always
+changes to the home directory, and so starts without a logind session. Once every call carries
+a working directory, no shell would be registered with `systemd-logind`, and `loginctl` would
+list no session for it. `XDG_RUNTIME_DIR` and `systemctl --user` would then rest on linger
+alone, which keeps the runtime directory and the user manager without a session: a user who
+disables linger would have neither in any shell. Whether everything that expects a logind
+session works with linger alone has not been tested. `DistributionIntegrationTests`'s
+`registersShellsWithLogind` checks the logind session today, for a shell without `--cd`.
+
+Phase 07 therefore has to change how a shell with a working directory starts. The options seen
+so far, of which none is chosen here:
+
+1. **Open the PAM session without `runuser -l`'s change of directory.** `runuser` without
+   `-l` keeps the directory, but its PAM service differs: on Ubuntu 24.04, `runuser-l`
+   includes `pam_systemd` and `runuser` does not (both files in the image that maw installs),
+   so `runuser` alone opens no logind session. A PAM service of maw's own would need a file in
+   the distribution's `/etc/pam.d`, against this record's requirement that maw never changes
+   an installed distribution to start sessions.
+2. **Change the directory after the session is open.** `runuser -l` with `-s` naming a helper
+   in place of the user's shell, for example the agent in a mode of its own: `runuser` opens
+   the PAM session and changes to the home directory, and the helper changes to the requested
+   directory and executes the user's shell as a login shell. The shell's startup files then
+   run in the requested directory, and a directory that the user cannot enter has to be
+   reported by the helper.
+3. **Register the session with logind from the agent**, option 1 of the context above. It no
+   longer depends on `runuser`, but it brings the D-Bus code and skips the distribution's PAM
+   stack, as described there.
+
+Each option changes the time to a prompt, which phase 07 must measure against the 150 ms
+target.
