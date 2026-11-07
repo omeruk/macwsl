@@ -23,6 +23,7 @@ import Testing
             distribution: try! DistroName("Ubuntu"), e2fsckStatus: 8, diskImage: "/d/disk.img",
             consoleLog: "/l/Ubuntu.log"),
         .sessionConnectionEnded(distribution: "Ubuntu-24.04"),
+        .installationCancellationUnconfirmed(try! DistroName("Ubuntu-24.04")),
     ]
 
     @Test(arguments: errors)

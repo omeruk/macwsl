@@ -200,8 +200,10 @@ struct InstallCommand {
                 case nil:
                     error = .installationOutcomeUnknown(name)
                 }
-            case .unconfirmed:
+            case .requestFailed:
                 error = .daemonConnectionLost(during: "cancelling the installation")
+            case .unanswered:
+                error = .installationCancellationUnconfirmed(name)
             }
             output.writeError(Maw.failure(for: error)?.output ?? "")
             await output.waitUntilWritten(timeout: outputTimeout)
@@ -299,13 +301,18 @@ struct InstallCommand {
         case cancelled
         /// The installation was no longer running: it had finished, or failed.
         case alreadyFinished
-        /// The daemon did not confirm within `cancelTimeout`.
-        case unconfirmed
+        /// The request failed: the connection to the daemon was lost.
+        case requestFailed
+        /// The daemon did not answer within the time maw waits, although the connection
+        /// stayed open, as while the provisioning machine still starts.
+        case unanswered
     }
 
-    /// Asks the daemon to cancel and waits, for at most `cancelTimeout`, until it has removed
-    /// the installation's traces.
-    static func cancel(on client: any InstallDaemon) async -> Cancellation {
+    /// Asks the daemon to cancel and waits, for at most `timeout`, until it has removed the
+    /// installation's traces.
+    static func cancel(
+        on client: any InstallDaemon, timeout: Duration = cancelTimeout
+    ) async -> Cancellation {
         let first = FirstResult<Cancellation>()
         return await withCheckedContinuation { continuation in
             first.onResult { continuation.resume(returning: $0) }
@@ -313,12 +320,12 @@ struct InstallCommand {
                 switch try? await client.cancelInstall() {
                 case true: first.settle(.cancelled)
                 case false: first.settle(.alreadyFinished)
-                case nil: first.settle(.unconfirmed)
+                case nil: first.settle(.requestFailed)
                 }
             }
             Task {
-                try? await Task.sleep(for: cancelTimeout)
-                first.settle(.unconfirmed)
+                try? await Task.sleep(for: timeout)
+                first.settle(.unanswered)
             }
         }
     }

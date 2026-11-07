@@ -695,3 +695,89 @@ extension InstallPromptTests {
         }
     }
 }
+
+/// After Ctrl-C, a cancellation that the daemon cannot be asked for, and one that it has not
+/// answered in time, are told apart.
+@Suite struct InstallCancellationOutcomeTests {
+    /// Answers `cancelInstall` as `behavior` says.
+    final class CancellingDaemon: InstallDaemon, @unchecked Sendable {
+        enum Behavior {
+            /// The request fails, as when the connection is lost.
+            case fails
+            /// No answer, while the connection stays open.
+            case neverAnswers
+        }
+
+        let behavior: Behavior
+        let events: AsyncStream<DaemonClient.Event>
+        private let released = OSAllocatedUnfairLock(initialState: false)
+
+        init(_ behavior: Behavior) {
+            self.behavior = behavior
+            (events, _) = AsyncStream.makeStream(of: DaemonClient.Event.self)
+        }
+
+        func checkInstall(distribution: String?, name: DistroName?) async throws(MawError) {}
+
+        func install(_ request: InstallRequest) async throws(MawError) -> InstallSummary {
+            throw .installationCancelled(try! DistroName("Ubuntu-24.04"))
+        }
+
+        func cancelInstall() async throws(MawError) -> Bool {
+            switch behavior {
+            case .fails:
+                throw .daemonConnectionLost(during: "cancelInstall")
+            case .neverAnswers:
+                while !released.withLock({ $0 }) {
+                    try? await Task.sleep(for: .milliseconds(10))
+                }
+                return true
+            }
+        }
+
+        func close() {}
+
+        func release() {
+            released.withLock { $0 = true }
+        }
+    }
+
+    @Test func reportsALostConnectionWhenTheRequestFails() async {
+        let daemon = CancellingDaemon(.fails)
+        #expect(await InstallCommand.cancel(on: daemon, timeout: .seconds(30)) == .requestFailed)
+    }
+
+    @Test func reportsAnUnansweredCancellationWhileTheConnectionStaysOpen() async {
+        let daemon = CancellingDaemon(.neverAnswers)
+        defer { daemon.release() }
+        #expect(
+            await InstallCommand.cancel(on: daemon, timeout: .milliseconds(50)) == .unanswered)
+    }
+
+    @Test func saysThatTheConnectionWasLost() throws {
+        let failure = try #require(
+            Maw.failure(for: MawError.daemonConnectionLost(during: "cancelling the installation")))
+        #expect(
+            failure.output
+                == "maw: The maw daemon exited or closed the connection during cancelling the "
+                + "installation.\nThe daemon's log, ~/Library/Logs/maw/mawd.log, may say why.\n")
+    }
+
+    @Test func saysThatTheCancellationIsNotConfirmedYet() throws {
+        let failure = try #require(
+            Maw.failure(
+                for: MawError.installationCancellationUnconfirmed(try DistroName("Ubuntu-24.04"))))
+        #expect(
+            failure.output
+                == """
+                maw: The daemon has not yet confirmed the cancellation of the installation of
+                Ubuntu-24.04. The installation may still be ending.
+                Wait a moment, then run maw -d Ubuntu-24.04 -e true. It succeeds if
+                Ubuntu-24.04 was installed after all, and otherwise says that it is not.
+
+                """)
+        for line in failure.output.split(separator: "\n") {
+            #expect(line.count <= 80, "\(line)")
+        }
+    }
+}
