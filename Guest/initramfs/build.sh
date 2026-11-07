@@ -152,6 +152,7 @@ fi
 
 install -m 0755 "$initramfs_dir/init" "$root/init"
 install -m 0755 "$initramfs_dir/maw-shutdown" "$root/sbin/maw-shutdown"
+install -m 0755 "$initramfs_dir/maw-check-root" "$root/sbin/maw-check-root"
 printf '%s\n' "$version" > "$root/etc/maw-initramfs-version"
 printf 'root:x:0:0:root:/root:/bin/sh\n' > "$root/etc/passwd"
 printf 'root:x:0:\n' > "$root/etc/group"

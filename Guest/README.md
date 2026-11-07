@@ -11,10 +11,16 @@ Every maw VM boots from two files built here:
 `/init` mounts the pseudo-file systems, sets the clock from `maw.clock=`, prints the banner,
 and runs the `maw.test=` hooks. Then:
 
-- With `maw.root=<device>`, it boots that distribution's disk: it checks and mounts it,
-  provides the agent as a runtime systemd unit, and switches to the distribution's systemd.
+- With `maw.root=<device>`, it boots that distribution's disk: it checks it with
+  `maw-check-root`, mounts it, provides the agent as a runtime systemd unit, and switches to
+  the distribution's systemd.
   [Decision record 0013](../docs/decisions/0013-systemd-and-the-agent.md) describes this
-  path.
+  path. `maw-check-root` runs `e2fsck -p` and prints its exit status on the console in the
+  line `maw-initramfs: root-check e2fsck-status=<status>`, which `mawd` reads. With a status
+  of 0 (no errors) or 1 to 3 (errors corrected), the distribution boots. With 4 or more
+  (errors left uncorrected, or a check that could not be completed), `/init` powers the
+  machine off without mounting the disk, and `mawd` reports which distribution's file system
+  failed its check and where its console log is.
 - Otherwise, it executes busybox `init` as PID 1, which supervises the agent; with
   `maw.debug=shell` on the kernel command line, `init` also runs a shell on `hvc0`. This is
   the initramfs machine, which provisions distributions and serves `mawd debug-boot`.
@@ -44,6 +50,8 @@ Guest/
     busybox.config       busybox configuration overrides
     init                 /init
     maw-shutdown         the inittab shutdown action: stops processes, powers off
+    maw-check-root       checks a distribution's root file system with e2fsck -p, reports
+                         e2fsck's exit status on the console, and decides whether it boots
     build.sh             builds busybox, e2fsprogs, and bsdtar, packs the cpio archive
   agent/
     SWIFT                pinned Swift toolchains and Static Linux SDK for the agent

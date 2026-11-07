@@ -9,8 +9,9 @@
 #    and CI use this.
 # 5. With maw.test=agent, runs the guest agent's self-test, which prints
 #    "maw-agent self-test: ok" on success, and powers off. The QEMU smoke test uses this.
-# 6. With maw.root=<device>, boots the distribution on that disk: checks and mounts it,
-#    provides the guest agent to it as a runtime systemd unit, and switches to its systemd.
+# 6. With maw.root=<device>, boots the distribution on that disk: checks it with
+#    maw-check-root, mounts it, provides the guest agent to it as a runtime systemd unit, and
+#    switches to its systemd. A failed check powers the machine off.
 #    docs/decisions/0013-systemd-and-the-agent.md describes this path.
 # 7. Otherwise, writes /etc/inittab and executes busybox init, which becomes PID 1 and
 #    supervises the guest agent. With maw.debug=shell, init also runs a shell on /dev/hvc0.
@@ -61,12 +62,10 @@ fail_boot() {
 # Boots the distribution on $1. Does not return.
 boot_distribution() {
     root_device=$1
-    # e2fsck -p: 0 means clean, 1 that errors were corrected; anything else needs a person.
-    e2fsck -p "$root_device"
-    status=$?
-    if [ "$status" -gt 1 ]; then
-        fail_boot "the file system on $root_device has errors that e2fsck -p cannot repair (exit status $status)"
-    fi
+    # e2fsck -p, and the decision whether to boot; maw-check-root reports e2fsck's exit status
+    # on the console, where mawd reads it.
+    /sbin/maw-check-root "$root_device" ||
+        fail_boot "cannot boot from $root_device: its file system check failed"
     mkdir -p /sysroot
     mount -t ext4 -o rw "$root_device" /sysroot || fail_boot "cannot mount $root_device"
     [ -x /sysroot/sbin/init ] || fail_boot "the distribution on $root_device has no /sbin/init"
