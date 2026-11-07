@@ -106,20 +106,35 @@
                 throw .provisioningFailed(
                     step: step, reason: "could not start the thread that runs /usr/bin/tar")
             }
-            guard status == .exited(code: 0) else {
-                throw .provisioningFailed(step: step, reason: "bsdtar \(status): \(errors.tail)")
+            if let reason = Self.extractionFailure(
+                tar: tar, bsdtar: status, bsdtarErrors: errors.tail)
+            {
+                throw .provisioningFailed(step: step, reason: reason)
             }
+        }
+
+        /// Why an extraction failed, or `nil` if both programs succeeded. When both failed,
+        /// both are named, `/usr/bin/tar` first: either can be the cause, since a failure of
+        /// `/usr/bin/tar` cuts bsdtar's input off, and a failure of bsdtar, such as a full
+        /// disk, closes `/usr/bin/tar`'s output.
+        static func extractionFailure(
+            tar: Result<StreamingProcess.Outcome, any Error>, bsdtar status: ExitStatus,
+            bsdtarErrors: String
+        ) -> String? {
+            var reasons: [String] = []
             switch tar {
             case .failure(let error):
-                throw .provisioningFailed(
-                    step: step, reason: "/usr/bin/tar cannot start: \(error.localizedDescription)")
+                reasons.append("/usr/bin/tar cannot start: \(error.localizedDescription)")
             case .success(let outcome) where outcome.status != 0:
-                throw .provisioningFailed(
-                    step: step,
-                    reason: "/usr/bin/tar exited with status \(outcome.status): \(outcome.errors)")
+                reasons.append(
+                    "/usr/bin/tar exited with status \(outcome.status): \(outcome.errors)")
             case .success:
                 break
             }
+            if status != .exited(code: 0) {
+                reasons.append("bsdtar \(status): \(bsdtarErrors)")
+            }
+            return reasons.isEmpty ? nil : reasons.joined(separator: "; ")
         }
 
         public func configure(_ configuration: GuestConfiguration) async throws(MawError) {
