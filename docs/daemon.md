@@ -395,3 +395,35 @@ log, and prints its path. Otherwise it deletes it.
   installed distributions, is where such a command belongs: it would boot the initramfs
   machine with the disk attached, as the installer does, and run e2fsck interactively or with
   `-y` after the user has made a copy.
+- A session's connection can end on the host's side while the guest's side stays open.
+  Virtualization.framework did this, rarely, to connections that the agent dials: in phase 05's
+  integration runs, one running session's connection ended in the middle of a frame, and in
+  bursts of 64 sessions a connection that the daemon had accepted was reset (Part 5a of pull
+  request #19 records the evidence; the cause is not established).
+  - **What the user sees.** `maw` prints `sessionConnectionEnded`: the connection to the
+    session ended unexpectedly, the output may be incomplete, and the command may still be
+    running. The output received before the end stays printed, and a terminal is restored
+    first. If the daemon reports within a second that the machine stopped, the error is
+    `machineStopped` instead, as for any session whose machine stops.
+  - **The command keeps running.** The agent never learns that the host has gone, so it does
+    not send the command SIGHUP. The machine's idle stop counts only the daemon's leases
+    (`MachineRegistry.scheduleIdleStopIfUnused`), and the lease ends when `maw` exits, so the
+    command does not keep the machine running: it runs until the machine stops, 60 seconds
+    after its last session ends (`DaemonTimeouts.machineIdle`), later while other sessions keep
+    the machine running, or until the user ends it, with `kill` through `maw -e`, or with
+    `maw --shutdown`, which stops every running distribution.
+  - **The exit status is 1**, the status of every runtime error (`CommandFailure`), which cannot
+    be told apart from a command that itself exits with 1.
+  - **Phase 06.** Once `maw --terminate` exists, the suggestion should name
+    `maw --terminate <name>`, which ends the command with its distribution only.
+  - **Phase 12b, a mitigation; both options change the protocol.**
+    - **The client asks the daemon to end the session in the guest.** On an unexpected end,
+      `maw` asks the daemon, over XPC, to have the agent end that session's process, for
+      example with a new request on a host-opened connection that names the session. It acts
+      at once, but only when `maw` sees the end and the daemon still answers, and it needs a
+      way to name a session to the agent.
+    - **Session connections carry a keepalive.** The host sends a small frame at an interval,
+      and the agent treats a connection that has carried none for several intervals as a dead
+      host and hangs up the command, as it does when the host closes. It works whatever the
+      client does, but it detects the end only after the timeout, adds traffic to every idle
+      session, and must not mistake a `maw` that Ctrl-Z stopped for a dead host.
