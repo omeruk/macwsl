@@ -12,10 +12,11 @@ import Testing
 /// The client side of an exec session against a scripted agent.
 @Suite struct GuestProcessTests {
     /// Plays the agent: answers the handshake and the exec request with `frames`, written in
-    /// one piece, then waits for the client to close the connection, or closes it at once.
-    static func scriptedAgent(sending frames: [Frame], thenClose: Bool = false) throws
-        -> GuestAgentClient
-    {
+    /// one piece, then waits for the client to close the connection, or writes `partialFrame`
+    /// and closes it at once.
+    static func scriptedAgent(
+        sending frames: [Frame], thenClose: Bool = false, partialFrame: [UInt8] = []
+    ) throws -> GuestAgentClient {
         let (host, peer) = try HandshakeTests.socketPair()
         startDetachedThread {
             guard let connection = try? FrameConnection(peer) else { return }
@@ -25,6 +26,9 @@ import Testing
                 connection.enqueue(frame)
             }
             try? connection.flush(until: .now + .seconds(5))
+            if !partialFrame.isEmpty {
+                _ = partialFrame.withUnsafeBytes { write(peer.rawValue, $0.baseAddress, $0.count) }
+            }
             if !thenClose {
                 while (try? connection.receiveFrame(until: .now + .seconds(10))) != nil {}
             }
@@ -216,6 +220,71 @@ import Testing
         ) {
             try await process.waitForExit()
         }
+        #expect(process.connectionEndedBeforeExit)
+    }
+
+    // MARK: A connection that ends before the exit status
+
+    /// Output frames, then the end of the connection at a frame boundary. The output stays
+    /// delivered, the error is the one it always was, and the process reports the early end.
+    @Test func reportsAnEndAtAFrameBoundaryAfterOutput() async throws {
+        let client = try Self.scriptedAgent(
+            sending: [
+                .control(.started(pid: 7)), Frame(type: .stdout, payload: Array("1\n".utf8)),
+                Frame(type: .stdout, payload: Array("2\n".utf8)),
+            ], thenClose: true)
+        let received = Received()
+        let process = try await client.exec(ExecRequest(argv: ["seq", "1", "inf"])) { _, bytes in
+            received.append(bytes)
+        }
+        await #expect(
+            throws: MawError.guestAgentFailed(
+                reason: "exec: the connection was closed unexpectedly")
+        ) {
+            try await process.waitForExit()
+        }
+        #expect(received.text == "1\n2\n")
+        #expect(process.connectionEndedBeforeExit)
+    }
+
+    /// Output frames, then part of a frame, then the end of the connection.
+    @Test func reportsAnEndInTheMiddleOfAFrameAfterOutput() async throws {
+        let cut = Array(Frame(type: .stdout, payload: Array("3\n4\n5\n".utf8)).encoded.prefix(8))
+        let client = try Self.scriptedAgent(
+            sending: [
+                .control(.started(pid: 7)), Frame(type: .stdout, payload: Array("1\n2\n".utf8)),
+            ], thenClose: true, partialFrame: cut)
+        let received = Received()
+        let process = try await client.exec(ExecRequest(argv: ["seq", "1", "inf"])) { _, bytes in
+            received.append(bytes)
+        }
+        await #expect(
+            throws: MawError.guestAgentFailed(
+                reason: "exec: the connection ended in the middle of a frame (8 bytes buffered)")
+        ) {
+            try await process.waitForExit()
+        }
+        #expect(received.text == "1\n2\n")
+        #expect(process.connectionEndedBeforeExit)
+    }
+
+    /// A frame that cannot be read is a failure of its own, not an early end.
+    @Test func doesNotReportAnUnreadableFrameAsAnEarlyEnd() async throws {
+        let client = try Self.scriptedAgent(
+            sending: [.control(.started(pid: 7)), Frame(type: .stdin, payload: [1])],
+            thenClose: true)
+        let process = try await client.exec(ExecRequest(argv: ["true"])) { _, _ in }
+        await #expect(throws: MawError.self) { try await process.waitForExit() }
+        #expect(!process.connectionEndedBeforeExit)
+    }
+
+    @Test func doesNotReportAnExitAsAnEarlyEnd() async throws {
+        let client = try Self.scriptedAgent(sending: [
+            .control(.started(pid: 7)), .control(.exited(.exited(code: 0))),
+        ])
+        let process = try await client.exec(ExecRequest(argv: ["true"])) { _, _ in }
+        #expect(try await process.waitForExit() == .exited(code: 0))
+        #expect(!process.connectionEndedBeforeExit)
     }
 }
 

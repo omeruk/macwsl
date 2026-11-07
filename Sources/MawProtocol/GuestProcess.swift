@@ -51,6 +51,8 @@ public final class GuestProcess: @unchecked Sendable {
     /// `ending`, once the output received before it has been delivered.
     private var result: Result<ExitStatus, MawError>?
     private var waiters: [CheckedContinuation<Result<ExitStatus, MawError>, Never>] = []
+    /// Set by the I/O thread when the connection ended before the exit status arrived.
+    private var endedBeforeExit = false
     private let wakeReader: OwnedDescriptor
     private let wakeWriter: OwnedDescriptor
 
@@ -150,6 +152,15 @@ public final class GuestProcess: @unchecked Sendable {
 
     // MARK: Exit
 
+    /// Whether the connection ended before the process's exit status arrived: at a frame
+    /// boundary, or in the middle of a frame. A reset counts as an end (`FrameConnection`).
+    /// Other failures, such as a frame that cannot be read or an error from the agent, do not.
+    /// The error that `waitForExit()` throws is the same either way; this tells a client that
+    /// the command may still be running in the guest.
+    public var connectionEndedBeforeExit: Bool {
+        lock.withLock { endedBeforeExit }
+    }
+
     /// Waits until the process has ended and its output has been delivered.
     public func waitForExit() async throws(MawError) -> ExitStatus {
         let outcome = await withCheckedContinuation {
@@ -223,12 +234,18 @@ public final class GuestProcess: @unchecked Sendable {
 
     private func run(_ connection: FrameConnection) {
         let outcome: Result<ExitStatus, MawError>
+        var endedEarly = false
         do {
             outcome = .success(try serve(connection))
         } catch {
+            switch error {
+            case .closed, .frame(.truncated): endedEarly = true
+            default: break
+            }
             outcome = .failure(GuestAgentClient.map(error, during: "exec"))
         }
         connection.descriptor.close()
+        lock.withLock { endedBeforeExit = endedEarly }
         end(outcome)
     }
 
