@@ -153,6 +153,10 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case guestAgentVersionMismatch(host: UInt32, guest: UInt32)
     /// A conversation with the guest agent failed partway through.
     case guestAgentFailed(reason: String)
+    /// A session's connection to `distribution` ended before the command's exit status
+    /// arrived, and the daemon reported no stop of the machine. The command's output may be
+    /// incomplete, and the command may still be running in the guest.
+    case sessionConnectionEnded(distribution: String)
     /// The guest agent could not open a session's connection to the host (protocol version 3's
     /// `dialBack`), and reported why.
     case sessionDialBackFailed(reason: String)
@@ -296,6 +300,11 @@ extension MawError: LocalizedError {
                 + "version \(host)."
         case .guestAgentFailed(let reason):
             "The connection to the guest agent failed: \(reason)."
+        // The line breaks keep each line within 80 columns, `maw: ` included, for a name as
+        // long as Ubuntu-24.04: the terminal prints these lines as they are.
+        case .sessionConnectionEnded(let name):
+            "The connection to the session in \(name) ended unexpectedly.\n"
+                + "The output may be incomplete, and the command may still be running there."
         case .sessionDialBackFailed(let reason):
             "The guest agent could not connect to maw for the session: \(reason)."
         case .sessionDialBackMissing(let milliseconds):
@@ -454,6 +463,10 @@ extension MawError: LocalizedError {
                 + "Guest/README.md describes."
         case .guestAgentFailed:
             "The console log may contain details."
+        case .sessionConnectionEnded(let name):
+            "If the command is still running, find its process ID with\n"
+                + "maw -d \(name) -e ps -ef and end it with maw -d \(name) -e kill <ID>.\n"
+                + "maw --shutdown also ends it, but it stops every running distribution."
         case .sessionDialBackFailed:
             "Run the command again. If it fails again, restart the virtual machines with "
                 + "maw --shutdown; the console log in ~/Library/Logs/maw has the agent's "

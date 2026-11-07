@@ -22,6 +22,7 @@ import Testing
         .rootFileSystemCheckFailed(
             distribution: try! DistroName("Ubuntu"), e2fsckStatus: 8, diskImage: "/d/disk.img",
             consoleLog: "/l/Ubuntu.log"),
+        .sessionConnectionEnded(distribution: "Ubuntu-24.04"),
     ]
 
     @Test(arguments: errors)
@@ -226,6 +227,43 @@ import Testing
                 + "a file system yet; a later phase adds one. If you do not need the "
                 + "distribution's files, the README explains how to remove it, after which "
                 + "maw --install can install it again.")
+    }
+
+    // MARK: A session connection that ended unexpectedly
+
+    @Test func reportsASessionConnectionThatEndedUnexpectedly() {
+        let error = MawError.sessionConnectionEnded(distribution: "Ubuntu-24.04")
+        #expect(
+            error.errorDescription
+                == "The connection to the session in Ubuntu-24.04 ended unexpectedly.\n"
+                + "The output may be incomplete, and the command may still be running there.")
+        #expect(
+            error.recoverySuggestion
+                == "If the command is still running, find its process ID with\n"
+                + "maw -d Ubuntu-24.04 -e ps -ef and end it with maw -d Ubuntu-24.04 -e kill <ID>.\n"
+                + "maw --shutdown also ends it, but it stops every running distribution.")
+    }
+
+    /// The message does not say which side ended the connection, carries no protocol detail,
+    /// and suggests no command that this build lacks.
+    @Test func claimsNothingThatIsNotKnown() {
+        let error = MawError.sessionConnectionEnded(distribution: "Ubuntu-24.04")
+        let text = (error.errorDescription ?? "") + "\n" + (error.recoverySuggestion ?? "")
+        for word in ["frame", "bytes", "buffered", "agent", "host", "guest", "--terminate"] {
+            #expect(!text.contains(word), "\(word)")
+        }
+    }
+
+    /// Every line fits in 80 columns, with the `maw: ` before the first.
+    @Test func fitsEveryLineOfASessionConnectionEndIn80Columns() {
+        let error = MawError.sessionConnectionEnded(distribution: "Ubuntu-24.04")
+        let lines =
+            ("maw: " + (error.errorDescription ?? "") + "\n"
+            + (error.recoverySuggestion ?? "")).split(separator: "\n")
+        #expect(lines.count == 5)
+        for line in lines {
+            #expect(line.count <= 80, "\(line.count): \(line)")
+        }
     }
 
     @Test func endsAMessageWithOnePeriod() {
