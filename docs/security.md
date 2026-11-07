@@ -92,9 +92,11 @@ the Mac listens for the guest.
   reads exactly the 37-byte nonce frame, within 2 seconds, on a thread of its own, and closes
   the connection if the frame is late, malformed, or carries no waiting session's nonce.
 - **A guest process without the capability** cannot bind a source port below 1024 (EACCES),
-  and the daemon refuses its dials without reading from them. It cannot learn a nonce: the
-  nonce travels only on the daemon's connection to the agent, which no other guest process
-  can read, and the agent runs as root.
+  and the daemon refuses its dials without reading from them. While the agent runs, it cannot
+  learn a nonce either: the nonce travels only on the daemon's connection to the agent, which
+  no other guest process can read, and the agent runs as root. While the agent restarts, such
+  a process can take the agent's port and receive nonces, but still cannot use one, because
+  its dials are refused before they are read (see "Known gaps").
 - **Guest root** can bind such a port and connect while a session opens, but without the
   nonce its connection is closed after at most 37 bytes or 2 seconds and receives nothing;
   guessing a 256-bit nonce is not feasible. Root could read a nonce from the agent's memory and
