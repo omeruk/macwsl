@@ -31,12 +31,19 @@ one image can be installed more than once.
 ```sh
 maw --install                         # the recommended distribution, Ubuntu-24.04
 maw --install Ubuntu-24.04 --name Work
+maw --install 2>&1 | tee install.log  # keep the progress in a file
 printf '%s\n' "$password" | maw --install -u ayse   # without a terminal
 ```
 
-In a terminal, maw asks for the new account's name and for its password twice, without
-echoing it, and opens a shell in the new distribution at the end. The daemon does the work and
-reports progress, one line per step:
+When standard input is a terminal, maw asks for the new account's name and for its password
+twice, without echoing it. It asks on the controlling terminal (`/dev/tty`), as `sudo` and `ssh`
+do, so the questions stay visible when standard output and standard error go to a pipe or a
+file, and neither they nor the answers ever reach it. With `--user`, it asks only for the
+password; without a terminal on standard input, the password is the first line of standard
+input, and without `--user` as well, maw refuses, since there is nothing to ask on. When
+standard output is a terminal too, a shell opens in the new distribution at the end; otherwise
+the last line says how to open one. The daemon does the work and reports progress, one line per
+step, redrawn in place only on a terminal:
 
 | Step | What happens |
 |------|--------------|

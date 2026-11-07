@@ -23,6 +23,13 @@ struct InstallCommand {
     }
     /// Announces the installation and asks for the account, or reads it. The tests replace it.
     var askForAccount: ((Preparation) throws -> (UserName, Secret))?
+    /// Opens a shell in the new distribution and returns its exit status. The tests replace
+    /// it.
+    var openShell: @Sendable (DistroName) async throws -> Int32 = { name in
+        try await SessionRunner(
+            plan: SessionPlan(machine: .distribution(name), program: .loginShell), mode: .terminal
+        ).run()
+    }
 
     /// How long maw waits for the daemon to confirm a cancellation before it exits anyway.
     static let cancelTimeout = Duration.seconds(5)
@@ -37,7 +44,12 @@ struct InstallCommand {
     struct Preparation {
         let entry: CatalogEntry
         let name: DistroName
-        let isInteractive: Bool
+        /// Whether standard input is a terminal, so that the account can be asked for on the
+        /// controlling terminal.
+        let inputIsTerminal: Bool
+        /// Whether standard input and standard output are both terminals, so that a shell can
+        /// open in the new distribution, as `wsl --install` opens one.
+        let opensShell: Bool
     }
 
     /// Everything before the installation starts, in an order that asks for nothing before
@@ -56,8 +68,10 @@ struct InstallCommand {
             entry = catalog.recommendedEntry
         }
         let name = options.name ?? entry.name
-        let isInteractive = isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1
-        if options.user == nil, !isInteractive {
+        // The account is asked for on the controlling terminal, so only standard input needs
+        // to be one: standard output and standard error may go to a pipe or a file.
+        let inputIsTerminal = isatty(STDIN_FILENO) == 1
+        if options.user == nil, !inputIsTerminal {
             throw MawError.installNeedsTerminal
         }
 
@@ -65,7 +79,9 @@ struct InstallCommand {
         let account: (UserName, Secret)
         do {
             try await client.checkInstall(distribution: entry.name.rawValue, name: options.name)
-            let preparation = Preparation(entry: entry, name: name, isInteractive: isInteractive)
+            let preparation = Preparation(
+                entry: entry, name: name, inputIsTerminal: inputIsTerminal,
+                opensShell: inputIsTerminal && isatty(STDOUT_FILENO) == 1)
             account = try (askForAccount ?? readAccount)(preparation)
             return (preparation, client, account.0, account.1)
         } catch {
@@ -102,10 +118,10 @@ struct InstallCommand {
         case .status(let status):
             return status
         case .installed(let summary):
-            guard preparation.isInteractive else { return 0 }
-            // As wsl --install does: the new distribution opens.
-            let plan = SessionPlan(machine: .distribution(summary.name), program: .loginShell)
-            return try await SessionRunner(plan: plan, mode: .terminal).run()
+            // As wsl --install does: the new distribution opens. Otherwise the summary has
+            // said how to open it.
+            guard preparation.opensShell else { return 0 }
+            return try await openShell(summary.name)
         }
     }
 
@@ -317,76 +333,69 @@ struct InstallCommand {
 
     // MARK: The account
 
-    /// Announces the installation, then asks for the account on the terminal, or, with
-    /// `--user`, reads the password.
+    /// Announces the installation, then asks for the account on the controlling terminal, or,
+    /// with `--user`, asks for the password there, or reads it from standard input when that is
+    /// not a terminal.
     func readAccount(_ preparation: Preparation) throws -> (UserName, Secret) {
         let entry = preparation.entry
         print(
             "Installing \(entry.displayName)"
                 + (preparation.name == entry.name ? "." : " as \(preparation.name)."))
+        fflush(stdout)
         if let given = options.user {
             let user = try UserName(given, reservedNames: entry.reservedNames)
             // On a terminal, the password is asked for without echo, never read as typed text.
-            let password =
-                isatty(STDIN_FILENO) == 1 ? try Self.askForPassword() : try Self.readPasswordLine()
-            return (user, password)
+            guard preparation.inputIsTerminal else {
+                return (user, try Self.readPasswordLine())
+            }
+            return (user, try Self.askForPassword(on: try PromptTerminal.open()))
         }
-        return try Self.askForAccount(reservedNames: entry.reservedNames)
+        return try Self.askForAccount(
+            on: try PromptTerminal.open(), reservedNames: entry.reservedNames)
     }
 
     /// Asks for the user name until it is valid, then for the password twice, without
     /// echoing it, until both entries match.
-    static func askForAccount(reservedNames: [String]) throws -> (UserName, Secret) {
-        print(
+    static func askForAccount(
+        on terminal: PromptTerminal, reservedNames: [String]
+    ) throws -> (UserName, Secret) {
+        terminal.writeLine(
             "Create the default Linux user account. Its name does not need to match your "
                 + "Mac user name.")
         var user: UserName?
         while user == nil {
-            print("New user name: ", terminator: "")
-            fflush(stdout)
-            guard let line = readLine(strippingNewline: true) else {
+            terminal.write("New user name: ")
+            guard let line = terminal.readLine() else {
                 throw MawError.invalidUserName("", reason: "no name was entered")
             }
             do {
                 user = try UserName(line, reservedNames: reservedNames)
             } catch {
-                print(error.errorDescription ?? "", error.recoverySuggestion ?? "")
+                terminal.writeLine(
+                    [error.errorDescription, error.recoverySuggestion].compactMap { $0 }
+                        .joined(separator: " "))
             }
         }
-        return (user!, try askForPassword())
+        return (user!, try askForPassword(on: terminal))
     }
 
     /// Asks for the password twice, without echoing it, until both entries match.
-    static func askForPassword() throws -> Secret {
+    static func askForPassword(on terminal: PromptTerminal) throws -> Secret {
         while true {
-            let first = try readSecret(prompt: "New password: ")
+            let first = try terminal.readSecret(prompt: "New password: ")
             if first.value.isEmpty {
-                print("The password must not be empty.")
+                terminal.writeLine("The password must not be empty.")
                 continue
             }
-            let second = try readSecret(prompt: "Retype the new password: ")
+            let second = try terminal.readSecret(prompt: "Retype the new password: ")
             if first == second {
                 return first
             }
-            print("The passwords do not match. Try again.")
+            terminal.writeLine("The passwords do not match. Try again.")
         }
     }
 
-    /// Reads a password from the terminal without echoing it. Ctrl-C ends maw, and
-    /// `readpassphrase` restores the terminal first.
-    static func readSecret(prompt: String) throws -> Secret {
-        var buffer = [CChar](repeating: 0, count: 1024)
-        defer { buffer.withUnsafeMutableBytes { _ = memset($0.baseAddress, 0, $0.count) } }
-        guard
-            readpassphrase(prompt, &buffer, buffer.count, RPP_ECHO_OFF | RPP_REQUIRE_TTY) != nil
-        else {
-            throw MawError.invalidPassword(reason: "no password was entered")
-        }
-        let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
-        return Secret(String(decoding: bytes, as: UTF8.self))
-    }
-
-    /// With `--user`: the password is the first line of standard input.
+    /// With `--user`, when standard input is not a terminal: the password is its first line.
     static func readPasswordLine() throws -> Secret {
         guard let line = readLine(strippingNewline: true) else {
             throw MawError.invalidPassword(reason: "standard input contained no password")

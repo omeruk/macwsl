@@ -526,3 +526,161 @@ extension InstallEndedBeforeTheCancellationTests {
         }
     }
 }
+
+/// Where `maw --install` asks for the account: on the controlling terminal, so that standard
+/// output and standard error can go to a pipe, as in `maw --install 2>&1 | tee install.log`.
+///
+/// Each test runs `InstallCommand` in a child process (an exit test), whose standard output and
+/// standard error are pipes that swift-testing reads, and whose standard input and controlling
+/// terminal are a pseudo-terminal that the child creates.
+@Suite struct InstallPromptTests {
+    /// Installs at once, after reporting two steps.
+    final class InstalledDaemon: InstallDaemon, @unchecked Sendable {
+        let events: AsyncStream<DaemonClient.Event>
+
+        init() {
+            let (events, continuation) = AsyncStream.makeStream(of: DaemonClient.Event.self)
+            self.events = events
+            continuation.yield(.installProgress(.started(.download)))
+            continuation.yield(
+                .installProgress(
+                    .download(
+                        DownloadProgress(
+                            receivedBytes: 1 << 20, totalBytes: 2 << 20, bytesPerSecond: 1 << 20,
+                            resumedFromBytes: 0))))
+            continuation.yield(.installProgress(.finished(.download, milliseconds: 2_000)))
+            continuation.yield(.installProgress(.started(.verify)))
+            continuation.yield(.installProgress(.finished(.verify, milliseconds: 230)))
+            continuation.finish()
+        }
+
+        func checkInstall(distribution: String?, name: DistroName?) async throws(MawError) {}
+
+        func install(_ request: InstallRequest) async throws(MawError) -> InstallSummary {
+            guard request.user == "ayse", request.password == Secret("a secret word") else {
+                throw .invalidPassword(reason: "the test daemon got another account")
+            }
+            // Gives the events above time to be shown before the reply.
+            try? await Task.sleep(for: .milliseconds(100))
+            return InstallSummary(
+                name: try! DistroName("Ubuntu-24.04"), displayName: "Ubuntu 24.04 LTS",
+                defaultUser: "ayse", isDefault: true, milliseconds: 2_500)
+        }
+
+        func cancelInstall() async throws(MawError) -> Bool { false }
+        func close() {}
+    }
+
+    static let password = "a secret word"
+
+    /// In the child: makes a new pseudo-terminal the controlling terminal and standard input,
+    /// answers the prompts on it as a user would, runs `maw --install`, and checks what the
+    /// terminal showed. Exits with 0 if everything held, otherwise with a status that names the
+    /// check that failed.
+    static func installOnAPseudoTerminal() async {
+        var primary: Int32 = -1
+        var secondary: Int32 = -1
+        guard openpty(&primary, &secondary, nil, nil, nil) == 0 else { exit(10) }
+        guard setsid() >= 0 else { exit(11) }
+        guard ioctl(secondary, TIOCSCTTY, 0) == 0 else { exit(12) }
+        guard dup2(secondary, STDIN_FILENO) >= 0 else { exit(13) }
+
+        // The user: types each answer once its prompt has appeared, since readpassphrase
+        // discards what was typed before it turned echo off.
+        let screen = OSAllocatedUnfairLock(initialState: [UInt8]())
+        let terminal = primary
+        let user = Thread {
+            // Each prompt appears once when every answer is accepted.
+            let answers = [
+                ("New user name: ", "ayse\n"), ("New password: ", password + "\n"),
+                ("Retype the new password: ", password + "\n"),
+            ]
+            var next = 0
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while true {
+                let count = buffer.withUnsafeMutableBytes {
+                    read(terminal, $0.baseAddress, $0.count)
+                }
+                guard count > 0 else { return }
+                let received = Array(buffer[..<count])
+                let shown = screen.withLock {
+                    $0 += received
+                    return String(decoding: $0, as: UTF8.self)
+                }
+                while next < answers.count, shown.contains(answers[next].0) {
+                    _ = answers[next].1.withCString { write(terminal, $0, strlen($0)) }
+                    next += 1
+                }
+            }
+        }
+        user.start()
+
+        var command = InstallCommand(options: InstallOptions(distro: nil, name: nil, user: nil))
+        command.connect = { () async throws(MawError) -> any InstallDaemon in InstalledDaemon() }
+        // No shell opens when standard output is not a terminal.
+        command.openShell = { _ in exit(14) }
+        guard (try? await command.run()) == 0 else { exit(15) }
+
+        let shown = screen.withLock { String(decoding: $0, as: UTF8.self) }
+        for prompt in [
+            "Create the default Linux user account.", "New user name: ", "New password: ",
+            "Retype the new password: ",
+        ] where !shown.contains(prompt) {
+            exit(16)
+        }
+        // The name is echoed as it is typed; the password never is.
+        guard shown.contains("ayse"), !shown.contains(password) else { exit(17) }
+        exit(0)
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func asksOnTheControllingTerminalWhileTheOutputGoesToAPipe() async throws {
+        let result = await #expect(
+            processExitsWith: .success,
+            observing: [\.standardOutputContent, \.standardErrorContent]
+        ) {
+            await InstallPromptTests.installOnAPseudoTerminal()
+        }
+        let output = String(decoding: result?.standardOutputContent ?? [], as: UTF8.self)
+        let error = String(decoding: result?.standardErrorContent ?? [], as: UTF8.self)
+        let both = output + error
+        #expect(
+            output.hasPrefix("Installing Ubuntu 24.04 LTS.\n")
+                && output.contains("Ubuntu-24.04 is installed, and is the default distribution."),
+            "\(output)")
+        // The progress, as plain lines.
+        #expect(output.contains("Downloading"), "\(output)")
+        for prompt in ["Create the default", "user name", "password", "Retype"] {
+            #expect(!both.contains(prompt), "\(prompt) in \(both)")
+        }
+        #expect(!both.contains(Self.password))
+        #expect(!both.contains("\u{1B}"), "An escape sequence in \(both.debugDescription)")
+        #expect(!both.contains("\r"), "A carriage return in \(both.debugDescription)")
+    }
+
+    /// Without a terminal on standard input, and without `--user`, there is nothing to ask on.
+    @Test(.timeLimit(.minutes(1)))
+    func refusesWithoutATerminalOnStandardInput() async throws {
+        await #expect(processExitsWith: .success) {
+            let empty = open("/dev/null", O_RDONLY)
+            guard empty >= 0, dup2(empty, STDIN_FILENO) >= 0 else { exit(10) }
+            var command = InstallCommand(options: InstallOptions(distro: nil, name: nil, user: nil))
+            command.connect = { () async throws(MawError) -> any InstallDaemon in
+                exit(11)
+            }
+            do {
+                _ = try await command.prepare()
+                exit(12)
+            } catch let error as MawError {
+                guard error == .installNeedsTerminal,
+                    error.errorDescription
+                        == "maw --install asks for a user name and a password, but standard input "
+                        + "is not a terminal."
+                else { exit(13) }
+                exit(0)
+            } catch {
+                exit(14)
+            }
+        }
+    }
+}

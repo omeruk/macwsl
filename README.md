@@ -129,6 +129,9 @@ user and give the password on standard input:
 printf '%s\n' "$password" | maw --install -u ayse
 ```
 
+The questions go to the terminal itself, not to standard output, so `maw --install | tee
+install.log` keeps the progress in a file and still asks on the terminal.
+
 [`docs/distributions.md`](docs/distributions.md) describes what the installation does and
 changes, and where its files are.
 
