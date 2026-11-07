@@ -61,10 +61,12 @@ stopped ──openSession──▶ starting ──agent answers info──▶ ru
 Every session, whether `maw`'s, the installer's, or `mawd debug-boot`'s, runs on a connection
 that the guest agent dials ([decision record 0017](decisions/0017-dial-back-for-sessions.md)):
 
-1. The daemon registers a new 32-byte nonce with the machine's `DialBackGate`. It is valid for
-   5 seconds; at most 64 sessions of a machine wait at once.
-2. It opens a connection to the agent (port 19799), exchanges versions, and sends `dialBack`
-   with the nonce.
+1. The daemon opens a connection to the agent (port 19799).
+2. Once that connection exists, it registers a new 32-byte nonce with the machine's
+   `DialBackGate`, so that the time the connect takes does not count against the nonce. The
+   nonce is valid for 5 seconds from then; at most 64 sessions of a machine wait at once. The
+   daemon then sends its version and `dialBack` with the nonce, and checks the agent's version
+   before it reads the reply.
 3. The agent binds a source port below 1024, connects to port 19800 within 2 seconds, sends
    the nonce first, replies `dialedBack`, and closes the request connection.
 4. The listener admits the connection, reads exactly its 37-byte nonce frame within 2 seconds,
@@ -187,9 +189,11 @@ client shows its message and suggested fix.
 ### Installing distributions
 
 `Installer` (`Sources/MawDaemonKit/Installer.swift`) runs each installation on a task of its
-own, so that the connection can still cancel it. It refuses an installed name, a name being
-installed by another connection, an invalid user or password, and too little free space before
-it downloads anything. `ImageCache` downloads over HTTPS into `~/Library/Caches/maw/images` and
+own, so that the connection can still cancel it. Before it downloads anything, it refuses a
+name reserved for maw's own log files (see "Console logs"), an installed name, a name being
+installed by another connection, a name under which anything is left in `distros/` in any
+case (`distributionDirectoryExists`), an invalid user or password, and too little free space.
+`ImageCache` downloads over HTTPS into `~/Library/Caches/maw/images` and
 verifies the SHA-256 before every use. `VirtualProvisioningMachine` boots the initramfs with the
 new disk and runs each step as a command through the guest agent; the image is decompressed on
 the Mac and streamed to `bsdtar` in the guest. [docs/distributions.md](distributions.md) lists
@@ -197,7 +201,10 @@ the steps and what they change.
 
 An installation is cancelled when its client sends `cancelInstall`, when the client's
 connection closes, and when the daemon receives SIGTERM: the provisioning machine stops at once,
-and the staging directory is removed before the cancellation is confirmed.
+and the staging directory is removed before the cancellation is confirmed. A cancellation
+during the image check stops the check before its next 4 MiB read; the check then has no
+result, the image is not read, the provisioning machine does not boot, and the cached file
+stays for the next check.
 
 Each daemon builds new distributions in `distros/.staging/<label>/`, named by its own launchd
 label, so that daemons of different labels, such as the integration tests' and the user's,
@@ -210,12 +217,15 @@ and removing staging directories never follows a symbolic link below `distros/`.
 must be 1 to 128 letters, digits, `.`, `-`, and `_`, start with a letter or digit, and contain
 no `..`, so that it names exactly one directory.
 
-The password is in the daemon's memory
-only while the installation runs, travels to the guest as `chpasswd`'s standard input, and
-never appears in a log, a description, or an error message.
+The password is in the daemon's memory only while the installation runs, travels to the
+guest as `chpasswd`'s standard input, and never appears in a log, a description, or an error
+message.
 
-`state.json` in `~/Library/Application Support/maw` records the default distribution: the
-first one installed. Phase 06 adds `maw --set-default`.
+`state.json` in `~/Library/Application Support/maw` records the default distribution. An
+installation that registers its distribution while none is installed makes it the default;
+of two installations that run at once, the first to register does. If `state.json` names a
+distribution that is no longer installed, the default is the first installed one by name.
+Phase 06 adds `maw --set-default`.
 
 ### The session lease
 
@@ -298,6 +308,7 @@ Phase 11b, which connects the terminal app to the daemon, adds the app's identif
 | `~/Library/Logs/maw/mawd.log` | The daemon's own log: start, machines starting and stopping and why, sessions opened and released, errors. launchd sends the daemon's standard output and error here. |
 | `~/Library/Logs/maw/<machine>.log` | One machine's console, with the daemon's notes, including how each shutdown went. |
 | `~/Library/Logs/maw/install/<name>.log` | The console of the machine that provisioned `<name>`, from its last installation attempt. Earlier builds wrote `install-<name>.log`; those files stay where they are. |
+| `~/Library/Logs/maw/debug-boot-console.log` | The console of the machine that `mawd debug-boot` boots, without the daemon. |
 
 The daemon also logs to the unified log, subsystem `dev.maw`, categories `daemon` and `xpc`:
 
@@ -312,6 +323,11 @@ log stream --predicate 'subsystem == "dev.maw"'
 directory, and a machine idle timeout of 3 seconds. It sets `MAW_DAEMON_LABEL` so that the
 `maw` processes of the tests connect to it, and removes the agent when it exits, also when a
 test fails or the script is interrupted. `MAW_DAEMON_LABEL` is not meant for users.
+
+Without arguments, the script runs the tests in the three groups of `scripts/test-groups.sh`,
+each one test at a time, and then checks that every test ran in exactly one group ([decision
+record 0018](decisions/0018-test-groups.md)). Arguments, such as `--filter`, are passed to a
+single `swift test` instead, without the groups and the check.
 
 The script fails the run if a boot of any machine started the guest agent more than once,
 according to the console logs: each boot starts it once, and a second start means that it
@@ -332,4 +348,5 @@ log, and prints its path. Otherwise it deletes it.
 - The daemon does not detect that a client of the same interface version comes from another
   build. `hello` carries the client's maw version, and the daemon logs a difference.
 - A distribution's machine and its console log are named after the distribution. The installer
-  refuses the name `initramfs`, which would share the initramfs machine's console log.
+  refuses the names `initramfs`, `mawd`, and `debug-boot-console`, in any case, whose console
+  logs would be the initramfs machine's, the daemon's, or `mawd debug-boot`'s log files.
