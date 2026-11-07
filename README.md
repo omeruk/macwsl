@@ -41,10 +41,13 @@ only a `maw` with the identifier that the script signs it with, so run `scripts/
 after any build that relinks `maw` or `mawd`.
 
 The guest agent runs inside Linux and is built with the
-[Swift Static Linux SDK](https://www.swift.org/documentation/articles/static-linux-getting-started.html):
+[Swift Static Linux SDK](https://www.swift.org/documentation/articles/static-linux-getting-started.html),
+from the swift.org toolchain and SDK that `Guest/agent/SWIFT` pins; Xcode's toolchain cannot
+use the SDK. `Guest/README.md` describes their one-time installation. A local agent build is
+optional, since `scripts/fetch-guest.sh` installs guest files that CI built:
 
 ```sh
-swift build --swift-sdk aarch64-swift-linux-musl --product maw-agent
+scripts/build-guest-agent.sh                  # writes .build/guest-agent/maw-agent
 ```
 
 ### Integration tests
@@ -122,15 +125,16 @@ maw downloads the image (388 MB, once; an interrupted download resumes), verifie
 and asks for the name and password of your Linux account. The name does not need to match your
 Mac user name; the password is what `sudo` asks for. The installation takes about 10 seconds
 after the download, and ends in a shell in the new distribution. Ctrl-C at any point cancels
-it and leaves nothing behind but the partial download. To install without a terminal, name the
+it and leaves nothing behind but the download in the image cache, complete or partial. To install without a terminal, name the
 user and give the password on standard input:
 
 ```sh
 printf '%s\n' "$password" | maw --install -u ayse
 ```
 
-The questions go to the terminal itself, not to standard output, so `maw --install | tee
-install.log` keeps the progress in a file and still asks on the terminal.
+The questions go to the terminal itself, `/dev/tty`, not to standard output or standard
+error, so `maw --install 2>&1 | tee install.log` keeps the progress in a file and still asks
+on the terminal; neither the questions nor the answers reach the file.
 
 [`docs/distributions.md`](docs/distributions.md) describes what the installation does and
 changes, and where its files are.
@@ -246,4 +250,8 @@ Xcode's project: `swift test --package-path App/MawTerminalKit`.
 - [`docs/decisions/`](docs/decisions/): design decisions and their reasons
 - [`docs/protocol.md`](docs/protocol.md): the host and guest agent protocol
 - [`docs/daemon.md`](docs/daemon.md): the daemon, its machines, and its XPC interface
+- [`docs/distributions.md`](docs/distributions.md): installing distributions, and what maw
+  changes in them
+- [`docs/security.md`](docs/security.md): every way into the guest and the host, and what
+  protects it
 - [`docs/ROADMAP.md`](docs/ROADMAP.md): phases and their status
