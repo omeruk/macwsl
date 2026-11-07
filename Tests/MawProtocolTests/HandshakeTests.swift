@@ -5,6 +5,12 @@ import Testing
 
 @testable import MawProtocol
 
+#if canImport(Darwin)
+    import Darwin
+#elseif canImport(Glibc)
+    import Glibc
+#endif
+
 @Suite struct HandshakeTests {
     /// A connected socket pair: `host` for the side under test, `peer` for the scripted side.
     static func socketPair() throws -> (host: OwnedDescriptor, peer: OwnedDescriptor) {
@@ -132,6 +138,47 @@ import Testing
                 _ = try await client.exec(ExecRequest(argv: ["echo", argument])) { _, _ in }
             } else {
                 _ = try await client.info()
+            }
+        }
+    }
+
+    /// An agent of another version that has answered and closed the connection before the
+    /// client made its connection from the socket, when macOS no longer lets SIGPIPE be
+    /// suppressed on it: the client writes nothing, and still reports the mismatch from the
+    /// frames that arrived. In a process of its own that does not ignore SIGPIPE, as an app does
+    /// not, so that a write ends that process instead of the test run.
+    @Test func clientReportsAMismatchFromAnAgentThatClosedBeforeTheConnectionExisted() async {
+        await #expect(processExitsWith: .success) {
+            signal(SIGPIPE, SIG_DFL)
+            // `socketpair`, not `maw_socketpair`, which suppresses SIGPIPE while both ends are
+            // open.
+            var fds: [Int32] = [-1, -1]
+            guard socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0 else { exit(10) }
+            let earlier = ProtocolVersion.current - 1
+            let agent = try FrameConnection(OwnedDescriptor(fds[1]))
+            agent.enqueue(.version(earlier))
+            agent.enqueue(
+                .control(
+                    .error(
+                        AgentError(
+                            .versionMismatch, "mismatch", hostVersion: ProtocolVersion.current,
+                            guestVersion: earlier))))
+            try agent.flush(until: .now + .seconds(5))
+            agent.descriptor.close()
+
+            let host = OwnedDescriptor(fds[0])
+            let client = GuestAgentClient(replyTimeout: .seconds(5)) { () throws(MawError) in
+                host
+            }
+            do throws(MawError) {
+                _ = try await client.info()
+                exit(11)
+            } catch .guestAgentVersionMismatch(let hostVersion, let guestVersion) {
+                guard hostVersion == ProtocolVersion.current, guestVersion == earlier else {
+                    exit(12)
+                }
+            } catch {
+                exit(13)
             }
         }
     }

@@ -1,3 +1,4 @@
+import CMawSystem
 import Testing
 
 @testable import MawProtocol
@@ -56,5 +57,37 @@ import Testing
             return problems
         }
         #expect(problems.isEmpty, "\(problems)")
+    }
+
+    /// On macOS, SIGPIPE cannot be suppressed on a socket whose peer has already closed:
+    /// `SO_NOSIGPIPE` and `F_SETNOSIGPIPE` fail with EINVAL. A connection made from such a
+    /// socket reports `closed` instead of writing, which would raise SIGPIPE, and still reads
+    /// what the peer sent before it closed. In a process of its own that does not ignore
+    /// SIGPIPE, as an app does not, so that a write ends that process instead of the test run.
+    @Test func neitherWritesNorRaisesSIGPIPEWhenThePeerClosedFirst() async {
+        await #expect(processExitsWith: .success) {
+            signal(SIGPIPE, SIG_DFL)
+            // `socketpair`, not `maw_socketpair`, which suppresses SIGPIPE while both ends are
+            // open.
+            var fds: [Int32] = [-1, -1]
+            guard socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0 else { exit(10) }
+            let peer = try FrameConnection(OwnedDescriptor(fds[1]))
+            peer.enqueue(.control(.exited(.exited(code: 0))))
+            try peer.flush(until: .now + .seconds(5))
+            peer.descriptor.close()
+
+            let connection = try FrameConnection(OwnedDescriptor(fds[0]))
+            connection.enqueue(.version())
+            do throws(ConnectionError) {
+                try connection.flush()
+                exit(11)
+            } catch .closed {
+            } catch {
+                exit(12)
+            }
+            let message = try connection.receiveControl(
+                until: .now + .seconds(5), expecting: "exited")
+            guard message == .exited(.exited(code: 0)) else { exit(13) }
+        }
     }
 }
