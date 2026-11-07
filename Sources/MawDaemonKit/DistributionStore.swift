@@ -75,12 +75,40 @@
 
         /// The default distribution: the one `state.json` names if it is installed, otherwise
         /// the first installed one by name, otherwise `nil`.
+        ///
+        /// Every session without `-d` asks for it. When `state.json` names a distribution that
+        /// `installed()` lists under that name, only that distribution's entry is read; every
+        /// other case reads the whole listing, with the same result.
         public func defaultDistribution() -> DistroName? {
+            let chosen = readState().defaultDistribution
+            if let chosen, isListedUnderItsOwnName(chosen) {
+                return chosen
+            }
             let installed = self.installed().map(\.name)
-            if let chosen = readState().defaultDistribution, installed.contains(chosen) {
+            if let chosen, installed.contains(chosen) {
                 return chosen
             }
             return installed.first
+        }
+
+        /// Whether `installed()` lists `name`, decided from `name`'s own entry: `distros/` can
+        /// be listed, the entry that `distros/<name>` resolves to is stored under a valid
+        /// distribution name, and its metadata carries `name`. APFS ignores case, and folds
+        /// characters such as the Kelvin sign into ASCII letters, so the spelling that
+        /// `installed()` sees is read from the entry rather than assumed.
+        private func isListedUnderItsOwnName(_ name: DistroName) -> Bool {
+            guard
+                FileManager.default.isReadableFile(
+                    atPath: paths.distrosDirectory.path(percentEncoded: false)),
+                let stored = try? paths.distroDirectory(for: name).resourceValues(forKeys: [
+                    .nameKey
+                ]).name,
+                (try? DistroName(stored)) != nil,
+                let metadata = try? metadata(for: name)
+            else {
+                return false
+            }
+            return metadata.name == name
         }
 
         public func setDefaultDistribution(_ name: DistroName) throws(MawError) {

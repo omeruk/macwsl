@@ -220,6 +220,142 @@ import Testing
         #expect(store.defaultDistribution()?.rawValue == "Alpha")
     }
 
+    // MARK: The default distribution, against the listing
+
+    /// The default as it was decided before reading only the chosen entry: from the whole
+    /// listing. Every case below must give the same result.
+    func defaultFromTheListing() -> DistroName? {
+        let installed = store.installed().map(\.name)
+        let state = (try? Data(contentsOf: store.paths.stateFile)).flatMap {
+            try? JSONDecoder().decode(DistributionStore.State.self, from: $0)
+        }
+        if let chosen = state?.defaultDistribution, installed.contains(chosen) {
+            return chosen
+        }
+        return installed.first
+    }
+
+    func expectDefault(_ expected: String?, sourceLocation: SourceLocation = #_sourceLocation) {
+        #expect(
+            store.defaultDistribution()?.rawValue == expected, sourceLocation: sourceLocation)
+        #expect(
+            store.defaultDistribution() == defaultFromTheListing(),
+            sourceLocation: sourceLocation)
+    }
+
+    func choose(_ name: String) throws {
+        try store.setDefaultDistribution(try DistroName(name))
+    }
+
+    @Test func choosesARecordedDefaultThatIsInstalled() throws {
+        try install("Alpha")
+        try install("Zeta")
+        try choose("Zeta")
+        expectDefault("Zeta")
+    }
+
+    @Test func passesOverARecordedDefaultThatIsMissing() throws {
+        try install("Zeta")
+        try install("Alpha")
+        try choose("Gone")
+        expectDefault("Alpha")
+    }
+
+    @Test func passesOverARecordedDefaultWhoseMetadataCannotBeDecoded() throws {
+        try install("Zeta")
+        try install("Alpha")
+        try Data("not json".utf8).write(to: store.paths.metadataFile(for: try DistroName("Zeta")))
+        try choose("Zeta")
+        expectDefault("Alpha")
+    }
+
+    @Test func passesOverARecordedDefaultWhoseMetadataCannotBeRead() throws {
+        try install("Zeta")
+        try install("Alpha")
+        let file = store.paths.metadataFile(for: try DistroName("Zeta"))
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: file.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o644], ofItemAtPath: file.path)
+        }
+        try #require(FileManager.default.isReadableFile(atPath: file.path) == false)
+        try choose("Zeta")
+        expectDefault("Alpha")
+    }
+
+    /// Names are compared exactly. APFS finds `zeta/` for `Zeta`, but a recorded `zeta` is not
+    /// the installed `Zeta`, so the first by name is the default.
+    @Test func comparesTheRecordedNameExactly() throws {
+        try install("Zeta")
+        try install("Alpha")
+        try choose("zeta")
+        expectDefault("Alpha")
+    }
+
+    /// The listing skips an entry that is not a valid name, although APFS resolves `kali/` to
+    /// `\u{212A}ali/`, whose first character is the Kelvin sign.
+    @Test func passesOverAnEntryThatAPFSFoldsIntoTheRecordedName() throws {
+        try install("Alpha")
+        let folded = store.paths.distrosDirectory.appending(
+            path: "\u{212A}ali", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folded, withIntermediateDirectories: true)
+        try (try metadata("kali")).encoded().write(to: folded.appending(path: "distro.json"))
+        try #require(store.isInstalled(try DistroName("kali")), "This volume does not fold names.")
+        try choose("kali")
+        expectDefault("Alpha")
+    }
+
+    /// A distribution whose metadata carries another name than its directory is listed under
+    /// the name in its metadata.
+    @Test func choosesARecordedDefaultListedFromAnotherDirectory() throws {
+        try install("Alpha")
+        let directory = store.paths.distroDirectory(for: try DistroName("Moved"))
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try (try metadata("Zeta")).encoded().write(to: directory.appending(path: "distro.json"))
+        try choose("Zeta")
+        expectDefault("Zeta")
+    }
+
+    @Test func passesOverStagingAndLeftoverDirectories() throws {
+        let staging = store.stagingDirectory(for: try DistroName("Staged"))
+        try store.createStagingDirectory(staging)
+        try (try metadata("Staged")).encoded().write(to: staging.appending(path: "distro.json"))
+        try FileManager.default.createDirectory(
+            at: store.paths.distroDirectory(for: try DistroName("Leftover")),
+            withIntermediateDirectories: true)
+        try install("Zeta")
+        try choose("Leftover")
+        expectDefault("Zeta")
+        try choose("Staged")
+        expectDefault("Zeta")
+        try install("Alpha")
+        try choose("Zeta")
+        expectDefault("Zeta")
+    }
+
+    /// The listing finds nothing in a `distros/` that cannot be read, although its entries can
+    /// be reached, so neither is there a default.
+    @Test func findsNoDefaultInADirectoryThatCannotBeListed() throws {
+        try install("Zeta")
+        try choose("Zeta")
+        let distros = store.paths.distrosDirectory.path(percentEncoded: false)
+        try FileManager.default.setAttributes([.posixPermissions: 0o300], ofItemAtPath: distros)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: distros)
+        }
+        try #require(store.isInstalled(try DistroName("Zeta")))
+        expectDefault(nil)
+    }
+
+    @Test func choosesTheFirstByNameWithoutAStateFile() throws {
+        expectDefault(nil)
+        try install("Zeta")
+        try install("Alpha")
+        #expect(!exists(store.paths.stateFile))
+        expectDefault("Alpha")
+    }
+
     @Test func ignoresDirectoriesWithoutMetadata() throws {
         try FileManager.default.createDirectory(
             at: store.paths.distroDirectory(for: try DistroName("Broken")),
