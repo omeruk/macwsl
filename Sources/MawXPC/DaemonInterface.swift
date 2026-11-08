@@ -299,4 +299,18 @@
             self.endedSessions = endedSessions
         }
     }
+
+    /// The reply to `terminate`.
+    public struct TerminateSummary: Codable, Equatable, Sendable {
+        /// Whether this request stopped the machine. It is false for a machine that was
+        /// stopped, that was already stopping, or whose start failed.
+        public var wasRunning: Bool
+        /// The sessions that ended with the machine.
+        public var endedSessions: Int
+
+        public init(wasRunning: Bool, endedSessions: Int) {
+            self.wasRunning = wasRunning
+            self.endedSessions = endedSessions
+        }
+    }
 #endif
