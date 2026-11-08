@@ -66,10 +66,10 @@ distribution when maw updates it.
    its stop began. The guest then does not power off within the daemon's 5 s limit after the
    agent's acknowledgement (`VirtualMachineHandle.stopTimeout`), and the daemon falls back to
    Virtualization.framework's stop request. `maw --shutdown` and idle stops use this sequence,
-   as does `maw --terminate`, which phase 06 adds. Ordered after `systemd-resolved`, `systemd-timesyncd` stops first,
-   while `systemd-resolved` still runs, and its lookup fails at once. The ordering also makes
-   `systemd-timesyncd` start after `systemd-resolved`, which is not on the agent's path. Why the
-   first DNS query is not answered is not determined.
+   as does `maw --terminate`, which phase 06a adds. Ordered after `systemd-resolved`,
+   `systemd-timesyncd` stops first, while `systemd-resolved` still runs, and its lookup fails
+   at once. The ordering also makes `systemd-timesyncd` start after `systemd-resolved`, which
+   is not on the agent's path. Why the first DNS query is not answered is not determined.
 
 ## Measurements
 
