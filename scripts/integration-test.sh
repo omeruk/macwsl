@@ -18,6 +18,10 @@
 # an APFS clone of the verified images in ~/Library/Caches/maw/images, so that only a run
 # without a cached image downloads it; a downloaded image is cloned back for the next run.
 #
+# The test daemon shares the owner's state.json, which names the default distribution, and tests
+# change the default. The script saves the file before the tests and puts it back on exit, also
+# when a test fails or the run is interrupted: the same bytes, or no file if there was none.
+#
 # On exit the script also checks that nothing the run started outlives it: the test daemon, a
 # `mawd debug-boot`, a virtual machine's process, or a test distribution. Virtual machine
 # processes that were already running when the run started are not counted. Anything left
@@ -58,6 +62,11 @@ log_directory=$(mktemp -d "${TMPDIR:-/tmp}/maw-integration.XXXXXX")
 image_cache="$log_directory/images"
 owner_cache="$HOME/Library/Caches/maw/images"
 distros="$HOME/Library/Application Support/maw/distros"
+# The daemon's settings, such as the default distribution (MawPaths.stateFile).
+state_file="$HOME/Library/Application Support/maw/state.json"
+state_saved="$log_directory/state.json.before"
+# Whether state.json existed before the run: "present", "absent", or "" until it is saved.
+state_before=""
 # The test daemon's staging directories (MawPaths.stagingDirectory(label:)).
 staging="$distros/.staging/$label"
 prefix="maw-it-$(date +%s)"
@@ -182,6 +191,27 @@ check_nothing_left() {
     done
 }
 
+# Puts state.json back as it was before the run, through a rename, so that the daemons never
+# read a partial file. Does nothing if the run ended before it was saved. Returns non-zero if
+# the file could not be put back.
+restore_state_file() {
+    case "$state_before" in
+        present)
+            temporary="$state_file.integration-test.$$"
+            if cp -p "$state_saved" "$temporary" && mv -f "$temporary" "$state_file"; then
+                return 0
+            fi
+            rm -f "$temporary"
+            echo "integration-test.sh: could not restore $state_file; the saved copy is" \
+                "$state_saved." >&2
+            return 1
+            ;;
+        absent)
+            rm -f "$state_file"
+            ;;
+    esac
+}
+
 cleanup() {
     exit_status=$?
     keep_logs=false
@@ -201,6 +231,11 @@ cleanup() {
         exit_status=1
     fi
     "$bin_path/mawd" uninstall --label "$label" > /dev/null 2>&1 || true
+    # With the test daemon gone, nothing of this run writes state.json any more.
+    if ! restore_state_file; then
+        keep_logs=true
+        exit_status=1
+    fi
     for directory in "$distros/$prefix"* "$staging/$prefix"*; do
         if [ -e "$directory" ] || [ -L "$directory" ]; then
             rm -rf "$directory"
@@ -234,6 +269,12 @@ cleanup() {
     fi
     exit "$exit_status"
 }
+if [ -f "$state_file" ]; then
+    cp -p "$state_file" "$state_saved"
+    state_before=present
+else
+    state_before=absent
+fi
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
