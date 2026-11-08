@@ -50,6 +50,32 @@
             }
         }
 
+        /// The metadata of the installed distribution that `name` names without regard to case,
+        /// or `nil` if none does. Its `name` is the stored spelling.
+        ///
+        /// The exact lookup comes first, and on a case-insensitive volume it already finds
+        /// `ubuntu-24.04` for `Ubuntu-24.04`. Only when it finds nothing are the installed
+        /// distributions scanned, so that a session that names its distribution exactly reads
+        /// nothing more than that distribution's metadata. The scan covers case-sensitive
+        /// volumes; of several matches, the first by name wins.
+        public func installedDistribution(named name: DistroName) throws(MawError)
+            -> DistroMetadata?
+        {
+            try installedDistribution(named: name, scanning: installed)
+        }
+
+        /// `installedDistribution(named:)`, with the scan given, so that the tests can see
+        /// whether it runs.
+        func installedDistribution(
+            named name: DistroName, scanning installed: () -> [DistroMetadata]
+        ) throws(MawError) -> DistroMetadata? {
+            if let metadata = try metadata(for: name) {
+                return metadata
+            }
+            let wanted = name.rawValue.lowercased()
+            return installed().first { $0.name.rawValue.lowercased() == wanted }
+        }
+
         public func isInstalled(_ name: DistroName) -> Bool {
             FileManager.default.fileExists(
                 atPath: paths.metadataFile(for: name).path(percentEncoded: false))
