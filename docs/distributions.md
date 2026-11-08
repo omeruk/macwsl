@@ -159,6 +159,6 @@ Phase 06b adds `maw --unregister`. Until then, a distribution is removed by stop
 and deleting its directory:
 
 ```sh
-maw --shutdown
+maw --terminate <name>
 rm -r "$HOME/Library/Application Support/maw/distros/<name>"
 ```

@@ -192,11 +192,11 @@ does; `maw --list --quiet` prints nothing and exits with 0. With none running,
 
 ### Removing a distribution
 
-`maw --unregister` arrives in phase 06b. Until then, stop the virtual machines and delete the
-distribution's directory, which permanently deletes its disk:
+`maw --unregister` arrives in phase 06b. Until then, stop the distribution's virtual machine
+and delete its directory, which permanently deletes its disk:
 
 ```sh
-maw --shutdown
+maw --terminate Ubuntu-24.04
 rm -r "$HOME/Library/Application Support/maw/distros/Ubuntu-24.04"
 ```
 
