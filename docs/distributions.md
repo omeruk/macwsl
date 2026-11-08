@@ -123,7 +123,12 @@ them. WSL's own units skip themselves outside WSL (`ConditionVirtualization=wsl`
 
 [Decision record 0013](decisions/0013-systemd-and-the-agent.md) describes the boot sequence:
 the initramfs sets the clock, checks and mounts the disk, supplies the guest agent as a runtime
-systemd unit in a tmpfs on `/run`, and switches to the distribution's systemd. The agent starts
+systemd unit in a tmpfs on `/run`, and switches to the distribution's systemd. In the same
+directory, `/run/systemd/system`, it writes the drop-in
+`systemd-timesyncd.service.d/maw-order.conf`, which orders `systemd-timesyncd` after
+`systemd-resolved`, so that a shutdown soon after a boot does not wait 5 s for
+`systemd-timesyncd`. Both are gone when the machine stops, and neither is written into the
+distribution's own files. The agent starts
 with systemd, so that a session can begin while other units still start. Each machine gets every
 CPU of the Mac and half of its memory, and reaches the network through NAT.
 

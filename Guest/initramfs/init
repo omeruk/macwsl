@@ -10,8 +10,9 @@
 # 5. With maw.test=agent, runs the guest agent's self-test, which prints
 #    "maw-agent self-test: ok" on success, and powers off. The QEMU smoke test uses this.
 # 6. With maw.root=<device>, boots the distribution on that disk: checks it with
-#    maw-check-root, mounts it, provides the guest agent to it as a runtime systemd unit, and
-#    switches to its systemd. A failed check powers the machine off.
+#    maw-check-root, mounts it, provides the guest agent to it as a runtime systemd unit,
+#    orders systemd-timesyncd after systemd-resolved with a runtime drop-in, and switches to
+#    its systemd. A failed check powers the machine off.
 #    docs/decisions/0013-systemd-and-the-agent.md describes this path.
 # 7. Otherwise, writes /etc/inittab and executes busybox init, which becomes PID 1 and
 #    supervises the guest agent. With maw.debug=shell, init also runs a shell on /dev/hvc0.
@@ -96,6 +97,19 @@ KillMode=process
 OOMScoreAdjust=-900
 UNIT
     ln -s ../maw-agent.service /sysroot/run/systemd/system/sysinit.target.wants/maw-agent.service
+
+    # Ubuntu does not order systemd-timesyncd and systemd-resolved, so systemd stops both at
+    # once. A shutdown soon after boot, while timesyncd's first lookup is pending, then waits
+    # 5 s for timesyncd when resolved exits first. Ordered after resolved, timesyncd stops
+    # first. Without this drop-in the distribution still boots, so a failure only warns.
+    # docs/decisions/0013-systemd-and-the-agent.md records the measurements.
+    timesyncd_dropins=/sysroot/run/systemd/system/systemd-timesyncd.service.d
+    if ! {
+        mkdir -p "$timesyncd_dropins" &&
+            printf '[Unit]\nAfter=systemd-resolved.service\n' > "$timesyncd_dropins/maw-order.conf"
+    }; then
+        echo "maw-initramfs: could not order systemd-timesyncd after systemd-resolved" >&2
+    fi
 
     echo "maw-initramfs: starting systemd at $(cut -d ' ' -f 1 /proc/uptime) s"
     for directory in dev proc sys; do

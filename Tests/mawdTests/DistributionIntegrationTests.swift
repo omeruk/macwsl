@@ -97,6 +97,42 @@ struct DistributionIntegrationTests {
         #expect(["running", "degraded"].contains(state), "\(result.output)")
     }
 
+    /// /init orders systemd-timesyncd after systemd-resolved with a runtime drop-in, so that a
+    /// shutdown soon after a boot does not wait for systemd-timesyncd (decision record 0013,
+    /// item 7). The drop-in lies in /run and is not written into the distribution, and the
+    /// ordering it adds forms no ordering cycle.
+    @Test func ordersTimesyncdAfterResolvedFromRun() async throws {
+        let dropIn = "systemd-timesyncd.service.d/maw-order.conf"
+        // As root, systemctl uses systemd's private socket rather than the system bus, which a
+        // session that boots the machine can reach before the bus exists. The socket appears
+        // early in the boot; the loop tries 250 times, 20 ms apart, and says if it never does.
+        let script = """
+            for i in $(seq 250); do [ -S /run/systemd/private ] && break; sleep 0.02; done
+            [ -S /run/systemd/private ] || echo "no-private-socket"
+            systemctl show systemd-timesyncd.service -p After -p DropInPaths
+            test -e /etc/systemd/system/\(dropIn) && echo "in-etc"
+            journalctl -b -o cat --no-pager | grep -qi "ordering cycle" && echo "ordering-cycle"
+            true
+            """
+        let result = try await maw.session(["-u", "root", "--", script])
+        #expect(result.status == 0, "\(result.standardError)")
+        var properties: [String: [String]] = [:]
+        for line in result.lines {
+            guard let equals = line.firstIndex(of: "=") else { continue }
+            properties[String(line[..<equals])] =
+                line[line.index(after: equals)...].split(separator: " ").map(String.init)
+        }
+        #expect(
+            properties["After", default: []].contains("systemd-resolved.service"),
+            "\(result.output)")
+        #expect(
+            properties["DropInPaths", default: []].filter { $0.hasSuffix("/maw-order.conf") }
+                == ["/run/systemd/system/\(dropIn)"], "\(result.output)")
+        for marker in ["no-private-socket", "in-etc", "ordering-cycle"] {
+            #expect(!result.lines.contains(marker), "\(result.output)")
+        }
+    }
+
     @Test func updatesThePackageLists() async throws {
         let first = try await maw.sudo("apt-get update -q")
         #expect(first.status == 0, "\(first.output)\(first.standardError)")
