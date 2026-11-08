@@ -249,9 +249,13 @@ struct MawIntegration: Sendable {
         consoleLogLines(of: name).filter { $0.firstMatch(of: #/^\[mawd\] \S+ starting /#) != nil }
     }
 
-    /// The lines in which the test daemon noted how a machine of `name` shut down.
+    /// The lines in which the test daemon noted how a machine of `name` shut down, one per
+    /// shutdown. A shutdown that falls back from the guest agent first notes why ("shutdown:
+    /// the agent was not used: ..."); only its outcome, clean or forced, is counted.
     func shutdownLines(of name: String) -> [String] {
-        consoleLogLines(of: name).filter { $0.hasPrefix("[mawd] ") && $0.contains(" shutdown: ") }
+        consoleLogLines(of: name).filter {
+            $0.firstMatch(of: #/^\[mawd\] \S+ shutdown: (clean|forced) /#) != nil
+        }
     }
 
     /// The distribution directory of `name` and the test daemon's staging directories for it,
