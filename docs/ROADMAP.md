@@ -11,7 +11,7 @@ pass on a real Apple Silicon Mac.
 | 04 | Guest agent                    | `debug-boot --exec` and `--shell` run commands in the guest over vsock; clean shutdown | Done    |
 | 04b | CLI and daemon (XPC)          | `maw -- uname -a` works through the daemon over XPC                      | Done    |
 | 05 | Distro install                 | `maw --install Ubuntu-24.04`: download, verify, provision, first user    | Done    |
-| 06a | Distro management             | list, set-default, terminate                                             | Planned |
+| 06a | Distro management             | list, set-default, terminate                                             | Done    |
 | 06b | Distro removal and transfer   | unregister, export, import                                               | Planned |
 | 07 | File sharing and paths         | `/mnt/mac` via virtiofs, cwd translation, `mawpath`                      | Planned |
 | 08 | Networking                     | Port forwarding and `localhost` access from macOS, DNS under VPNs (NAT and DHCP arrived in 05) | Planned |
