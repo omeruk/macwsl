@@ -128,7 +128,9 @@ struct MawIntegration: Sendable {
     }
 
     /// Installs `\(prefix)-<suffix>` from the cached image, runs `body` with its name, and
-    /// removes it afterwards, also when `body` throws.
+    /// removes it afterwards, also when `body` throws. When the removal after a failure fails
+    /// too, it is recorded as an issue of its own and the original error is thrown, so that the
+    /// first failure is the one reported.
     func withDistribution(
         _ suffix: String, _ body: (_ name: String) async throws -> Void
     ) async throws {
@@ -138,7 +140,11 @@ struct MawIntegration: Sendable {
             try #require(install.status == 0, "\(install.output)\(install.standardError)")
             try await body(name)
         } catch {
-            try await remove(name)
+            do {
+                try await remove(name)
+            } catch let removal {
+                Issue.record(removal, "removing \(name) after the failure above")
+            }
             throw error
         }
         try await remove(name)
