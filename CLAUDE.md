@@ -140,6 +140,10 @@ Integration tests that boot a real VM are tagged `.integration` and only run on 
   available. Fix every confirmed finding, or record it with its reason under "Known
   limitations and follow-up work". State in the pull request that both reviews ran and what
   they found.
+- Record every item that a pull request defers, with its phase, in
+  `docs/known-limitations.md` in the same branch, and remove an item in the pull request that
+  resolves it. A pull request's own section is not kept in the history, because pull requests
+  are squash-merged with their Summary only.
 - Keep `docs/security.md` current. A phase that adds a way into the guest or the host (a
   file share, a network path, an interface for clients, a downloaded artifact) updates it
   in the same branch.

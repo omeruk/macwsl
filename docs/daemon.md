@@ -377,6 +377,8 @@ log, and prints its path. Otherwise it deletes it.
 
 ## Known limitations
 
+[docs/known-limitations.md](known-limitations.md) lists every deferred item, with its phase.
+
 - A connection that arrives while an idle daemon is exiting is interrupted, and the command
   fails with `daemonUnreachable`; running it again starts a new daemon. The window is the time
   between the idle decision and the process's exit.
