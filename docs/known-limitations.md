@@ -210,6 +210,14 @@ from `main`.
     `MawIntegration.remove` in `Tests/mawdTests/MawIntegration.swift` uses `maw --terminate`.
     Pull request #22, "Known limitations and follow-up work".
   - **Phase:** 12b. Stop only the installed test distribution, with `maw --terminate <name>`.
+- **`HandshakeTests.exchangesMatchingVersions()` timed out once in CI.**
+  - **Seen:** The test exceeded its 5-second deadline, after 10.277 s, on a commit that changed
+    only Markdown. It passed on the re-run of the job and locally. The cause is presumed to be a
+    starved CI runner, and is not established.
+  - **Evidence:** `Tests/MawProtocolTests/HandshakeTests.swift:22`; CI run 42512716425 of pull
+    request #22, first attempt.
+  - **Phase:** 12b. If it recurs, record the runner's load and the test's timings, so that the
+    cause can be established.
 
 ## Phase 13: Packaging and release
 
