@@ -14,8 +14,8 @@ from `main`.
 
 - **No `maw --unregister`, `maw --export`, or `maw --import`.**
   - **Seen:** The three commands fail with `notImplemented`: "--unregister is not implemented
-    yet; phase 06b adds it." A distribution is removed by hand: `maw --shutdown`, then deleting
-    its directory.
+    yet; phase 06b adds it." A distribution is removed by hand: `maw --terminate <name>`, then
+    deleting its directory.
   - **Evidence:** `Sources/maw/Action.swift:29`; pull request #19, "Known limitations and
     follow-up work"; [docs/distributions.md, "Removing a distribution by
     hand"](distributions.md#removing-a-distribution-by-hand) and `README.md`, "Removing a
