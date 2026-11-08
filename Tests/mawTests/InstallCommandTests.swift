@@ -479,8 +479,8 @@ extension InstallCancellationTests {
                 + "maw: The installation of Ubuntu-24.04 had already ended when maw asked the "
                 + "daemon to cancel it, but its result did not reach maw, so it is not known "
                 + "whether Ubuntu-24.04 was installed.\n"
-                + "maw -d Ubuntu-24.04 -e true succeeds if it is installed, and otherwise says "
-                + "that it is not; then run maw --install again.\n")
+                + "maw --list shows whether Ubuntu-24.04 was installed. If it was not, run\n"
+                + "maw --install again.\n")
         #expect(!(result.output + result.error).contains("already finished"))
     }
 }
@@ -772,8 +772,8 @@ extension InstallPromptTests {
                 == """
                 maw: The daemon has not yet confirmed the cancellation of the installation of
                 Ubuntu-24.04. The installation may still be ending.
-                Wait a moment, then run maw -d Ubuntu-24.04 -e true. It succeeds if
-                Ubuntu-24.04 was installed after all, and otherwise says that it is not.
+                Wait a moment, then run maw --list. It lists Ubuntu-24.04 if the installation
+                finished after all.
 
                 """)
         for line in failure.output.split(separator: "\n") {

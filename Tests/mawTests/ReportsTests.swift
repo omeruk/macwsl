@@ -171,9 +171,9 @@ import Testing
     }
 
     @Test(arguments: [
-        (["--export", "Ubuntu", "u.tar"], "--export", "06"),
-        (["--import", "Ubuntu", "u.tar"], "--import", "06"),
-        (["--unregister", "Ubuntu"], "--unregister", "06"),
+        (["--export", "Ubuntu", "u.tar"], "--export", "06b"),
+        (["--import", "Ubuntu", "u.tar"], "--import", "06b"),
+        (["--unregister", "Ubuntu"], "--unregister", "06b"),
     ])
     func namesThePhaseThatAddsIt(_ arguments: [String], _ feature: String, _ phase: String)
         async throws

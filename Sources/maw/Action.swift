@@ -26,7 +26,7 @@ enum Action: Equatable, Sendable {
         case .shell, .run, .exec, .shutdown, .status, .version: "04b"
         case .install, .list(.online): "05"
         case .list(.installed), .setDefault, .terminate: "06a"
-        case .export, .importDistro, .unregister: "06"
+        case .export, .importDistro, .unregister: "06b"
         }
     }
 

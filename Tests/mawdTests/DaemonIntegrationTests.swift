@@ -248,7 +248,7 @@ struct DaemonIntegrationTests {
         #expect(result.status == 1)
         #expect(
             result.standardError.contains(
-                "maw: The session ended because the virtual machine \(distribution) stopped: "
+                "maw: The session ended because the virtual machine \(distribution) stopped:\n"
                     + "maw --shutdown was run."),
             "\(result.standardError)")
         try expectCleanShutdownInConsoleLog()

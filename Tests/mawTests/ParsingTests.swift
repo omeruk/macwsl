@@ -203,7 +203,7 @@ func distro(_ name: String) throws -> DistroName {
 
     @Test func everyActionReportsThatItIsNotImplemented() async throws {
         let command = try Maw.parse(ArgumentNormalizer.normalize(["--unregister", "Ubuntu"]))
-        await #expect(throws: MawError.notImplemented(feature: "--unregister", phase: "06")) {
+        await #expect(throws: MawError.notImplemented(feature: "--unregister", phase: "06b")) {
             try await command.run()
         }
     }
