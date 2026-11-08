@@ -182,6 +182,22 @@ from `main`.
   - **Phase:** None yet. Pull request #19 assigned it to phase 06;
     `prompts/06a-distro-management.md` places it out of the scope of 06a and does not assign it
     to 06b.
+- **A clean shutdown through the agent sometimes misses its time limit after a fresh boot.**
+  - **Seen:** In two full runs of `scripts/integration-test.sh` on 2026-11-08 (phase 06a),
+    8 and 10 of 46 shutdowns of distribution machines did not finish within 5000 ms of the
+    agent's acknowledgement, and the daemon fell back to Virtualization.framework's stop
+    request. Each still ended cleanly, after about 5.6 s instead of about 0.6 s. Every affected
+    machine was asked to stop within about 6 seconds of its start, in the second run also
+    after systemd reported `running` or `degraded`. In each case the console log shows that
+    systemd reached `poweroff.target`, and the guest powered off only after the time limit.
+    `maw --shutdown`, `maw --terminate`, and idle stops use the same sequence. In the second
+    run, all five terminates of `measuresTerminateOfARunningIdleDistribution` fell back, so
+    that test missed its target of 1 s; the measurement for the pull request is part 5's.
+  - **Evidence:** `Sources/MawVirtualization/VirtualMachine.swift:216` (the sequence, unchanged
+    by phase 06a); the console logs that the run kept. The cause is not determined. The next
+    step is to time the guest's final shutdown stage, after `poweroff.target`, on a machine
+    stopped within a few seconds of its boot.
+  - **Phase:** None yet.
 - **Guest-opened vsock behavior is measured on one Mac only.**
   - **Seen:** That a guest-opened connection does not stop the machine's vsock traffic when the
     host leaves it unread is measured only on an M1 Pro with macOS 27.0.1. macOS 14 to 26 are
