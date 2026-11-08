@@ -17,12 +17,13 @@ import Testing
         let listener = XPCServiceListener.anonymous()
         private let task: Task<Void, Never>
 
-        init(factory: FakeFactory = FakeFactory()) {
+        init(factory: FakeFactory = FakeFactory(), store: DistributionStore? = nil) {
             self.factory = factory
             registry = MachineRegistry(clock: clock, factory: factory.factory)
             service = DaemonService(
                 clock: clock, registry: registry,
-                lifetime: DaemonLifetime(clock: clock) {}, canRunVirtualMachines: true)
+                lifetime: DaemonLifetime(clock: clock) {}, canRunVirtualMachines: true,
+                store: store)
             task = Task { [service, listener] in await service.serve(listener) }
             listener.activate()
         }

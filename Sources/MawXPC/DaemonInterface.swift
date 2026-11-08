@@ -8,7 +8,7 @@
     /// (see `InterfaceCoding`). The client's first request on every connection is `hello`.
     public enum DaemonInterface {
         /// Incremented on every change to the messages below, their fields, or their meaning.
-        public static let version: UInt32 = 2
+        public static let version: UInt32 = 3
 
         /// The LaunchAgent label, which is also the name of the daemon's Mach service.
         public static let defaultLabel = "dev.maw.mawd"
@@ -52,6 +52,16 @@
         /// Cancels this connection's installation. Replied to once its traces are removed, or once
         /// it has finished if it had already registered the distribution.
         case cancelInstall
+        /// Lists every installed distribution with its machine's state, and the default. It
+        /// starts no machine.
+        case listDistributions
+        /// Records the installed distribution `name` names, matched without regard to case, as
+        /// the default. It starts no machine. The reply carries the stored spelling.
+        case setDefault(DistroName)
+        /// Stops the machine of the installed distribution `name` names, matched without
+        /// regard to case, and ends its sessions. Replied to once the machine has stopped. A
+        /// machine that is starting finishes its start first.
+        case terminate(DistroName)
 
         /// How the request is named in error messages.
         public var displayName: String {
@@ -63,6 +73,9 @@
             case .install: "the installation"
             case .checkInstall: "checking the installation"
             case .cancelInstall: "cancelling the installation"
+            case .listDistributions: "listing the distributions"
+            case .setDefault: "setting the default distribution"
+            case .terminate: "terminating the distribution"
             }
         }
     }
@@ -199,6 +212,12 @@
         /// its traces removed, and false if nothing was being installed or the installation had
         /// already registered the distribution and finished.
         case installCancelled(wasRunning: Bool)
+        /// The reply to `listDistributions`.
+        case distributions(DistributionList)
+        /// The reply to `setDefault`, with the stored spelling of the name.
+        case defaultSet(DistroName)
+        /// The reply to `terminate`, once the machine has stopped.
+        case terminated(TerminateSummary)
         case failure(MawError)
     }
 
@@ -298,6 +317,36 @@
             self.stoppedMachines = stoppedMachines
             self.endedSessions = endedSessions
         }
+    }
+
+    /// The reply to `listDistributions`.
+    public struct DistributionList: Codable, Equatable, Sendable {
+        /// Every installed distribution, by stored name and sorted by name.
+        public var distributions: [DistributionEntry]
+        /// What `maw` opens without `-d`: the default that `state.json` records if it is
+        /// installed, otherwise the first installed distribution by name; `nil` with nothing
+        /// installed.
+        public var defaultDistribution: DistroName?
+
+        public init(distributions: [DistributionEntry], defaultDistribution: DistroName?) {
+            self.distributions = distributions
+            self.defaultDistribution = defaultDistribution
+        }
+    }
+
+    public struct DistributionEntry: Codable, Equatable, Sendable {
+        public var name: DistroName
+        public var state: DistributionState
+
+        public init(name: DistroName, state: DistributionState) {
+            self.name = name
+            self.state = state
+        }
+    }
+
+    /// The state of a distribution's machine.
+    public enum DistributionState: String, Codable, Equatable, Sendable, CaseIterable {
+        case stopped, starting, running, stopping
     }
 
     /// The reply to `terminate`.
