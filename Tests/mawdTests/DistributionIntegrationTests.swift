@@ -97,6 +97,32 @@ struct DistributionIntegrationTests {
         #expect(["running", "degraded"].contains(state), "\(result.output)")
     }
 
+    /// /init orders systemd-timesyncd after systemd-resolved with a runtime drop-in, so that a
+    /// shutdown soon after a boot does not wait for systemd-timesyncd (decision record 0013,
+    /// item 7). The drop-in lies in /run and is not written into the distribution.
+    @Test func ordersTimesyncdAfterResolvedFromRun() async throws {
+        let dropIn = "systemd-timesyncd.service.d/maw-order.conf"
+        let result = try await maw.session([
+            "-e", "systemctl", "show", "systemd-timesyncd.service", "-p", "After", "-p",
+            "DropInPaths",
+        ])
+        #expect(result.status == 0, "\(result.standardError)")
+        var properties: [String: [String]] = [:]
+        for line in result.lines {
+            guard let equals = line.firstIndex(of: "=") else { continue }
+            properties[String(line[..<equals])] =
+                line[line.index(after: equals)...].split(separator: " ").map(String.init)
+        }
+        #expect(
+            properties["After", default: []].contains("systemd-resolved.service"),
+            "\(result.output)")
+        let dropIns = properties["DropInPaths", default: []]
+        #expect(dropIns.contains("/run/systemd/system/\(dropIn)"), "\(result.output)")
+        #expect(!dropIns.contains { $0.hasPrefix("/etc/") }, "\(result.output)")
+        let inEtc = try await maw.session(["-e", "test", "-e", "/etc/systemd/system/\(dropIn)"])
+        #expect(inEtc.status == 1, "\(inEtc.output)\(inEtc.standardError)")
+    }
+
     @Test func updatesThePackageLists() async throws {
         let first = try await maw.sudo("apt-get update -q")
         #expect(first.status == 0, "\(first.output)\(first.standardError)")
