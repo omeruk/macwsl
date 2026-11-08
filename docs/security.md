@@ -30,6 +30,11 @@ code signing requirement `identifier "dev.maw.maw" or identifier "dev.maw.mawd"`
   against stale or unrelated builds, not against malicious programs. Until phase 13 signs with a
   Developer ID, **the same-user check is the boundary**: only processes of the user who already
   controls maw can use it.
+- Since interface version 3, a client can also change the default distribution
+  (`setDefault`) and stop one distribution (`terminate`). Any process of the same user could
+  already do both: `shutdown` stops every distribution, and `state.json`, which records the
+  default, belongs to that user. The same-user check therefore stays the boundary. Neither
+  request starts a machine, and both accept only names of installed distributions.
 - Every message carries the interface version, which is checked before the body is decoded.
   Bodies are JSON decoded into fixed types; a malformed body fails the request.
 - Phase 13 adds the team identifier to the requirement, which only Apple's certificate chain
