@@ -102,9 +102,13 @@ struct DistributionIntegrationTests {
     /// item 7). The drop-in lies in /run and is not written into the distribution.
     @Test func ordersTimesyncdAfterResolvedFromRun() async throws {
         let dropIn = "systemd-timesyncd.service.d/maw-order.conf"
+        // As root, systemctl uses systemd's private socket rather than the system bus, which a
+        // session that boots the machine can reach before the bus exists. The socket appears
+        // early in the boot; the loop waits for it for at most 5 seconds.
         let result = try await maw.session([
-            "-e", "systemctl", "show", "systemd-timesyncd.service", "-p", "After", "-p",
-            "DropInPaths",
+            "-u", "root", "--",
+            "for i in $(seq 250); do [ -S /run/systemd/private ] && break; sleep 0.02; done;"
+                + " systemctl show systemd-timesyncd.service -p After -p DropInPaths",
         ])
         #expect(result.status == 0, "\(result.standardError)")
         var properties: [String: [String]] = [:]
