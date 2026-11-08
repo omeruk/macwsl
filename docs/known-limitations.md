@@ -28,6 +28,13 @@ from `main`.
   - **Evidence:** `Guest/initramfs/init:78`; pull request #19, "Review results", CR-7.
     Installation from the catalog cannot produce such a distribution.
   - **Phase:** 06b. `--import` checks `/sbin/init` and refuses such a file system by name.
+- **The `maw --help` example of `--export` names the alias `Ubuntu`.**
+  - **Seen:** `maw --help` shows `maw --export Ubuntu ubuntu.tar`. `Ubuntu` is a catalog alias,
+    not an installed name, and phase 06a does not accept aliases where a command needs an
+    installed distribution.
+  - **Evidence:** `Sources/maw/Maw.swift:45`; pull request #22, "Known limitations and
+    follow-up work".
+  - **Phase:** 06b, which implements `--export` and gives the example an installed name.
 
 ## Phase 07: File sharing and paths
 
@@ -176,6 +183,33 @@ from `main`.
     limitations and follow-up work".
   - **Phase:** 12b. Measure the waits with `SuspendingClock`, as `Launchctl.waitUntilRemoved`
     does.
+- **Some shutdowns soon after a boot take about 2.6 s.**
+  - **Seen:** A few clean shutdowns through the agent, of machines that had booted shortly
+    before, took about 2.6 s, against about 0.3 to 1.0 s for the others. They stayed within the
+    daemon's limit (`VirtualMachineHandle.stopTimeout`) and did not fall back to
+    Virtualization.framework's stop request. The cause is not measured.
+  - **Evidence:** Phase 06a on 2026-11-08 (M1 Pro, macOS 27.0.1): two terminates of 2,676 ms,
+    in the full integration run of part 5, and 2,564 ms, in the owner's third check, about 10 s
+    after that machine's boot; and one shutdown of 2,683 ms in part 4c. Pull request #22,
+    "Notes for reviewers".
+  - **Phase:** 12b. Measure where these shutdowns spend the time, for example in each boot's
+    journal.
+- **Two dial-back errors suggest `maw --shutdown`.**
+  - **Seen:** `sessionDialBackFailed` and `sessionDialBackMissing` suggest restarting every
+    virtual machine with `maw --shutdown`, where `maw --terminate <name>` would restart only
+    the one affected. The errors carry no distribution name.
+  - **Evidence:** `Sources/MawCore/MawError.swift:488` and `:492`; pull request #22, "Known
+    limitations and follow-up work".
+  - **Phase:** 12b. Carry the distribution's name in both errors, which changes `MawError`
+    and the daemon interface, and suggest `maw --terminate <name>`.
+- **`RootFileSystemIntegrationTests` stops every machine.**
+  - **Seen:** Its `installAndStop` runs `maw --shutdown`, which stops every machine of the test
+    daemon, where the other integration tests stop only their own distribution with
+    `maw --terminate`.
+  - **Evidence:** `Tests/mawdTests/RootFileSystemIntegrationTests.swift:106`;
+    `MawIntegration.remove` in `Tests/mawdTests/MawIntegration.swift` uses `maw --terminate`.
+    Pull request #22, "Known limitations and follow-up work".
+  - **Phase:** 12b. Stop only the installed test distribution, with `maw --terminate <name>`.
 
 ## Phase 13: Packaging and release
 
