@@ -252,11 +252,21 @@ struct DistroManagementIntegrationTests {
 
     /// Each run boots the test distribution and waits for systemd to finish starting, so that
     /// the machine runs and is idle, and then terminates it before the idle timeout would.
+    ///
+    /// The agent accepts sessions before systemd has created the system bus's socket, and
+    /// `systemctl` as the default user fails at once without it ("Failed to connect to bus"),
+    /// so the session waits for the socket, for at most 30 seconds, before it asks systemd.
     @Test func measuresTerminateOfARunningIdleDistribution() async throws {
         var times: [Double] = []
         for _ in 0..<5 {
-            let booted = try await maw.session(["--", "systemctl is-system-running --wait"])
-            #expect(["running", "degraded"].contains(booted.lines.first ?? ""), "\(booted.output)")
+            let booted = try await maw.session([
+                "--",
+                "for i in $(seq 300); do [ -S /run/dbus/system_bus_socket ] && break; sleep 0.1;"
+                    + " done; systemctl is-system-running --wait",
+            ])
+            #expect(
+                ["running", "degraded"].contains(booted.lines.first ?? ""),
+                "\(booted.status) \(booted.output)\(booted.standardError)")
             let shutdowns = maw.shutdownLines(of: distribution).count
             let (status, elapsed) = try await maw.timed(["--terminate", distribution])
             #expect(status == 0)
