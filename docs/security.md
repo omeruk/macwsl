@@ -235,6 +235,8 @@ message of its own failed start.
 
 ## Known gaps
 
+[docs/known-limitations.md](known-limitations.md) lists every deferred item, with its phase.
+
 - The ad-hoc code signing requirement does not identify maw's builds; phase 13.
 - Guest files come from CI artifacts rather than signed releases; phase 13.
 - The password's copies in memory are not wiped (see above).

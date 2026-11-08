@@ -254,4 +254,6 @@ Xcode's project: `swift test --package-path App/MawTerminalKit`.
   changes in them
 - [`docs/security.md`](docs/security.md): every way into the guest and the host, and what
   protects it
+- [`docs/known-limitations.md`](docs/known-limitations.md): known limitations and deferred
+  work, by the phase that owns them
 - [`docs/ROADMAP.md`](docs/ROADMAP.md): phases and their status
