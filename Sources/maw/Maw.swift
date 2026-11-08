@@ -19,7 +19,8 @@ struct Maw: AsyncParsableCommand {
             maw [-d <distro>] [-u <user>] [--cd <directory>] -- <command> [<argument>...]
             maw [-d <distro>] [-u <user>] [--cd <directory>] -e <command> [<argument>...]
             maw --install [<distro>] [--name <name>] [-u <user>]
-            maw --list [--verbose | --online]
+            maw --list [--running] [--verbose | --quiet]
+            maw --list --online
             maw --set-default <distro>
             maw --terminate <distro>
             maw --shutdown
@@ -237,13 +238,27 @@ struct ManagingOptions: ParsableArguments {
         transform: { try DistroName($0) })
     var name: DistroName?
 
-    @Flag(name: CLIOption.list.names, help: "List installed distributions.")
+    @Flag(
+        name: CLIOption.list.names,
+        help: "List the installed distributions. * marks the default.")
     var list = false
 
     @Flag(
         name: CLIOption.verbose.names,
-        help: "With --list: also show each distribution's state and whether it is the default.")
+        help: "With --list: also show the state of each distribution's virtual machine.")
     var verbose = false
+
+    @Flag(
+        name: CLIOption.running.names,
+        help: ArgumentHelp(
+            "With --list: list only the distributions whose virtual machine runs.",
+            discussion: "This includes virtual machines that are starting or stopping."))
+    var running = false
+
+    @Flag(
+        name: CLIOption.quiet.names,
+        help: "With --list: print only the names, one per line.")
+    var quiet = false
 
     @Flag(
         name: CLIOption.online.names,

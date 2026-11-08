@@ -97,12 +97,40 @@ func distro(_ name: String) throws -> DistroName {
 
     @Test(arguments: [["-l"], ["--list"]])
     func lists(_ arguments: [String]) throws {
-        #expect(try action(arguments) == .list(.installed(verbose: false)))
+        #expect(try action(arguments) == .list(.installed(ListOptions())))
     }
 
     @Test(arguments: [["-l", "-v"], ["--list", "--verbose"], ["-l", "--verbose"], ["-lv"]])
     func listsVerbosely(_ arguments: [String]) throws {
-        #expect(try action(arguments) == .list(.installed(verbose: true)))
+        #expect(try action(arguments) == .list(.installed(ListOptions(verbose: true))))
+    }
+
+    @Test(arguments: [["-l", "--running"], ["--list", "--running"], ["--running", "-l"]])
+    func listsTheRunningDistributions(_ arguments: [String]) throws {
+        #expect(try action(arguments) == .list(.installed(ListOptions(running: true))))
+    }
+
+    @Test(arguments: [["-l", "-q"], ["--list", "--quiet"], ["-lq"], ["-q", "-l"], ["-ql"]])
+    func listsNamesOnly(_ arguments: [String]) throws {
+        #expect(try action(arguments) == .list(.installed(ListOptions(quiet: true))))
+    }
+
+    @Test(arguments: [
+        ["-l", "--running", "-v"], ["-l", "--running", "--verbose"], ["-lv", "--running"],
+        ["--running", "-l", "-v"], ["-l", "-v", "--running"],
+    ])
+    func listsTheRunningDistributionsVerbosely(_ arguments: [String]) throws {
+        #expect(
+            try action(arguments) == .list(.installed(ListOptions(verbose: true, running: true))))
+    }
+
+    @Test(arguments: [
+        ["-l", "--running", "-q"], ["-l", "--running", "--quiet"], ["-lq", "--running"],
+        ["--running", "-q", "-l"],
+    ])
+    func listsTheNamesOfTheRunningDistributions(_ arguments: [String]) throws {
+        #expect(
+            try action(arguments) == .list(.installed(ListOptions(running: true, quiet: true))))
     }
 
     @Test(arguments: [["-l", "-o"], ["--list", "--online"]])
@@ -110,16 +138,33 @@ func distro(_ name: String) throws -> DistroName {
         #expect(try action(arguments) == .list(.online))
     }
 
+    @Test func namesEachListingAsItWasRequested() {
+        #expect(ListOptions().displayName == "--list")
+        #expect(ListOptions(verbose: true).displayName == "--list --verbose")
+        #expect(
+            ListOptions(running: true, quiet: true).displayName == "--list --running --quiet")
+        #expect(
+            ListOptions(verbose: true, running: true).displayName == "--list --running --verbose")
+    }
+
     // MARK: Management
 
     @Test func setsTheDefault() throws {
         #expect(try action("-s", "Ubuntu") == .setDefault(distro("Ubuntu")))
         #expect(try action("--set-default", "Ubuntu") == .setDefault(distro("Ubuntu")))
+        #expect(try action("--set-default=Ubuntu") == .setDefault(distro("Ubuntu")))
     }
 
     @Test func terminates() throws {
         #expect(try action("-t", "Ubuntu") == .terminate(distro("Ubuntu")))
         #expect(try action("--terminate", "Ubuntu") == .terminate(distro("Ubuntu")))
+        #expect(try action("--terminate=Ubuntu") == .terminate(distro("Ubuntu")))
+    }
+
+    /// The value of `-s` and `-t` is a name, even when it is spelled like an option.
+    @Test func readsTheNameAfterSetDefaultAndTerminateUnexamined() throws {
+        #expect(try action("-t", "q") == .terminate(distro("q")))
+        #expect(try action("-s", "v") == .setDefault(distro("v")))
     }
 
     @Test func shutsDown() throws {

@@ -35,8 +35,7 @@ enum Action: Equatable, Sendable {
         case .shell: "opening a shell"
         case .run, .exec: "running a command"
         case .install: "--install"
-        case .list(.installed(verbose: false)): "--list"
-        case .list(.installed(verbose: true)): "--list --verbose"
+        case .list(.installed(let options)): options.displayName
         case .list(.online): "--list --online"
         case .setDefault: "--set-default"
         case .terminate: "--terminate"
@@ -67,10 +66,36 @@ struct Session: Equatable, Sendable {
 }
 
 enum ListMode: Equatable, Sendable {
-    /// Installed distributions; `verbose` adds state and details.
-    case installed(verbose: Bool)
+    /// Installed distributions, as `ListOptions` selects them.
+    case installed(ListOptions)
     /// Distributions available to install.
     case online
+}
+
+/// The modifiers of `--list` without `--online`. `Maw.resolveAction()` rejects `quiet` with
+/// `verbose`.
+struct ListOptions: Equatable, Sendable {
+    /// Adds each distribution's state.
+    var verbose: Bool
+    /// Lists only the distributions whose virtual machine is not stopped.
+    var running: Bool
+    /// Prints the names only, one per line, without a header or the default's marker.
+    var quiet: Bool
+
+    init(verbose: Bool = false, running: Bool = false, quiet: Bool = false) {
+        self.verbose = verbose
+        self.running = running
+        self.quiet = quiet
+    }
+
+    /// The command line that selects these options, for example `--list --running --quiet`.
+    var displayName: String {
+        let modifiers = [
+            (CLIOption.running, running), (CLIOption.verbose, verbose), (CLIOption.quiet, quiet),
+        ]
+        return (["--\(CLIOption.list.long)"] + modifiers.filter(\.1).map { "--\($0.0.long)" })
+            .joined(separator: " ")
+    }
 }
 
 /// What `--install` installs, under which name, and for which user.
