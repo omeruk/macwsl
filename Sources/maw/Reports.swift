@@ -74,6 +74,53 @@ enum Reports {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    /// `maw --list` in each form that `options` selects:
+    ///
+    /// ```
+    /// The installed distributions. * marks the default, which maw opens without -d.
+    ///
+    ///     NAME           STATE
+    ///   * Ubuntu-24.04   Running
+    ///     maw-test-work  Stopped
+    /// ```
+    ///
+    /// `STATE` appears with `verbose`. `running` keeps the distributions whose machine is not
+    /// stopped, and says so in one line when there is none. `quiet` prints the names only, one
+    /// per line, and nothing when there is none.
+    ///
+    /// - Throws: `noDistributionInstalled` when nothing is installed, unless `quiet` is set.
+    static func installed(_ list: DistributionList, _ options: ListOptions) throws(MawError)
+        -> String
+    {
+        if list.distributions.isEmpty && !options.quiet {
+            throw .noDistributionInstalled
+        }
+        let shown =
+            options.running
+            ? list.distributions.filter { $0.state != .stopped } : list.distributions
+        if options.quiet {
+            return shown.map { $0.name.rawValue + "\n" }.joined()
+        }
+        if shown.isEmpty {
+            return noDistributionRunning
+        }
+        let header = [options.verbose ? ["  NAME", "STATE"] : ["  NAME"]]
+        let rows = shown.map { entry in
+            let name = (entry.name == list.defaultDistribution ? "* " : "  ") + entry.name.rawValue
+            return options.verbose ? [name, entry.state.rawValue.capitalized] : [name]
+        }
+        let lines =
+            [
+                "The \(options.running ? "running" : "installed") distributions. * marks the "
+                    + "default, which maw opens without -d.",
+                "",
+            ] + table(header + rows).map { "  " + $0 }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// `maw --list --running` when every installed distribution is stopped.
+    static let noDistributionRunning = "No distribution is running.\n"
+
     /// `maw --status` when the daemon does not run.
     static let daemonNotRunning =
         "The maw daemon is not running. It starts when a command needs a virtual machine.\n"
