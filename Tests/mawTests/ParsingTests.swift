@@ -202,8 +202,8 @@ func distro(_ name: String) throws -> DistroName {
     // MARK: Running a stub
 
     @Test func everyActionReportsThatItIsNotImplemented() async throws {
-        let command = try Maw.parse(ArgumentNormalizer.normalize(["-l", "-v"]))
-        await #expect(throws: MawError.notImplemented(feature: "--list --verbose", phase: "06")) {
+        let command = try Maw.parse(ArgumentNormalizer.normalize(["--unregister", "Ubuntu"]))
+        await #expect(throws: MawError.notImplemented(feature: "--unregister", phase: "06")) {
             try await command.run()
         }
     }

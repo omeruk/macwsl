@@ -99,7 +99,13 @@ struct Maw: AsyncParsableCommand {
             }
         case .list(.online):
             print(Reports.online(DistroCatalog.builtIn), terminator: "")
-        case .list, .setDefault, .terminate, .export, .importDistro, .unregister:
+        case .list(.installed(let options)):
+            try await Self.listDistributions(options)
+        case .setDefault(let name):
+            try await Self.setDefault(name)
+        case .terminate(let name):
+            try await Self.terminate(name)
+        case .export, .importDistro, .unregister:
             throw MawError.notImplemented(feature: action.displayName, phase: action.phase)
         }
     }
@@ -149,6 +155,32 @@ struct Maw: AsyncParsableCommand {
         let client = try await DaemonClient.connect(label: label)
         defer { client.close() }
         _ = try await client.shutdown()
+    }
+
+    /// `--list` without `--online`. The daemon owns the distributions and their machines, so
+    /// the listing comes from it, and launchd starts it if it does not run. It starts no
+    /// machine.
+    static func listDistributions(_ options: ListOptions) async throws {
+        let client = try await DaemonClient.connect()
+        defer { client.close() }
+        print(try Reports.installed(try await client.listDistributions(), options), terminator: "")
+    }
+
+    /// `--set-default`. Prints nothing, as `--shutdown` does. The daemon checks the name, so
+    /// launchd starts it if it does not run; it starts no machine.
+    static func setDefault(_ name: DistroName) async throws {
+        let client = try await DaemonClient.connect()
+        defer { client.close() }
+        try await client.setDefault(name)
+    }
+
+    /// `--terminate`. Prints nothing, and returns once the machine has stopped. Unlike
+    /// `--shutdown`, it starts the daemon if it does not run, because the daemon checks the
+    /// name; a distribution that is installed but not running then succeeds at once.
+    static func terminate(_ name: DistroName) async throws {
+        let client = try await DaemonClient.connect()
+        defer { client.close() }
+        try await client.terminate(name)
     }
 
     /// `--version`: maw, the daemon if it runs, and the installed guest files.

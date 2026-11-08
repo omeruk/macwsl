@@ -25,7 +25,8 @@ enum Action: Equatable, Sendable {
         switch self {
         case .shell, .run, .exec, .shutdown, .status, .version: "04b"
         case .install, .list(.online): "05"
-        case .list(.installed), .setDefault, .terminate, .export, .importDistro, .unregister: "06"
+        case .list(.installed), .setDefault, .terminate: "06a"
+        case .export, .importDistro, .unregister: "06"
         }
     }
 

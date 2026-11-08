@@ -157,11 +157,20 @@ import Testing
 }
 
 @Suite struct UnimplementedActionTests {
+    /// The actions that phase 06a implements leave the `notImplemented` path; `SessionPlan`
+    /// still names their phase if it is ever given one.
     @Test(arguments: [
-        (["-l"], "--list", "06"),
-        (["-l", "-v"], "--list --verbose", "06"),
-        (["-s", "Ubuntu"], "--set-default", "06"),
-        (["-t", "Ubuntu"], "--terminate", "06"),
+        Action.list(.installed(ListOptions())), .setDefault(try! DistroName("Ubuntu")),
+        .terminate(try! DistroName("Ubuntu")),
+    ])
+    func namesPhase06aForTheDistributionActions(_ action: Action) {
+        #expect(action.phase == "06a")
+        #expect(throws: MawError.notImplemented(feature: action.displayName, phase: "06a")) {
+            try SessionPlan(action)
+        }
+    }
+
+    @Test(arguments: [
         (["--export", "Ubuntu", "u.tar"], "--export", "06"),
         (["--import", "Ubuntu", "u.tar"], "--import", "06"),
         (["--unregister", "Ubuntu"], "--unregister", "06"),

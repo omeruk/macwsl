@@ -90,9 +90,9 @@ import Testing
 
     @Test func reportsARuntimeErrorWithoutUsage() async throws {
         #expect(
-            try await failure(["-l", "-v"])
+            try await failure(["--unregister", "Ubuntu"])
                 == CommandFailure(
-                    output: "maw: --list --verbose is not implemented yet; phase 06 adds it.\n",
+                    output: "maw: --unregister is not implemented yet; phase 06 adds it.\n",
                     exitCode: .failure))
     }
 
