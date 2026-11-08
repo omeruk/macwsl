@@ -40,7 +40,7 @@ struct Maw: AsyncParsableCommand {
             Examples:
               maw --install Ubuntu-24.04     Install Ubuntu 24.04.
               maw -l -v                      List distributions with their state.
-              maw -d Ubuntu -u root          Open a root shell in Ubuntu.
+              maw -d Ubuntu-24.04 -u root    Open a root shell in Ubuntu 24.04.
               maw -e uname -a                Run uname directly, without a shell.
               maw --export Ubuntu ubuntu.tar Back up Ubuntu to a tar file.
             """
