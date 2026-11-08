@@ -242,8 +242,9 @@ import Testing
     }
 
     @Test func fitsTheSuggestionOfAnUnknownOutcome() throws {
-        // The message itself is one line wider than 80 columns, as many are
-        // (docs/known-limitations.md, phase 12b); the suggestion that changed in phase 06a fits.
+        // The message itself is a single line of 184 columns, as many messages are wider than
+        // 80 (docs/known-limitations.md, phase 12b); the suggestion that changed in phase 06a
+        // fits.
         let error = MawError.installationOutcomeUnknown(try DistroName("Ubuntu-24.04"))
         let suggestion = try #require(error.recoverySuggestion)
         #expect(
