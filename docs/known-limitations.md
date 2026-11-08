@@ -73,8 +73,8 @@ from `main`.
 - **No setting for `.fsync` disk synchronization.**
   - **Seen:** Every distribution uses `.full` synchronization. A user who prefers speed cannot
     choose `.fsync`; see "Accepted trade-offs" for the default.
-  - **Evidence:** [Decision record 0013](decisions/0013-systemd-and-the-agent.md), item 5;
-    `docs/ROADMAP.md`, row 12.
+  - **Evidence:** [Decision record 0013](decisions/0013-systemd-and-the-agent.md), item 6,
+    "Disk", and "Measurements"; `docs/ROADMAP.md`, row 12.
   - **Phase:** 12, a `.mawconfig` setting.
 - **The memory balloon is not driven.**
   - **Seen:** Memory that the guest has used stays with the machine's process until the
@@ -109,11 +109,13 @@ from `main`.
 - **Many messages are wider than 80 columns.**
   - **Seen:** Messages and suggestions are single lines, many longer than 80 columns, and
     some contain text of unknown length from Foundation or paths. Examples: the account prompt
-    (90 columns), the suggestion of `distributionAlreadyInstalled` (81), and `machineStopped`
-    (85 with the name `maw-capture`).
+    (90 columns), and, with the name `maw-capture`, the suggestion of
+    `distributionAlreadyInstalled` (81) and `machineStopped` (85).
   - **Evidence:** `Sources/maw/InstallCommand.swift:372`, `Sources/MawCore/MawError.swift:375`;
-    pull request #19, "Known limitations and follow-up work". Only three messages are wrapped,
-    each with an 80-column test.
+    pull request #19, "Known limitations and follow-up work". Four messages are wrapped by hand,
+    each with an 80-column test: the cancellation, the password with a control character, and
+    the unconfirmed cancellation (`Tests/mawTests/FailureTests.swift`), and
+    `sessionConnectionEnded` (`Tests/MawCoreTests/MawErrorTests.swift:259`).
   - **Phase:** 12b. Proposed: `CommandFailure` wraps its output at spaces to the terminal's
     width when standard error is a terminal, and leaves it unchanged otherwise.
 - **CR-3: A resumed download does not check `Content-Range`.**
@@ -239,7 +241,7 @@ from `main`.
   - **Seen:** Four Virtualization processes started by phase 04's tests remained until the Mac
     restarted. With the current code, a machine's process exits about 110 ms after SIGKILL to
     the daemon or to `mawd debug-boot`. What left them behind is not established.
-  - **Evidence:** `scripts/integration-test.sh:70` fails a run that leaves such a process
+  - **Evidence:** `scripts/integration-test.sh:165` fails a run that leaves such a process
     behind; pull request #19, "Known limitations and follow-up work".
   - **Phase:** None yet.
 - **A Mac locale that glibc lacks falls back to `C.UTF-8`.**
@@ -257,6 +259,14 @@ from `main`.
   - **Seen:** Swift strings cannot be wiped, so copies may remain in the memory of `maw` and
     `mawd` until it is reused.
   - **Evidence:** [docs/security.md, "The password"](security.md#the-password).
+  - **Phase:** None yet.
+- **The cost of the input window is not measured on an idle Mac.**
+  - **Seen:** The cost of 1.7 % was measured while the Mac's load average was between 2 and 8.
+    The record planned a repeat on an idle Mac before phase 05 was complete; it was not
+    repeated, because the build before the window cannot use the current guest files without
+    replacing the installed daemon's.
+  - **Evidence:** [Decision record 0016](decisions/0016-input-window.md), "The window's size and
+    the report's form"; pull request #19, "Throughput and the input window".
   - **Phase:** None yet.
 - **The entries of `docs/daemon.md`, "Known limitations", that name no phase.**
   - **Seen:** A connection that arrives while an idle daemon exits fails with
@@ -292,9 +302,9 @@ Deliberate choices that a decision record explains and that no phase plans to ch
   that the guest has not read. Only signals sent to maw and window sizes overtake input.
   [Decision record 0016](decisions/0016-input-window.md), "Consequences".
 - **The input window costs about 1.7 % of input throughput over vsock**, and the agent holds
-  up to 1 MiB of input per session, against 256 KiB before. The record planned a repeat of the
-  measurement on an idle Mac before phase 05 was complete; it was not repeated, and no phase
-  owns it. [Decision record 0016](decisions/0016-input-window.md).
+  up to 1 MiB of input per session, against 256 KiB before.
+  [Decision record 0016](decisions/0016-input-window.md). The repeat of the measurement on an
+  idle Mac is listed under "No phase yet".
 - **Guest files and the host must come from the same build.** A host and guest files from
   different builds fail at session open with `guestAgentVersionMismatch` (protocol version 3,
   `Sources/MawProtocol/ProtocolVersion.swift:7`). `scripts/fetch-guest.sh` installs guest
