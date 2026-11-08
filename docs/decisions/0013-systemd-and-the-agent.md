@@ -63,9 +63,10 @@ distribution when maw updates it.
    time server, because the first DNS query that `systemd-resolved` sends after the DHCP lease
    is not answered and is retried only after 5 s. When a shutdown begins during that lookup
    and `systemd-resolved` exits before it answers, `systemd-timesyncd` exits about 5.0 s after
-   its stop began. The guest then misses the agent's 5 s limit, and the daemon falls back to
-   Virtualization.framework's stop request; `maw --shutdown`, `maw --terminate`, and idle
-   stops are all affected. Ordered after `systemd-resolved`, `systemd-timesyncd` stops first,
+   its stop began. The guest then does not power off within the daemon's 5 s limit after the
+   agent's acknowledgement (`VirtualMachineHandle.stopTimeout`), and the daemon falls back to
+   Virtualization.framework's stop request. `maw --shutdown` and idle stops use this sequence,
+   as does `maw --terminate`, which phase 06 adds. Ordered after `systemd-resolved`, `systemd-timesyncd` stops first,
    while `systemd-resolved` still runs, and its lookup fails at once. The ordering also makes
    `systemd-timesyncd` start after `systemd-resolved`, which is not on the agent's path. Why the
    first DNS query is not answered is not determined.
@@ -120,10 +121,12 @@ once; the weekly trim returns the space, and `sudo fstrim /` does so on demand. 
 advertises discard has not been verified on a Mac running macOS 14.
 
 **Shutdown soon after a boot** (item 7). Test distributions, M1 Pro, macOS 27, 2026-11-08,
-measured in part 4b of phase 06a with a runtime drop-in written by hand: 20 terminates each, at
-once after systemd reported `running`, under `.full` synchronization. A shutdown counts as slow
-when the guest did not power off within the agent's 5 s limit and the daemon fell back to the
-stop request.
+under `.full` synchronization. Each machine was stopped at once after systemd reported
+`running`. A shutdown counts as slow when the guest did not power off within the daemon's 5 s
+limit after the agent's acknowledgement, and the daemon fell back to the stop request.
+
+Before the change, measured during phase 06a with `maw --terminate`, which uses the same stop
+sequence, and with the drop-in written by hand at runtime:
 
 | `systemd-timesyncd` drop-in | Slow shutdowns |
 |-----------------------------|----------------|
@@ -134,6 +137,16 @@ stop request.
 Every slow shutdown spent 4.98 to 5.05 s between the start of `systemd-timesyncd`'s stop and
 its exit; no fast one spent more than 0.07 s. With `After=`, every boot still had a lookup
 pending at the stop, and `systemd-timesyncd` exited within 45 ms of its stop.
+
+After the change, with the guest files that `/init` builds, 20 boots each, stopped with
+`maw --shutdown`. systemd reported `running` 0.51 to 0.60 s after each boot began.
+
+| Condition | Slow shutdowns | Shutdown, in the daemon's console note |
+|-----------|----------------|----------------------------------------|
+| The drop-in from `/init` | 0 of 20 | 570 to 713 ms, all through the agent |
+| Control: the drop-in removed and `systemctl daemon-reload` run before each stop | 7 of 20 | slow: 5588 to 5654 ms; fast: 557 to 643 ms |
+
+The control shows that these stops fall within the window in which the race occurs.
 
 ## Consequences
 
