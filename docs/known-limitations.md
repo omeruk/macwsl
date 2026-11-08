@@ -40,6 +40,31 @@ from `main`.
     for phase 07", which lists the options.
   - **Phase:** 07.
 
+## Phase 08: Networking
+
+- **The first DNS query after the DHCP lease is not answered.**
+  - **Seen:** In a distribution machine, the first DNS query that `systemd-resolved` sends to
+    the NAT's server (192.168.64.1), within about 20 ms of the DHCP lease, receives no answer.
+    The lookup completes only after `systemd-resolved` times that query out at about 5.0 s and
+    asks the IPv6 link-local server instead, so a lookup that begins in about the first 5.5
+    seconds of a boot can take about 5 s. Its effect on a user's first lookup after a cold start
+    is not measured.
+  - **Evidence:** Part 4b of phase 06a, on 2026-11-08 (M1 Pro, macOS 27): a temporary
+    integration test on test distributions, each boot's journal (`-o short-monotonic`), and in
+    some passes `SYSTEMD_LOG_LEVEL=debug` for `systemd-resolved` and `systemd-timesyncd`. The
+    lookup observed was `systemd-timesyncd`'s resolution of `ntp.ubuntu.com`, which was usually
+    still pending in about the first 5.5 seconds of a boot; in 20 boots stopped at once after
+    systemd reported `running`, all 20 had it pending at the stop. Under `.fsync`
+    synchronization, 5 of 10 instrumented boots tried to resolve before the network was up and
+    failed at once, so no lookup was pending. Why the first query is not answered is not
+    determined.
+  - **Resolved part:** Shutdowns soon after a boot waited 5 s for `systemd-timesyncd` while this
+    lookup was pending, and fell back to Virtualization.framework's stop request. [Decision
+    record 0013](decisions/0013-systemd-and-the-agent.md), item 7 (pull request #23), orders
+    `systemd-timesyncd` after `systemd-resolved`, which removes that wait without depending on
+    this item; the decision record lists the measurements.
+  - **Phase:** 08, together with DNS under VPNs.
+
 ## Phase 11b: Linux sessions in the app
 
 - **The terminal app is not a client of the daemon.**
@@ -182,79 +207,6 @@ from `main`.
   - **Phase:** None yet. Pull request #19 assigned it to phase 06;
     `prompts/06a-distro-management.md` places it out of the scope of 06a and does not assign it
     to 06b.
-- **A clean shutdown within about 5.5 seconds of a boot waits 5 seconds for
-  `systemd-timesyncd`.**
-  - **Seen:** In two full runs of `scripts/integration-test.sh` on 2026-11-08 (phase 06a),
-    8 and 10 of 46 shutdowns of distribution machines did not finish within 5000 ms of the
-    agent's acknowledgement, and the daemon fell back to Virtualization.framework's stop
-    request. Each still ended cleanly, after about 5.6 s instead of about 0.6 s, and every
-    affected machine was asked to stop within about 6 seconds of its start. `maw --shutdown`,
-    `maw --terminate`, and idle stops use the same sequence. In the second run, all five
-    terminates of `measuresTerminateOfARunningIdleDistribution` fell back, so that test missed
-    its target of 1 s.
-  - **Cause:** At shutdown, systemd stops `systemd-timesyncd` and `systemd-resolved` at the
-    same time, because Ubuntu 24.04's units do not order them. For about the first 5.5 seconds
-    of a boot, `systemd-timesyncd` is usually resolving `ntp.ubuntu.com`: the first DNS query
-    that `systemd-resolved` sends to the NAT's server (192.168.64.1), within about 20 ms of the
-    DHCP lease, is not answered, and the lookup completes only after `systemd-resolved` times
-    that query out at about 5.0 s and asks the IPv6 link-local server instead. When a shutdown
-    begins during that lookup and `systemd-resolved` exits before it answers the client's
-    retried query, `systemd-timesyncd` exits about 5.0 s after its stop began, with success,
-    and `poweroff.target` follows within 25 ms. Whether `systemd-resolved` answers the retry
-    before it exits varies from boot to boot. The guest then powers off on its own, about
-    5.3 s after the request; the fallback to the stop request at 5.0 s does not change the
-    outcome. The time after `poweroff.target` is the same in slow and fast shutdowns, about
-    0.35 s to the daemon's note, and `systemd-shutdown`'s sync takes 14 to 24 ms under `.full`
-    and 4 to 11 ms under `.fsync`. Neither the final sync under `.full` synchronization nor the
-    agent's or the daemon's part of the sequence causes the delay.
-  - **Evidence:** Part 4b of phase 06a, on 2026-11-08 (M1 Pro, macOS 27): a temporary
-    integration test on test distributions, each boot's journal (`-o short-monotonic`), and in
-    some passes `SYSTEMD_LOG_LEVEL=debug` for both units. Shutdowns that waited for
-    `systemd-timesyncd`, by condition:
-    - `.full`, terminated at once after systemd reported `running` (two passes): 10 of 20.
-    - `.full`, stopped by the idle timeout 3 s after the last session: 3 of 10.
-    - `.full`, kept running for 10 s, then terminated: 0 of 5; for 30 s: 0 of 5.
-    - `.fsync`, terminated at once (two passes): 2 of 20.
-    - `.full`, with a drop-in `After=systemd-resolved.service` for `systemd-timesyncd`,
-      terminated at once: 0 of 20.
-    - `.full`, with a drop-in `Before=systemd-resolved.service` for `systemd-timesyncd`,
-      terminated at once: 13 of 20.
-
-    Every slow shutdown, 28 in all, spent 4.98 to 5.05 s between the start of
-    `systemd-timesyncd`'s stop and its exit; no fast one spent more than 0.07 s. `.fsync`
-    changes the rate only through the order of the boot: in 5 of its 10 instrumented boots,
-    `systemd-timesyncd` tried to resolve before the network was up, failed at once, and
-    waited, so no lookup was pending at the stop; of the 5 boots with a lookup pending, 2 were
-    slow. With `After=systemd-resolved.service`, all 20 boots had a lookup pending at the stop,
-    `systemd-resolved` was still running when the lookup failed, and `systemd-timesyncd`
-    exited within 45 ms of its stop. Why the resolver library waits 5 s when
-    `systemd-resolved` has exited, rather than failing at once, is not traced; 5 s is glibc's
-    default resolver timeout. Why the first DNS query is not answered is not determined.
-  - **Possible fixes:**
-    - Order `systemd-timesyncd` after `systemd-resolved` with a runtime drop-in that `/init`
-      writes next to the agent's unit in `/run/systemd/system`
-      ([decision record 0013](decisions/0013-systemd-and-the-agent.md)). Measured above: 0 of
-      20 slow. Speed: removes the 5 s wait. `systemd-timesyncd` then starts after
-      `systemd-resolved`, which is off the agent's path; the effect on the boot was not
-      measured. Data safety: no change; the guest still finishes its own shutdown and sync. It
-      changes the guest files and extends decision record 0013, but writes nothing into an
-      installed distribution.
-    - Find and fix why the first DNS query after the DHCP lease is not answered. This narrows
-      the window, but on its own it does not remove the race, because any slow lookup reopens
-      it. Whether a user's own first lookup after a cold start also waits is not measured.
-    - A `TimeoutStopSec=1s` drop-in for `systemd-timesyncd`. By the times above, an affected
-      shutdown would then take about 1.3 s, still above the 1 s target for `maw --terminate`,
-      and systemd would end `systemd-timesyncd` with SIGKILL. Data safety: low risk, because
-      its only file is a timestamp. It is inferior to the ordering.
-    - Mask `systemd-timesyncd` and let the daemon set the guest clock, as part of phase 12's
-      clock synchronization on sleep and wake. It removes the unit, but the guest clock then
-      depends on the daemon alone.
-    - Not fixes: raising the agent's 5 s limit, or stopping the machine earlier, which would
-      shorten the time the guest has to finish writing its disk.
-  - **Phase:** None yet. Proposed: the ordering drop-in before part 5 of phase 06a, if the
-    owner accepts a change to the guest files there, because part 5's `maw --terminate`
-    measurement terminates within the window; otherwise phase 08 (Networking), together with
-    the unanswered first DNS query.
 - **Guest-opened vsock behavior is measured on one Mac only.**
   - **Seen:** That a guest-opened connection does not stop the machine's vsock traffic when the
     host leaves it unread is measured only on an M1 Pro with macOS 27.0.1. macOS 14 to 26 are
