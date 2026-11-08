@@ -161,9 +161,38 @@ so use `-e` when the arguments must arrive unchanged. A session ends when its co
 exits. Without an installed distribution, `maw` reports that none is installed and names
 `maw --install`.
 
+### Managing distributions
+
+```sh
+maw --list                      # the installed distributions; * marks the default
+maw --list --verbose            # with the state of each virtual machine (also maw -l -v)
+maw --list --running            # only the distributions whose virtual machine runs
+maw --list --quiet              # the names only, one per line, for scripts (also maw -l -q)
+maw --set-default Work          # plain maw now opens Work (also maw -s Work)
+maw --terminate Work            # stop Work's virtual machine and no other (also maw -t Work)
+```
+
+Names are matched without regard to case, and maw prints each as it was installed. A catalog
+alias such as `Ubuntu` is not an installed name; use the name that `maw --list` shows.
+`--set-default` and `--terminate` print nothing when they succeed, and neither starts a
+virtual machine: `--terminate` of a distribution that is not running succeeds at once.
+
+`--terminate` ends every session in the distribution, and each reports that the virtual machine
+stopped because `maw --terminate` was run. The next command there starts the machine again.
+`--running` also lists the distributions whose machine is starting or stopping, so this loop
+stops every distribution that has a machine:
+
+```sh
+for name in $(maw --list --running --quiet); do maw --terminate "$name"; done
+```
+
+With no distribution installed, `maw --list` says so and exits with status 1, as plain `maw`
+does; `maw --list --quiet` prints nothing and exits with 0. With none running,
+`maw --list --running` prints "No distribution is running." and exits with 0.
+
 ### Removing a distribution
 
-`maw --unregister` arrives in phase 06. Until then, stop the virtual machines and delete the
+`maw --unregister` arrives in phase 06b. Until then, stop the virtual machines and delete the
 distribution's directory, which permanently deletes its disk:
 
 ```sh

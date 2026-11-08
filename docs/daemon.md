@@ -450,10 +450,10 @@ log, and prints its path. Otherwise it deletes it.
   logs would be the initramfs machine's, the daemon's, or `mawd debug-boot`'s log files.
 - maw has no command to repair a distribution whose root file system failed its check. The
   disk image stays where it is, unchanged except for what `e2fsck -p` repaired before it
-  stopped, and a repair needs e2fsck from a Linux system, run on a copy. Phase 06, which manages
-  installed distributions, is where such a command belongs: it would boot the initramfs
-  machine with the disk attached, as the installer does, and run e2fsck interactively or with
-  `-y` after the user has made a copy.
+  stopped, and a repair needs e2fsck from a Linux system, run on a copy. No phase owns such a
+  command yet ([known limitations](known-limitations.md#no-phase-yet)). It would boot the
+  initramfs machine with the disk attached, as the installer does, and run e2fsck interactively
+  or with `-y` after the user has made a copy.
 - A session's connection can end on the host's side while the guest's side stays open.
   Virtualization.framework did this, rarely, to connections that the agent dials: in phase 05's
   integration runs, one running session's connection ended in the middle of a frame, and in
@@ -469,12 +469,11 @@ log, and prints its path. Otherwise it deletes it.
     (`MachineRegistry.scheduleIdleStopIfUnused`), and the lease ends when `maw` exits, so the
     command does not keep the machine running: it runs until the machine stops, 60 seconds
     after its last session ends (`DaemonTimeouts.machineIdle`), later while other sessions keep
-    the machine running, or until the user ends it, with `kill` through `maw -e`, or with
-    `maw --shutdown`, which stops every running distribution.
+    the machine running, or until the user ends it: with `kill` through `maw -e`, with
+    `maw --terminate <name>`, which stops that distribution only and which the message
+    suggests, or with `maw --shutdown`, which stops every running distribution.
   - **The exit status is 1**, the status of every runtime error (`CommandFailure`), which cannot
     be told apart from a command that itself exits with 1.
-  - **Phase 06.** Once `maw --terminate` exists, the suggestion should name
-    `maw --terminate <name>`, which ends the command with its distribution only.
   - **Phase 12b, a mitigation; both options change the protocol.**
     - **The client asks the daemon to end the session in the guest.** On an unexpected end,
       `maw` asks the daemon, over XPC, to have the agent end that session's process, for

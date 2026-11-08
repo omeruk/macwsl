@@ -10,32 +10,13 @@ request #19 lists under "Review results". Commits from the branch of pull reques
 cited, because that pull request was squash-merged and its branch commits are not reachable
 from `main`.
 
-## Phase 06a: Distro management
-
-- **No `maw --list`, `maw --set-default`, or `maw --terminate`.**
-  - **Seen:** The three commands fail with `notImplemented`: "--list is not implemented yet;
-    phase 06 adds it." `maw --status` shows the running machines, but nothing lists the
-    installed distributions, and the default is set only when the first distribution is
-    installed.
-  - **Evidence:** `Sources/maw/Action.swift:28`; pull request #19, "Known limitations and
-    follow-up work"; `docs/daemon.md`, "Installing distributions" ("Phase 06 adds
-    `maw --set-default`").
-  - **Phase:** 06a (`prompts/06a-distro-management.md`).
-- **`sessionConnectionEnded` suggests `maw --shutdown`.**
-  - **Seen:** When a session's connection ends unexpectedly, the suggestion offers
-    `maw --shutdown` to end a command that may still be running, which stops every running
-    distribution.
-  - **Evidence:** `Sources/MawCore/MawError.swift:475`; [docs/daemon.md, "Known
-    limitations"](daemon.md#known-limitations), the entry on connections that end on the
-    host's side.
-  - **Phase:** 06a. The suggestion names `maw --terminate <name>` once that command exists.
-
 ## Phase 06b: Distro removal and transfer
 
 - **No `maw --unregister`, `maw --export`, or `maw --import`.**
-  - **Seen:** The three commands fail with `notImplemented` and name phase 06. A distribution
-    is removed by hand: `maw --shutdown`, then deleting its directory.
-  - **Evidence:** `Sources/maw/Action.swift:28`; pull request #19, "Known limitations and
+  - **Seen:** The three commands fail with `notImplemented`: "--unregister is not implemented
+    yet; phase 06b adds it." A distribution is removed by hand: `maw --shutdown`, then deleting
+    its directory.
+  - **Evidence:** `Sources/maw/Action.swift:29`; pull request #19, "Known limitations and
     follow-up work"; [docs/distributions.md, "Removing a distribution by
     hand"](distributions.md#removing-a-distribution-by-hand) and `README.md`, "Removing a
     distribution", describe the manual removal.
@@ -109,13 +90,16 @@ from `main`.
 - **Many messages are wider than 80 columns.**
   - **Seen:** Messages and suggestions are single lines, many longer than 80 columns, and
     some contain text of unknown length from Foundation or paths. Examples: the account prompt
-    (90 columns), and, with the name `maw-capture`, the suggestion of
-    `distributionAlreadyInstalled` (81) and `machineStopped` (85).
-  - **Evidence:** `Sources/maw/InstallCommand.swift:372`, `Sources/MawCore/MawError.swift:375`;
-    pull request #19, "Known limitations and follow-up work". Four messages are wrapped by hand,
-    each with an 80-column test: the cancellation, the password with a control character, and
-    the unconfirmed cancellation (`Tests/mawTests/FailureTests.swift`), and
-    `sessionConnectionEnded` (`Tests/MawCoreTests/MawErrorTests.swift:259`).
+    (90 columns), the message of `installationOutcomeUnknown` (184 columns with
+    `Ubuntu-24.04`), and, with the name `maw-capture`, the suggestion of
+    `distributionAlreadyInstalled` (81).
+  - **Evidence:** `Sources/maw/InstallCommand.swift:372`, `Sources/MawCore/MawError.swift:383`;
+    pull request #19, "Known limitations and follow-up work". Seven messages have an 80-column
+    test, wrapped by hand where needed: the cancellation, the password with a control
+    character, the unconfirmed cancellation, `machineStopped` with the daemon's own reasons,
+    `distributionNotInstalled`, and the suggestion of `installationOutcomeUnknown`
+    (`Tests/mawTests/FailureTests.swift`), and `sessionConnectionEnded`
+    (`Tests/MawCoreTests/MawErrorTests.swift:275`).
   - **Phase:** 12b. Proposed: `CommandFailure` wraps its output at spaces to the terminal's
     width when standard error is a terminal, and leaves it unchanged otherwise.
 - **CR-3: A resumed download does not check `Content-Range`.**
@@ -135,8 +119,9 @@ from `main`.
     "Review results", CR-8.
   - **Phase:** 12b. Record the request and stop the machine as soon as the start completes,
     or stop a starting machine if the framework allows it; either needs an integration test.
-    Phase 06a defines the behavior of `--terminate` for a starting machine on its own
-    (`prompts/06a-distro-management.md`, "Terminate").
+    `--terminate` does not depend on this fix: for a machine that is starting, it waits for the
+    start to finish and then stops the machine ([docs/daemon.md, "Terminating one
+    distribution"](daemon.md#terminating-one-distribution)).
 - **CR-11: Two copies of the `posix_spawn` setup.**
   - **Seen:** Developers maintain the same setup twice: the pipe, `/dev/null` input, the
     signal mask and defaults, `POSIX_SPAWN_CLOEXEC_DEFAULT`, and the exit status. There is no

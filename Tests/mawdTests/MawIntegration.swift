@@ -115,7 +115,7 @@ struct MawIntegration: Sendable {
     }
 
     /// Removes a distribution that a test created: stops the test daemon's machines and deletes
-    /// its directory, as the README describes for users until phase 06.
+    /// its directory, as the README describes for users until phase 06b.
     func remove(_ name: String) async throws {
         _ = try await run(["--shutdown"])
         let directory = paths.distroDirectory(for: try DistroName(name))
