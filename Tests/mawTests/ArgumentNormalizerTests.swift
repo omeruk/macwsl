@@ -17,7 +17,10 @@ import Testing
         #expect(normalize("-v") == ["--version"])
     }
 
-    @Test(arguments: [["-l", "-v"], ["--list", "-v"], ["-l", "-o", "-v"]])
+    @Test(arguments: [
+        ["-l", "-v"], ["--list", "-v"], ["-l", "-o", "-v"], ["-l", "--running", "-v"],
+        ["-lq", "-v"], ["--running", "-l", "-v"],
+    ])
     func treatsDashVAfterListAsVerbose(_ arguments: [String]) {
         #expect(ArgumentNormalizer.normalize(arguments) == arguments)
     }
@@ -28,6 +31,12 @@ import Testing
 
     @Test func leavesShortFlagClustersToTheParser() {
         #expect(normalize("-lv") == ["-lv"])
+        #expect(normalize("-lq") == ["-lq"])
+    }
+
+    @Test func treatsDashVAfterOtherListModifiersAloneAsVersion() {
+        #expect(normalize("--running", "-v") == ["--running", "--version"])
+        #expect(normalize("-q", "-v") == ["-q", "--version"])
     }
 
     @Test func leavesLongVerboseAlone() {

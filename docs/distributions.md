@@ -160,10 +160,10 @@ and [docs/protocol.md](protocol.md) specifies the environment a session gets.
 
 ## Removing a distribution by hand
 
-Phase 06 adds `maw --unregister`. Until then, a distribution is removed by stopping its machine
+Phase 06b adds `maw --unregister`. Until then, a distribution is removed by stopping its machine
 and deleting its directory:
 
 ```sh
-maw --shutdown
+maw --terminate <name>
 rm -r "$HOME/Library/Application Support/maw/distros/<name>"
 ```

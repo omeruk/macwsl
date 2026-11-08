@@ -311,6 +311,16 @@
             return ShutdownSummary(stoppedMachines: stopped, endedSessions: endedSessions)
         }
 
+        /// Stops one machine as `shutdown` stops each, and ends its sessions with `reason`.
+        /// Returns once it has stopped. A machine that is stopped stays so, and nothing starts.
+        /// One that is stopping is waited for. One that is starting finishes its start first,
+        /// because a start cannot be cancelled (`VirtualMachine.forceStop` does nothing while
+        /// a machine starts), and is then stopped; if its start fails, it is stopped already.
+        public func terminate(_ machine: MachineID, reason: String) async -> TerminateSummary {
+            let ended = await stop(machine, reason: reason)
+            return TerminateSummary(wasRunning: ended != nil, endedSessions: ended ?? 0)
+        }
+
         // MARK: Status
 
         /// Every machine that is not stopped, by name.

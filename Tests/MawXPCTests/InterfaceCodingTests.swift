@@ -24,6 +24,9 @@ import XPC
         .checkInstall(distribution: "Ubuntu", name: try! DistroName("Work")),
         .checkInstall(distribution: nil, name: nil),
         .cancelInstall,
+        .listDistributions,
+        .setDefault(try! DistroName("ubuntu-24.04")),
+        .terminate(try! DistroName("Ubuntu-24.04")),
     ]
 
     static let replies: [DaemonReply] = [
@@ -48,6 +51,16 @@ import XPC
         .installPossible,
         .installCancelled(wasRunning: true),
         .shutdownComplete(ShutdownSummary(stoppedMachines: [.initramfs], endedSessions: 2)),
+        .distributions(
+            DistributionList(
+                distributions: DistributionState.allCases.enumerated().map { index, state in
+                    DistributionEntry(name: try! DistroName("Distro-\(index)"), state: state)
+                },
+                defaultDistribution: try! DistroName("Distro-1"))),
+        .distributions(DistributionList(distributions: [], defaultDistribution: nil)),
+        .defaultSet(try! DistroName("Ubuntu-24.04")),
+        .terminated(TerminateSummary(wasRunning: true, endedSessions: 3)),
+        .terminated(TerminateSummary(wasRunning: false, endedSessions: 0)),
         .failure(.virtualizationEntitlementMissing),
         .failure(.distributionNotInstalled(try! DistroName("Ubuntu"))),
     ]
@@ -97,6 +110,26 @@ import XPC
     func roundTripsAnEvent(_ event: DaemonEvent) throws {
         let message = try InterfaceCoding.encode(event)
         #expect(try InterfaceCoding.decode(DaemonEvent.self, from: message, as: .client) == event)
+    }
+
+    @Test func isInterfaceVersion3() {
+        #expect(DaemonInterface.version == 3)
+    }
+
+    @Test func namesTheNewRequestsInErrorMessages() throws {
+        let name = try DistroName("Ubuntu-24.04")
+        #expect(DaemonRequest.listDistributions.displayName == "listing the distributions")
+        #expect(DaemonRequest.setDefault(name).displayName == "setting the default distribution")
+        #expect(DaemonRequest.terminate(name).displayName == "terminating the distribution")
+    }
+
+    /// The states travel as their names, so that the terminal app and later versions can read
+    /// them without a table.
+    @Test func encodesTheStatesByName() throws {
+        let data = try JSONEncoder().encode(DistributionState.allCases)
+        #expect(
+            String(decoding: data, as: UTF8.self) == #"["stopped","starting","running","stopping"]"#
+        )
     }
 
     @Test func carriesTheVersionOutsideTheBody() throws {

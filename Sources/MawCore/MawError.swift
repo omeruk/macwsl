@@ -21,7 +21,7 @@ public enum MawError: Error, Equatable, Sendable, Codable {
 
     // MARK: Distributions and sessions
 
-    /// `-d` names a distribution that is not installed.
+    /// `-d`, `--set-default`, or `--terminate` names a distribution that is not installed.
     case distributionNotInstalled(DistroName)
     /// `--cd` names a directory that maw cannot use yet: a relative or macOS path.
     case unsupportedDirectory(String)
@@ -257,8 +257,11 @@ extension MawError: LocalizedError {
             "A message between maw and its daemon could not be read: \(reason)."
         case .clientSignatureRejected(let identifier):
             "This executable is signed as '\(identifier)', which the maw daemon does not accept."
+        // The reason starts a line of its own, so that the daemon's own reasons (maw
+        // --shutdown, maw --terminate, idle) fit in 80 columns with `maw: ` and a name as long
+        // as Ubuntu-24.04. The reason for an unexpected stop comes from the framework.
         case .machineStopped(let machine, let reason):
-            "The session ended because the virtual machine \(machine) stopped: \(reason)."
+            "The session ended because the virtual machine \(machine) stopped:\n\(reason)."
         case .launchAgentFailed(let reason):
             "The maw LaunchAgent could not be changed: \(reason)."
         case .launchctlTimedOut(let command, let seconds):
@@ -353,8 +356,14 @@ extension MawError: LocalizedError {
             nil
         case .invalidSize:
             "Write a whole number followed by K, M, G, or T, for example 512M or 4G."
+        // A catalog name or alias, such as `ubuntu`, may be what the user meant to install. The
+        // entry may also be installed already under its catalog name, which maw --list shows.
         case .distributionNotInstalled(let name):
-            "Install it with maw --install \(name)."
+            if let entry = DistroCatalog.builtIn.entry(named: name.rawValue) {
+                "Install it with maw --install \(entry.name), or see maw --list."
+            } else {
+                "maw --list shows the installed distributions."
+            }
         case .unsupportedDirectory:
             "Translating relative and macOS paths arrives in phase 07. Until then, give an "
                 + "absolute path inside Linux."
@@ -408,11 +417,11 @@ extension MawError: LocalizedError {
             "Nothing was installed. Run maw --install to start again; an interrupted\n"
                 + "download resumes where it stopped."
         case .installationOutcomeUnknown(let name):
-            "maw -d \(name) -e true succeeds if it is installed, and otherwise says that it is "
-                + "not; then run maw --install again."
+            "maw --list shows whether \(name) was installed. If it was not, run\n"
+                + "maw --install again."
         case .installationCancellationUnconfirmed(let name):
-            "Wait a moment, then run maw -d \(name) -e true. It succeeds if\n"
-                + "\(name) was installed after all, and otherwise says that it is not."
+            "Wait a moment, then run maw --list. It lists \(name) if the installation\n"
+                + "finished after all."
         case .daemonNotInstalled:
             "Register the daemon with mawd install."
         case .daemonUnreachable, .daemonConnectionLost, .daemonProtocolError:
@@ -475,7 +484,7 @@ extension MawError: LocalizedError {
         case .sessionConnectionEnded(let name):
             "If the command is still running, find its process ID with\n"
                 + "maw -d \(name) -e ps -ef and end it with maw -d \(name) -e kill <ID>.\n"
-                + "maw --shutdown also ends it, but it stops every running distribution."
+                + "maw --terminate \(name) also ends it, and every other session there."
         case .sessionDialBackFailed:
             "Run the command again. If it fails again, restart the virtual machines with "
                 + "maw --shutdown; the console log in ~/Library/Logs/maw has the agent's "

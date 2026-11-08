@@ -85,11 +85,111 @@ import Testing
     @Test func rejectsListModifiersWithoutList() {
         #expect(failure("--online") == "--online (-o) can only be used with --list (-l).")
         #expect(failure("--verbose") == "--verbose (-v) can only be used with --list (-l).")
+        #expect(failure("--running") == "--running can only be used with --list (-l).")
+        #expect(failure("-q") == "--quiet (-q) can only be used with --list (-l).")
+        #expect(failure("--quiet") == "--quiet (-q) can only be used with --list (-l).")
+        #expect(failure("--running", "-q") == "--running can only be used with --list (-l).")
+    }
+
+    @Test func rejectsListModifiersWithOtherActions() {
+        #expect(failure("-s", "Ubuntu", "-q") == "--quiet (-q) can only be used with --list (-l).")
+        #expect(
+            failure("-t", "Ubuntu", "--running") == "--running can only be used with --list (-l).")
+        #expect(failure("--status", "-q") == "--quiet (-q) can only be used with --list (-l).")
+        // `-v` without `--list` before it is `--version`.
+        #expect(
+            failure("--running", "-v", "-l") == "--list (-l) cannot be combined with --version.")
     }
 
     @Test func rejectsVerboseWithOnline() {
         #expect(
             failure("-l", "-o", "-v") == "--verbose (-v) cannot be combined with --online (-o).")
+    }
+
+    @Test(arguments: [
+        ["-l", "-q", "-v"], ["-l", "-v", "-q"], ["-lqv"], ["-lvq"],
+        ["--list", "--quiet", "--verbose"],
+        ["-l", "--running", "-q", "-v"], ["-lq", "--running", "-v"],
+    ])
+    func rejectsQuietWithVerbose(_ arguments: [String]) {
+        #expect(failure(arguments) == "--quiet (-q) cannot be combined with --verbose (-v).")
+    }
+
+    @Test(arguments: [["-l", "-o", "--running"], ["--list", "--online", "--running"]])
+    func rejectsRunningWithOnline(_ arguments: [String]) {
+        #expect(failure(arguments) == "--running cannot be combined with --online (-o).")
+    }
+
+    @Test(arguments: [["-l", "-o", "-q"], ["-loq"], ["-l", "--online", "--quiet"]])
+    func rejectsQuietWithOnline(_ arguments: [String]) {
+        #expect(failure(arguments) == "--quiet (-q) cannot be combined with --online (-o).")
+    }
+
+    @Test func reportsTheFirstConflictWhenThereAreSeveral() {
+        #expect(
+            failure("-l", "-o", "-v", "-q", "--running")
+                == "--verbose (-v) cannot be combined with --online (-o).")
+        #expect(
+            failure("-l", "-o", "-q", "--running")
+                == "--running cannot be combined with --online (-o).")
+    }
+
+    // MARK: Listing, the default, and terminate with other options
+
+    @Test func rejectsSessionOptionsWithTheDistributionActions() {
+        #expect(
+            failure("-l", "-d", "Ubuntu")
+                == "--list (-l) cannot be combined with --distribution (-d).")
+        #expect(
+            failure("-l", "--running", "-d", "Ubuntu")
+                == "--list (-l) cannot be combined with --distribution (-d).")
+        #expect(failure("-l", "--cd", "/") == "--list (-l) cannot be combined with --cd.")
+        #expect(
+            failure("-s", "Ubuntu", "-d", "Debian")
+                == "--set-default (-s) cannot be combined with --distribution (-d).")
+        #expect(
+            failure("-s", "Ubuntu", "-u", "root")
+                == "--set-default (-s) cannot be combined with --user (-u).")
+        #expect(
+            failure("-t", "Ubuntu", "--cd", "/")
+                == "--terminate (-t) cannot be combined with --cd.")
+    }
+
+    @Test func rejectsTheDistributionActionsWithOtherActions() {
+        #expect(
+            failure("-l", "-s", "Ubuntu")
+                == "--list (-l) cannot be combined with --set-default (-s).")
+        #expect(
+            failure("-l", "-t", "Ubuntu") == "--list (-l) cannot be combined with --terminate (-t)."
+        )
+        #expect(
+            failure("-t", "Ubuntu", "--shutdown")
+                == "--terminate (-t) cannot be combined with --shutdown.")
+        #expect(
+            failure("-s", "Ubuntu", "--", "ls")
+                == "--set-default (-s) cannot be combined with a command.")
+        #expect(
+            failure("-t", "Ubuntu", "-e", "ls")
+                == "--terminate (-t) cannot be combined with --exec (-e).")
+    }
+
+    @Test func rejectsAMissingName() {
+        #expect(failure("-s")?.hasPrefix("Missing value for '-s <distro>'") == true)
+        #expect(
+            failure("--set-default")?.hasPrefix("Missing value for '--set-default <distro>'")
+                == true)
+        #expect(failure("-t")?.hasPrefix("Missing value for '-t <distro>'") == true)
+        #expect(
+            failure("--terminate")?.hasPrefix("Missing value for '--terminate <distro>'") == true)
+    }
+
+    @Test func rejectsASecondName() {
+        #expect(
+            failure("-s", "Ubuntu", "Debian")
+                == "Unexpected argument 'Debian' after --set-default (-s).")
+        #expect(
+            failure("-t", "Ubuntu", "Debian")
+                == "Unexpected argument 'Debian' after --terminate (-t).")
     }
 
     // MARK: Operands
@@ -145,7 +245,8 @@ import Testing
     @Test func showsEveryActionInTheUsage() {
         let usage = Maw.usageString()
         for form in [
-            "-- <command>", "-e <command>", "--install [<distro>]", "--list [--verbose | --online]",
+            "-- <command>", "-e <command>", "--install [<distro>]",
+            "--list [--running] [--verbose | --quiet]", "--list --online",
             "--set-default <distro>", "--terminate <distro>", "--shutdown",
             "--export <distro> <file>", "--import <distro> <file>", "--unregister <distro>",
             "--status", "--version",

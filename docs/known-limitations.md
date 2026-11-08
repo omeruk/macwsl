@@ -10,32 +10,13 @@ request #19 lists under "Review results". Commits from the branch of pull reques
 cited, because that pull request was squash-merged and its branch commits are not reachable
 from `main`.
 
-## Phase 06a: Distro management
-
-- **No `maw --list`, `maw --set-default`, or `maw --terminate`.**
-  - **Seen:** The three commands fail with `notImplemented`: "--list is not implemented yet;
-    phase 06 adds it." `maw --status` shows the running machines, but nothing lists the
-    installed distributions, and the default is set only when the first distribution is
-    installed.
-  - **Evidence:** `Sources/maw/Action.swift:28`; pull request #19, "Known limitations and
-    follow-up work"; `docs/daemon.md`, "Installing distributions" ("Phase 06 adds
-    `maw --set-default`").
-  - **Phase:** 06a (`prompts/06a-distro-management.md`).
-- **`sessionConnectionEnded` suggests `maw --shutdown`.**
-  - **Seen:** When a session's connection ends unexpectedly, the suggestion offers
-    `maw --shutdown` to end a command that may still be running, which stops every running
-    distribution.
-  - **Evidence:** `Sources/MawCore/MawError.swift:475`; [docs/daemon.md, "Known
-    limitations"](daemon.md#known-limitations), the entry on connections that end on the
-    host's side.
-  - **Phase:** 06a. The suggestion names `maw --terminate <name>` once that command exists.
-
 ## Phase 06b: Distro removal and transfer
 
 - **No `maw --unregister`, `maw --export`, or `maw --import`.**
-  - **Seen:** The three commands fail with `notImplemented` and name phase 06. A distribution
-    is removed by hand: `maw --shutdown`, then deleting its directory.
-  - **Evidence:** `Sources/maw/Action.swift:28`; pull request #19, "Known limitations and
+  - **Seen:** The three commands fail with `notImplemented`: "--unregister is not implemented
+    yet; phase 06b adds it." A distribution is removed by hand: `maw --terminate <name>`, then
+    deleting its directory.
+  - **Evidence:** `Sources/maw/Action.swift:29`; pull request #19, "Known limitations and
     follow-up work"; [docs/distributions.md, "Removing a distribution by
     hand"](distributions.md#removing-a-distribution-by-hand) and `README.md`, "Removing a
     distribution", describe the manual removal.
@@ -47,6 +28,13 @@ from `main`.
   - **Evidence:** `Guest/initramfs/init:78`; pull request #19, "Review results", CR-7.
     Installation from the catalog cannot produce such a distribution.
   - **Phase:** 06b. `--import` checks `/sbin/init` and refuses such a file system by name.
+- **The `maw --help` example of `--export` names the alias `Ubuntu`.**
+  - **Seen:** `maw --help` shows `maw --export Ubuntu ubuntu.tar`. `Ubuntu` is a catalog alias,
+    not an installed name, and phase 06a does not accept aliases where a command needs an
+    installed distribution.
+  - **Evidence:** `Sources/maw/Maw.swift:45`; pull request #22, "Known limitations and
+    follow-up work".
+  - **Phase:** 06b, which implements `--export` and gives the example an installed name.
 
 ## Phase 07: File sharing and paths
 
@@ -58,6 +46,31 @@ from `main`.
   - **Evidence:** [Decision record 0015](decisions/0015-sessions-through-pam.md), "Consequence
     for phase 07", which lists the options.
   - **Phase:** 07.
+
+## Phase 08: Networking
+
+- **The first DNS query after the DHCP lease is not answered.**
+  - **Seen:** In a distribution machine, the first DNS query that `systemd-resolved` sends to
+    the NAT's server (192.168.64.1), within about 20 ms of the DHCP lease, receives no answer.
+    The lookup completes only after `systemd-resolved` times that query out at about 5.0 s and
+    asks the IPv6 link-local server instead, so a lookup that begins in about the first 5.5
+    seconds of a boot can take about 5 s. Its effect on a user's first lookup after a cold start
+    is not measured.
+  - **Evidence:** Part 4b of phase 06a, on 2026-11-08 (M1 Pro, macOS 27): a temporary
+    integration test on test distributions, each boot's journal (`-o short-monotonic`), and in
+    some passes `SYSTEMD_LOG_LEVEL=debug` for `systemd-resolved` and `systemd-timesyncd`. The
+    lookup observed was `systemd-timesyncd`'s resolution of `ntp.ubuntu.com`, which was usually
+    still pending in about the first 5.5 seconds of a boot; in 20 boots stopped at once after
+    systemd reported `running`, all 20 had it pending at the stop. Under `.fsync`
+    synchronization, 5 of 10 instrumented boots tried to resolve before the network was up and
+    failed at once, so no lookup was pending. Why the first query is not answered is not
+    determined.
+  - **Resolved part:** Shutdowns soon after a boot waited 5 s for `systemd-timesyncd` while this
+    lookup was pending, and fell back to Virtualization.framework's stop request. [Decision
+    record 0013](decisions/0013-systemd-and-the-agent.md), item 7 (pull request #23), orders
+    `systemd-timesyncd` after `systemd-resolved`, which removes that wait without depending on
+    this item; the decision record lists the measurements.
+  - **Phase:** 08, together with DNS under VPNs.
 
 ## Phase 11b: Linux sessions in the app
 
@@ -109,13 +122,16 @@ from `main`.
 - **Many messages are wider than 80 columns.**
   - **Seen:** Messages and suggestions are single lines, many longer than 80 columns, and
     some contain text of unknown length from Foundation or paths. Examples: the account prompt
-    (90 columns), and, with the name `maw-capture`, the suggestion of
-    `distributionAlreadyInstalled` (81) and `machineStopped` (85).
-  - **Evidence:** `Sources/maw/InstallCommand.swift:372`, `Sources/MawCore/MawError.swift:375`;
-    pull request #19, "Known limitations and follow-up work". Four messages are wrapped by hand,
-    each with an 80-column test: the cancellation, the password with a control character, and
-    the unconfirmed cancellation (`Tests/mawTests/FailureTests.swift`), and
-    `sessionConnectionEnded` (`Tests/MawCoreTests/MawErrorTests.swift:259`).
+    (90 columns), the message of `installationOutcomeUnknown` (184 columns with
+    `Ubuntu-24.04`), and, with the name `maw-capture`, the suggestion of
+    `distributionAlreadyInstalled` (81).
+  - **Evidence:** `Sources/maw/InstallCommand.swift:372`, `Sources/MawCore/MawError.swift:383`;
+    pull request #19, "Known limitations and follow-up work". Seven messages have an 80-column
+    test, wrapped by hand where needed: the cancellation, the password with a control
+    character, the unconfirmed cancellation, `machineStopped` with the daemon's own reasons,
+    `distributionNotInstalled`, and the suggestion of `installationOutcomeUnknown`
+    (`Tests/mawTests/FailureTests.swift`), and `sessionConnectionEnded`
+    (`Tests/MawCoreTests/MawErrorTests.swift:275`).
   - **Phase:** 12b. Proposed: `CommandFailure` wraps its output at spaces to the terminal's
     width when standard error is a terminal, and leaves it unchanged otherwise.
 - **CR-3: A resumed download does not check `Content-Range`.**
@@ -135,8 +151,9 @@ from `main`.
     "Review results", CR-8.
   - **Phase:** 12b. Record the request and stop the machine as soon as the start completes,
     or stop a starting machine if the framework allows it; either needs an integration test.
-    Phase 06a defines the behavior of `--terminate` for a starting machine on its own
-    (`prompts/06a-distro-management.md`, "Terminate").
+    `--terminate` does not depend on this fix: for a machine that is starting, it waits for the
+    start to finish and then stops the machine ([docs/daemon.md, "Terminating one
+    distribution"](daemon.md#terminating-one-distribution)).
 - **CR-11: Two copies of the `posix_spawn` setup.**
   - **Seen:** Developers maintain the same setup twice: the pipe, `/dev/null` input, the
     signal mask and defaults, `POSIX_SPAWN_CLOEXEC_DEFAULT`, and the exit status. There is no
@@ -166,6 +183,33 @@ from `main`.
     limitations and follow-up work".
   - **Phase:** 12b. Measure the waits with `SuspendingClock`, as `Launchctl.waitUntilRemoved`
     does.
+- **Some shutdowns soon after a boot take about 2.6 s.**
+  - **Seen:** A few clean shutdowns through the agent, of machines that had booted shortly
+    before, took about 2.6 s, against about 0.3 to 1.0 s for the others. They stayed within the
+    daemon's limit (`VirtualMachineHandle.stopTimeout`) and did not fall back to
+    Virtualization.framework's stop request. The cause is not measured.
+  - **Evidence:** Phase 06a on 2026-11-08 (M1 Pro, macOS 27.0.1): two terminates of 2,676 ms,
+    in the full integration run of part 5, and 2,564 ms, in the owner's third check, about 10 s
+    after that machine's boot; and one shutdown of 2,683 ms in part 4c. Pull request #22,
+    "Notes for reviewers".
+  - **Phase:** 12b. Measure where these shutdowns spend the time, for example in each boot's
+    journal.
+- **Two dial-back errors suggest `maw --shutdown`.**
+  - **Seen:** `sessionDialBackFailed` and `sessionDialBackMissing` suggest restarting every
+    virtual machine with `maw --shutdown`, where `maw --terminate <name>` would restart only
+    the one affected. The errors carry no distribution name.
+  - **Evidence:** `Sources/MawCore/MawError.swift:488` and `:492`; pull request #22, "Known
+    limitations and follow-up work".
+  - **Phase:** 12b. Carry the distribution's name in both errors, which changes `MawError`
+    and the daemon interface, and suggest `maw --terminate <name>`.
+- **`RootFileSystemIntegrationTests` stops every machine.**
+  - **Seen:** Its `installAndStop` runs `maw --shutdown`, which stops every machine of the test
+    daemon, where the other integration tests stop only their own distribution with
+    `maw --terminate`.
+  - **Evidence:** `Tests/mawdTests/RootFileSystemIntegrationTests.swift:106`;
+    `MawIntegration.remove` in `Tests/mawdTests/MawIntegration.swift` uses `maw --terminate`.
+    Pull request #22, "Known limitations and follow-up work".
+  - **Phase:** 12b. Stop only the installed test distribution, with `maw --terminate <name>`.
 
 ## Phase 13: Packaging and release
 

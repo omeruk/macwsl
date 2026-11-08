@@ -48,7 +48,14 @@ extension Maw {
             )
         case .list:
             try expectNoOperands(after: CLIOption.list.displayName)
-            return .list(managing.online ? .online : .installed(verbose: managing.verbose))
+            if managing.online {
+                return .list(.online)
+            }
+            return .list(
+                .installed(
+                    ListOptions(
+                        verbose: managing.verbose, running: managing.running,
+                        quiet: managing.quiet)))
         case .setDefault(let name):
             try expectNoOperands(after: CLIOption.setDefault.displayName)
             return .setDefault(name)
@@ -96,17 +103,28 @@ extension Maw {
         return requests
     }
 
+    /// `--running` and `--quiet` combine with each other; `--verbose` combines with
+    /// `--running` but not with `--quiet`; none of them combines with `--online`. All four need
+    /// `--list`.
     private func validateListModifiers(for request: Request?) throws {
-        let verbose = CLIOption.verbose.displayName
-        let online = CLIOption.online.displayName
-        if managing.verbose && managing.online {
-            throw ValidationError("\(verbose) cannot be combined with \(online).")
+        let given: [(option: CLIOption, isSet: Bool)] = [
+            (.verbose, managing.verbose), (.running, managing.running),
+            (.quiet, managing.quiet), (.online, managing.online),
+        ]
+        func isSet(_ option: CLIOption) -> Bool {
+            given.contains { $0.option == option && $0.isSet }
+        }
+        let conflicts: [(CLIOption, CLIOption)] = [
+            (.verbose, .online), (.running, .online), (.quiet, .online), (.quiet, .verbose),
+        ]
+        for (first, second) in conflicts where isSet(first) && isSet(second) {
+            throw ValidationError(
+                "\(first.displayName) cannot be combined with \(second.displayName).")
         }
         guard case .list = request else {
-            for (option, isSet) in [(verbose, managing.verbose), (online, managing.online)]
-            where isSet {
+            for (option, isSet) in given where isSet {
                 throw ValidationError(
-                    "\(option) can only be used with \(CLIOption.list.displayName).")
+                    "\(option.displayName) can only be used with \(CLIOption.list.displayName).")
             }
             return
         }

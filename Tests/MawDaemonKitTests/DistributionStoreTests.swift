@@ -363,4 +363,76 @@ import Testing
         #expect(store.installed().isEmpty)
         #expect(store.defaultDistribution() == nil)
     }
+
+    // MARK: Resolving a name
+
+    /// Resolves `name` and counts how often the installed distributions were scanned.
+    func resolve(_ name: String) throws -> (name: String?, scans: Int) {
+        var scans = 0
+        let found = try store.installedDistribution(named: try DistroName(name)) {
+            scans += 1
+            return store.installed()
+        }
+        return (found?.name.rawValue, scans)
+    }
+
+    @Test func resolvesAnExactNameWithoutAScan() throws {
+        try install("Alpha")
+        try install("Ubuntu-24.04")
+        let resolved = try resolve("Ubuntu-24.04")
+        #expect(resolved.name == "Ubuntu-24.04")
+        #expect(resolved.scans == 0)
+        #expect(
+            try store.installedDistribution(named: try DistroName("Alpha"))?.name.rawValue
+                == "Alpha")
+    }
+
+    /// On a case-insensitive volume the exact lookup finds the other spelling, and on a
+    /// case-sensitive one the scan does; either way the stored spelling comes back.
+    @Test(arguments: ["ubuntu-24.04", "UBUNTU-24.04", "uBuNtU-24.04"])
+    func resolvesANameInAnotherCaseToTheStoredSpelling(_ name: String) throws {
+        try install("Ubuntu-24.04")
+        #expect(try resolve(name).name == "Ubuntu-24.04")
+        #expect(
+            try store.installedDistribution(named: try DistroName(name))?.name.rawValue
+                == "Ubuntu-24.04")
+    }
+
+    /// Where no entry answers to the name in any case, the exact lookup misses on every volume,
+    /// and the scan compares the stored names.
+    @Test func scansForANameInAnotherCaseOnlyWhenTheExactLookupMisses() throws {
+        try install("Alpha")
+        let directory = store.paths.distroDirectory(for: try DistroName("Moved"))
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try (try metadata("Zeta")).encoded().write(to: directory.appending(path: "distro.json"))
+        let resolved = try resolve("zeta")
+        #expect(resolved.name == "Zeta")
+        #expect(resolved.scans == 1)
+    }
+
+    @Test func resolvesNoUnknownName() throws {
+        try install("Alpha")
+        let resolved = try resolve("Debian")
+        #expect(resolved.name == nil)
+        #expect(resolved.scans == 1)
+        #expect(try store.installedDistribution(named: try DistroName("Debian")) == nil)
+    }
+
+    /// A distribution that is still being installed lives in the staging directory and is not
+    /// installed yet.
+    @Test func resolvesNoNameThatIsOnlyBeingInstalled() throws {
+        let staging = store.stagingDirectory(for: try DistroName("Staged"))
+        try store.createStagingDirectory(staging)
+        try (try metadata("Staged")).encoded().write(to: staging.appending(path: "distro.json"))
+        #expect(try resolve("Staged").name == nil)
+        #expect(try resolve("staged").name == nil)
+    }
+
+    @Test func resolvesNoDirectoryWithoutMetadata() throws {
+        try FileManager.default.createDirectory(
+            at: store.paths.distroDirectory(for: try DistroName("Leftover")),
+            withIntermediateDirectories: true)
+        #expect(try resolve("Leftover").name == nil)
+        #expect(try resolve("leftover").name == nil)
+    }
 }

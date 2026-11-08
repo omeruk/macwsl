@@ -4,7 +4,7 @@ import Testing
 
 @Suite struct MawErrorTests {
     static let errors: [MawError] = [
-        .notImplemented(feature: "--list", phase: "06"),
+        .notImplemented(feature: "--export", phase: "06b"),
         .distributionNotInstalled(try! DistroName("Ubuntu")),
         .unsupportedDirectory("projects"),
         .daemonNotInstalled(label: "dev.maw.mawd"),
@@ -33,15 +33,28 @@ import Testing
     }
 
     @Test func namesThePhaseOfAMissingFeature() {
-        let error = MawError.notImplemented(feature: "--list", phase: "06")
-        #expect(error.errorDescription == "--list is not implemented yet; phase 06 adds it.")
+        let error = MawError.notImplemented(feature: "--export", phase: "06b")
+        #expect(error.errorDescription == "--export is not implemented yet; phase 06b adds it.")
         #expect(error.recoverySuggestion == nil)
     }
 
-    @Test func suggestsInstallingAMissingDistribution() throws {
-        let error = MawError.distributionNotInstalled(try DistroName("Ubuntu"))
-        #expect(error.errorDescription == "No distribution named 'Ubuntu' is installed.")
-        #expect(error.recoverySuggestion == "Install it with maw --install Ubuntu.")
+    /// A name that the catalog has, as its name or an alias in any case, suggests installing
+    /// the catalog entry by its catalog name, and `maw --list`, which shows the entry if it is
+    /// installed under that name.
+    @Test(arguments: ["Ubuntu-24.04", "ubuntu-24.04", "Ubuntu", "ubuntu", "UBUNTU"])
+    func suggestsInstallingAMissingDistributionThatTheCatalogHas(_ name: String) throws {
+        let error = MawError.distributionNotInstalled(try DistroName(name))
+        #expect(error.errorDescription == "No distribution named '\(name)' is installed.")
+        #expect(
+            error.recoverySuggestion
+                == "Install it with maw --install Ubuntu-24.04, or see maw --list.")
+    }
+
+    @Test(arguments: ["Work", "Ubuntu-22.04", "maw-test-work"])
+    func suggestsTheListingForAMissingDistributionThatTheCatalogLacks(_ name: String) throws {
+        let error = MawError.distributionNotInstalled(try DistroName(name))
+        #expect(error.errorDescription == "No distribution named '\(name)' is installed.")
+        #expect(error.recoverySuggestion == "maw --list shows the installed distributions.")
     }
 
     @Test func explainsThatPathTranslationIsMissing() {
@@ -166,7 +179,7 @@ import Testing
         let error = MawError.machineStopped(machine: "initramfs", reason: "maw --shutdown was run")
         #expect(
             error.errorDescription
-                == "The session ended because the virtual machine initramfs stopped: "
+                == "The session ended because the virtual machine initramfs stopped:\n"
                 + "maw --shutdown was run.")
     }
 
@@ -242,15 +255,18 @@ import Testing
             error.recoverySuggestion
                 == "If the command is still running, find its process ID with\n"
                 + "maw -d Ubuntu-24.04 -e ps -ef and end it with maw -d Ubuntu-24.04 -e kill <ID>.\n"
-                + "maw --shutdown also ends it, but it stops every running distribution.")
+                + "maw --terminate Ubuntu-24.04 also ends it, and every other session there.")
     }
 
     /// The message does not say which side ended the connection, carries no protocol detail,
-    /// and suggests no command that this build lacks.
+    /// and suggests no command that this build lacks, such as those of phase 06b.
     @Test func claimsNothingThatIsNotKnown() {
         let error = MawError.sessionConnectionEnded(distribution: "Ubuntu-24.04")
         let text = (error.errorDescription ?? "") + "\n" + (error.recoverySuggestion ?? "")
-        for word in ["frame", "bytes", "buffered", "agent", "host", "guest", "--terminate"] {
+        for word in [
+            "frame", "bytes", "buffered", "agent", "host", "guest", "--unregister", "--export",
+            "--import",
+        ] {
             #expect(!text.contains(word), "\(word)")
         }
     }

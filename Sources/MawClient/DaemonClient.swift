@@ -208,6 +208,36 @@
             return wasRunning
         }
 
+        /// Every installed distribution with its machine's state, and the default. It starts no
+        /// machine.
+        public func listDistributions() async throws(MawError) -> DistributionList {
+            guard case .distributions(let list) = try await send(.listDistributions).reply else {
+                throw .daemonProtocolError(
+                    reason: "the reply to listDistributions is not distributions")
+            }
+            return list
+        }
+
+        /// Makes the installed distribution that `name` names, without regard to case, the
+        /// default. Returns its stored spelling. It starts no machine.
+        @discardableResult
+        public func setDefault(_ name: DistroName) async throws(MawError) -> DistroName {
+            guard case .defaultSet(let stored) = try await send(.setDefault(name)).reply else {
+                throw .daemonProtocolError(reason: "the reply to setDefault is not defaultSet")
+            }
+            return stored
+        }
+
+        /// Stops the machine of the installed distribution that `name` names, without regard to
+        /// case, and ends its sessions. Returns once it has stopped.
+        @discardableResult
+        public func terminate(_ name: DistroName) async throws(MawError) -> TerminateSummary {
+            guard case .terminated(let summary) = try await send(.terminate(name)).reply else {
+                throw .daemonProtocolError(reason: "the reply to terminate is not terminated")
+            }
+            return summary
+        }
+
         /// Closes the connection, which ends its sessions.
         public func close() {
             state.withLock { $0.isClosed = true }

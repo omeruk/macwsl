@@ -114,13 +114,147 @@ struct MawIntegration: Sendable {
             ["--install", "--name", name, "-u", user], standardInput: Data("\(password)\n".utf8))
     }
 
-    /// Removes a distribution that a test created: stops the test daemon's machines and deletes
-    /// its directory, as the README describes for users until phase 06.
+    /// Removes a distribution that a test created: stops its machine with `maw --terminate`, which
+    /// leaves every other machine running, and deletes its directory, as the README describes for
+    /// users until phase 06b.
     func remove(_ name: String) async throws {
-        _ = try await run(["--shutdown"])
         let directory = paths.distroDirectory(for: try DistroName(name))
-        if FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)) {
-            try FileManager.default.removeItem(at: directory)
+        guard FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)) else {
+            return
+        }
+        let terminate = try await run(["--terminate", name])
+        try #require(terminate.status == 0, "\(terminate.standardError)")
+        try FileManager.default.removeItem(at: directory)
+    }
+
+    /// Installs `\(prefix)-<suffix>` from the cached image, runs `body` with its name, and
+    /// removes it afterwards, also when `body` throws. When the removal after a failure fails
+    /// too, it is recorded as an issue of its own and the original error is thrown, so that the
+    /// first failure is the one reported.
+    func withDistribution(
+        _ suffix: String, _ body: (_ name: String) async throws -> Void
+    ) async throws {
+        let name = "\(prefix)-\(suffix)"
+        let install = await (try install(name)).waitForExit(timeout: .seconds(300))
+        do {
+            try #require(install.status == 0, "\(install.output)\(install.standardError)")
+            try await body(name)
+        } catch {
+            do {
+                try await remove(name)
+            } catch let removal {
+                Issue.record(removal, "removing \(name) after the failure above")
+            }
+            throw error
+        }
+        try await remove(name)
+    }
+
+    // MARK: The owner's default
+
+    /// Runs `body` and then puts `state.json` back as it was: the same bytes, or no file if
+    /// there was none. The test daemon shares the owner's `state.json`, which names the
+    /// owner's default distribution, so every test that changes the default runs in this.
+    /// scripts/integration-test.sh restores the file once more on exit, for a run that is
+    /// interrupted.
+    func withStateFileRestored(_ body: () async throws -> Void) async throws {
+        let stateFile = paths.stateFile
+        let saved: Data?
+        if FileManager.default.fileExists(atPath: stateFile.path(percentEncoded: false)) {
+            saved = try Data(contentsOf: stateFile)
+        } else {
+            saved = nil
+        }
+        defer {
+            if let saved {
+                try? saved.write(to: stateFile, options: .atomic)
+            } else {
+                try? FileManager.default.removeItem(at: stateFile)
+            }
+        }
+        try await body()
+    }
+
+    // MARK: The listing
+
+    /// A row of `maw --list` or `maw --list --verbose`.
+    struct ListedDistribution: Equatable, CustomStringConvertible {
+        var name: String
+        var isDefault: Bool
+        /// The `STATE` column, which only `--verbose` shows.
+        var state: String?
+
+        var description: String {
+            "\(isDefault ? "* " : "")\(name)\(state.map { " \($0)" } ?? "")"
+        }
+    }
+
+    /// The header of `maw --list` and `maw --list --verbose`.
+    static let listHeader =
+        "The installed distributions. * marks the default, which maw opens without -d."
+
+    /// The rows of `maw <arguments>` for distributions under `MAW_TEST_PREFIX`, in the order
+    /// listed. The owner's distributions are also installed, so every other row is ignored.
+    func listed(
+        _ arguments: [String] = ["--list", "--verbose"],
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws -> [ListedDistribution] {
+        let result = try await run(arguments)
+        try #require(
+            result.status == 0, "maw \(arguments): \(result.standardError)",
+            sourceLocation: sourceLocation)
+        #expect(
+            result.lines.first == Self.listHeader, "\(result.output)",
+            sourceLocation: sourceLocation)
+        return result.lines.compactMap { line in
+            guard let row = line.wholeMatch(of: #/  ([* ]) (\S+)(?: +(\S+))?/#),
+                row.2.hasPrefix("\(prefix)-")
+            else { return nil }
+            return ListedDistribution(
+                name: String(row.2), isDefault: row.1 == "*", state: row.3.map(String.init))
+        }
+    }
+
+    /// The names that `maw <arguments>` prints one per line, such as `--list --quiet`, under
+    /// `MAW_TEST_PREFIX`.
+    func listedNames(
+        _ arguments: [String], sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws -> [String] {
+        let result = try await run(arguments)
+        try #require(
+            result.status == 0, "maw \(arguments): \(result.standardError)",
+            sourceLocation: sourceLocation)
+        return result.lines.filter { $0.hasPrefix("\(prefix)-") }
+    }
+
+    // MARK: The daemon and its machines
+
+    /// The test daemon's process ID, from the first line of `--status`.
+    func daemonProcessID() async throws -> pid_t {
+        let line = try #require(try await run(["--status"]).lines.first)
+        let match = try #require(line.firstMatch(of: /process (\d+)/), "\(line)")
+        return try #require(pid_t(match.1))
+    }
+
+    /// The lines of the console log of `name`, or none if it has not booted in this run.
+    func consoleLogLines(of name: String) -> [String] {
+        let log = try? String(
+            contentsOf: logDirectory.appending(path: "\(name).log"), encoding: .utf8)
+        return log.map(DebugBootProcess.lines(of:)) ?? []
+    }
+
+    /// The lines in which the test daemon noted a boot of `name`'s machine, which
+    /// scripts/integration-test.sh also counts.
+    func bootLines(of name: String) -> [String] {
+        consoleLogLines(of: name).filter { $0.firstMatch(of: #/^\[mawd\] \S+ starting /#) != nil }
+    }
+
+    /// The lines in which the test daemon noted how a machine of `name` shut down, one per
+    /// shutdown. A shutdown that falls back from the guest agent first notes why ("shutdown:
+    /// the agent was not used: ..."); only its outcome, clean or forced, is counted.
+    func shutdownLines(of name: String) -> [String] {
+        consoleLogLines(of: name).filter {
+            $0.firstMatch(of: #/^\[mawd\] \S+ shutdown: (clean|forced) /#) != nil
         }
     }
 
@@ -146,21 +280,24 @@ struct MawIntegration: Sendable {
         return Array(lines[start...])
     }
 
-    /// The test distribution's row in `--status`, or an empty string.
-    func machineRow() async throws -> String {
+    /// The row in `--status` of the machine of `name`, by default the test distribution, or an
+    /// empty string.
+    func machineRow(of name: String? = nil) async throws -> String {
         let status = try await run(["--status"])
-        return status.lines.first { $0.hasPrefix("  \(distribution) ") } ?? ""
+        return status.lines.first { $0.hasPrefix("  \(name ?? distribution) ") } ?? ""
     }
 
-    /// Waits until `--status` shows `count` sessions on the test distribution's machine.
+    /// Waits until `--status` shows `count` sessions on the machine of `name`, by default the
+    /// test distribution.
     func waitForSessions(
-        _ count: Int, sourceLocation: SourceLocation = #_sourceLocation
+        _ count: Int, in name: String? = nil, sourceLocation: SourceLocation = #_sourceLocation
     ) async throws {
         let reached = await eventually(within: .seconds(30)) {
-            (try? await machineRow())?.hasSuffix(" \(count)") == true
+            (try? await machineRow(of: name))?.hasSuffix(" \(count)") == true
         }
         try #require(
-            reached, "--status never showed \(count) sessions.", sourceLocation: sourceLocation)
+            reached, "--status never showed \(count) sessions on \(name ?? distribution).",
+            sourceLocation: sourceLocation)
     }
 
     func eventually(within timeout: Duration, _ condition: () async -> Bool) async -> Bool {

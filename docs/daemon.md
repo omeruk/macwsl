@@ -23,6 +23,16 @@ A **machine** is one virtual machine and its state, identified by a `MachineID`
 distribution, which the daemon resolves from `state.json`. With nothing installed, the request
 fails with `noDistributionInstalled`, whose suggestion names `maw --install`.
 
+The daemon matches a name against the installed distributions without regard to case, and
+uses the stored spelling from then on, so that one disk never gets two machines
+(`DistributionStore.installedDistribution(named:)`). The exact lookup comes first; on a
+case-insensitive APFS volume it already finds `Ubuntu-24.04` for `ubuntu-24.04`. Only when it
+finds nothing does the daemon read every installed distribution's metadata and compare the names
+lowercased, which covers case-sensitive volumes. A session that names its distribution exactly
+therefore reads only that distribution's metadata. `-d`, `--set-default`, and `--terminate`
+resolve names this way; a name that matches no installed distribution, including one that is
+only being installed, fails with `distributionNotInstalled`.
+
 ### Lifecycle
 
 `MachineRegistry` (`Sources/MawDaemonKit/MachineRegistry.swift`) holds one slot per machine:
@@ -42,6 +52,8 @@ stopped ──openSession──▶ starting ──agent answers info──▶ ru
   session cancels the timer.
 - **Clean stop.** Stopping uses `VirtualMachine.stop(timeout:)`, so the console log records
   `shutdown: clean after <n> ms via the guest agent`, or how it stopped otherwise.
+- **Terminate.** `maw --terminate <name>` stops one distribution's machine the same way (see
+  "Terminating one distribution").
 - **Failure.** A machine that fails to start reports the error to every waiting request and
   stays stopped. A machine that stops on its own, or with an error, is marked stopped, its
   sessions end with the reason, and the next session starts it again. A guest that powers off
@@ -57,6 +69,42 @@ stopped ──openSession──▶ starting ──agent answers info──▶ ru
   machine stops, it removes the listener and ends the wait of every session that has not
   received its connection yet. The listener exists only inside the daemon's process; only the
   machine's guest can reach it (docs/security.md).
+
+### Terminating one distribution
+
+`maw --terminate <name>` sends `terminate(name)`; launchd starts the daemon if it is not
+running. The daemon resolves the name (see "Machines"), logs the request with the client's
+process ID, and calls `MachineRegistry.terminate(_:reason:)` for that distribution's machine
+with the reason `maw --terminate was run`. By the machine's state:
+
+| State | What happens | `wasRunning` |
+|-------|--------------|--------------|
+| Stopped | Nothing; no machine starts. | false |
+| Stopping | The request waits for that stop. | false |
+| Starting | The request waits for the start to finish, and then continues as for Running. If the start fails, the machine is stopped already. | true, or false after a failed start |
+| Running | The idle timer is cancelled, every lease ends and its client receives `sessionEnded` with the reason, and the machine stops as on `shutdown`: a clean shutdown through the guest agent, then Virtualization.framework's stop request, then a forced stop, with the limits of `VirtualMachine.stop(timeout:)`. | true |
+
+The daemon replies `terminated` once the machine has stopped, and `maw` prints nothing. Other
+machines are not affected. A session on the terminated distribution ends with `machineStopped`
+naming the reason, after its terminal is restored; the next session starts the machine again,
+as after an idle stop.
+
+- **Why a start is not cancelled.** `VirtualMachine.forceStop` does nothing while a machine
+  starts (CR-8, [docs/known-limitations.md](known-limitations.md), phase 12b). Waiting costs the
+  rest of the boot: about 0.4 s normally, and up to 30 s if the agent never answers.
+- **A request during the stop** waits for it and then starts the machine again, as under
+  "Lifecycle".
+- **A session that waits for the same start.** When the start finishes, the waiting session
+  and the terminate request resume in the registry in an order that is not defined. If the
+  session resumes first, it takes a lease and then ends with `machineStopped` naming
+  `maw --terminate`. If the terminate request resumes first, the session finds the machine
+  stopping, waits, and starts a new machine. Either outcome is correct; no test depends on
+  which occurs.
+- **Installations.** A distribution that is being installed has nothing in `distros/` under its
+  name until the installer registers it, so `--terminate` of that name fails with
+  `distributionNotInstalled` and does not affect the installation. Once it is registered, it is
+  installed: a `--terminate` during the installer's first boot (the `start` step) waits for
+  that boot and then stops the machine, and the installation still reports success.
 
 ### A root file system that fails its check
 
@@ -185,7 +233,7 @@ Every message is an XPC dictionary (`Sources/MawXPC/InterfaceCoding.swift`):
 
 | Key | Type | Content |
 |-----|------|---------|
-| `interfaceVersion` | uint64 | `DaemonInterface.version`, currently **2**. This key never changes. |
+| `interfaceVersion` | uint64 | `DaemonInterface.version`, currently **3**. This key never changes. |
 | `body` | data | the message, JSON-encoded from the `Codable` types in `Sources/MawXPC/DaemonInterface.swift` |
 | `descriptor` | fd | only in `sessionOpened`: the guest agent connection |
 
@@ -205,9 +253,16 @@ there is no negotiation.
 | `install(InstallRequest)` | `installed(InstallSummary)` | Installs a distribution. The reply comes when the installation has finished; meanwhile the daemon sends `installProgress` events. `InstallRequest` holds the catalog name, an optional name to install under, the user, the password as a `Secret`, and the Mac's locale. |
 | `checkInstall(distribution:name:)` | `installPossible` | Checks what can be checked before the account is known: the distribution is in the catalog, the name is free and not being installed, and the volume has room. `maw --install` sends it before it asks for the account; `install` checks the same again. |
 | `cancelInstall` | `installCancelled(wasRunning:)` | Cancels this connection's installation, and replies once its traces are removed; the installation's own reply is then `failure(installationCancelled)`. An installation that has already registered the distribution finishes instead, and `wasRunning` is false; so is it for one that had already ended, successfully or not. The daemon sends the installation's own reply before this one, but in `maw` the two replies resume different tasks, which run in either order. When `wasRunning` is false, `maw` therefore waits up to 500 ms for the installation's reply and reports what it says: installed, or the failure. Without the reply, it reports that whether the distribution was installed is not known (`installationOutcomeUnknown`). |
+| `listDistributions` | `distributions(DistributionList)` | Every installed distribution, by stored name and sorted by name, each with a `DistributionState` (`stopped`, `starting`, `running`, or `stopping`), and the effective default: the one `state.json` names if it is installed, otherwise the first installed one by name. With nothing installed, the list is empty and the default is absent; clients report that. It starts no machine. |
+| `setDefault(DistroName)` | `defaultSet(DistroName)` | Resolves the name (see "Machines") and records the stored spelling in `state.json`, which is written atomically. The reply carries the stored spelling. It starts no machine. |
+| `terminate(DistroName)` | `terminated(TerminateSummary)` | Resolves the name and stops that one machine (see "Terminating one distribution"). The reply comes once the machine has stopped. `TerminateSummary` holds whether this request stopped the machine and how many sessions ended. |
 
 Any request can be answered with `failure(MawError)`, which carries the error unchanged; the
-client shows its message and suggested fix.
+client shows its message and suggested fix. A daemon without a distribution store, as in some
+unit tests, lists nothing and answers `setDefault` and `terminate` with
+`distributionNotInstalled`.
+
+Version 3 added `listDistributions`, `setDefault`, and `terminate`.
 
 **Events** (daemon to client, without a request):
 
@@ -264,7 +319,9 @@ message.
 installation that registers its distribution while none is installed makes it the default;
 of two installations that run at once, the first to register does. If `state.json` names a
 distribution that is no longer installed, the default is the first installed one by name.
-Phase 06 adds `maw --set-default`.
+`maw --set-default <name>` records another installed distribution as the default through the
+`setDefault` request, whether or not any machine runs, and starts none. Plain `maw` and
+`maw --list` see the new default at once, and it survives a restart of the daemon.
 
 ### The session lease
 
@@ -393,10 +450,10 @@ log, and prints its path. Otherwise it deletes it.
   logs would be the initramfs machine's, the daemon's, or `mawd debug-boot`'s log files.
 - maw has no command to repair a distribution whose root file system failed its check. The
   disk image stays where it is, unchanged except for what `e2fsck -p` repaired before it
-  stopped, and a repair needs e2fsck from a Linux system, run on a copy. Phase 06, which manages
-  installed distributions, is where such a command belongs: it would boot the initramfs
-  machine with the disk attached, as the installer does, and run e2fsck interactively or with
-  `-y` after the user has made a copy.
+  stopped, and a repair needs e2fsck from a Linux system, run on a copy. No phase owns such a
+  command yet ([known limitations](known-limitations.md#no-phase-yet)). It would boot the
+  initramfs machine with the disk attached, as the installer does, and run e2fsck interactively
+  or with `-y` after the user has made a copy.
 - A session's connection can end on the host's side while the guest's side stays open.
   Virtualization.framework did this, rarely, to connections that the agent dials: in phase 05's
   integration runs, one running session's connection ended in the middle of a frame, and in
@@ -412,12 +469,11 @@ log, and prints its path. Otherwise it deletes it.
     (`MachineRegistry.scheduleIdleStopIfUnused`), and the lease ends when `maw` exits, so the
     command does not keep the machine running: it runs until the machine stops, 60 seconds
     after its last session ends (`DaemonTimeouts.machineIdle`), later while other sessions keep
-    the machine running, or until the user ends it, with `kill` through `maw -e`, or with
-    `maw --shutdown`, which stops every running distribution.
+    the machine running, or until the user ends it: with `kill` through `maw -e`, with
+    `maw --terminate <name>`, which stops that distribution only and which the message
+    suggests, or with `maw --shutdown`, which stops every running distribution.
   - **The exit status is 1**, the status of every runtime error (`CommandFailure`), which cannot
     be told apart from a command that itself exits with 1.
-  - **Phase 06.** Once `maw --terminate` exists, the suggestion should name
-    `maw --terminate <name>`, which ends the command with its distribution only.
   - **Phase 12b, a mitigation; both options change the protocol.**
     - **The client asks the daemon to end the session in the guest.** On an unexpected end,
       `maw` asks the daemon, over XPC, to have the agent end that session's process, for

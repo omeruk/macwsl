@@ -25,7 +25,7 @@ import Testing
         The output may be incomplete, and the command may still be running there.
         If the command is still running, find its process ID with
         maw -d Ubuntu-24.04 -e ps -ef and end it with maw -d Ubuntu-24.04 -e kill <ID>.
-        maw --shutdown also ends it, but it stops every running distribution.
+        maw --terminate Ubuntu-24.04 also ends it, and every other session there.
 
         """
 
@@ -61,7 +61,7 @@ import Testing
         let failure = try #require(Maw.failure(for: error))
         #expect(
             failure.output
-                == "maw: The session ended because the virtual machine Ubuntu-24.04 stopped: "
+                == "maw: The session ended because the virtual machine Ubuntu-24.04 stopped:\n"
                 + "maw --shutdown was run.\nRun the command again to start a new virtual "
                 + "machine.\n")
         #expect(!failure.output.contains("still be running"))

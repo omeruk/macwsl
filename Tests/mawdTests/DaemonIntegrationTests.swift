@@ -248,7 +248,7 @@ struct DaemonIntegrationTests {
         #expect(result.status == 1)
         #expect(
             result.standardError.contains(
-                "maw: The session ended because the virtual machine \(distribution) stopped: "
+                "maw: The session ended because the virtual machine \(distribution) stopped:\n"
                     + "maw --shutdown was run."),
             "\(result.standardError)")
         try expectCleanShutdownInConsoleLog()
@@ -301,7 +301,7 @@ struct DaemonIntegrationTests {
         try await maw.waitForSessions(1)
         let machines = IntegrationTests.virtualMachineProcesses().subtracting(before)
         #expect(!machines.isEmpty, "No virtual machine process appeared.")
-        let daemon = try await daemonProcessID()
+        let daemon = try await maw.daemonProcessID()
         let killed = ContinuousClock.now
         kill(daemon, SIGKILL)
         let remaining = await IntegrationTests.virtualMachineProcesses(
@@ -321,17 +321,10 @@ struct DaemonIntegrationTests {
         let next = try await maw.session(["-e", "uname", "-r"])
         #expect(next.status == 0, "\(next.standardError)")
         #expect(next.output.hasPrefix("6.18"))
-        #expect(try await daemonProcessID() != daemon)
+        #expect(try await maw.daemonProcessID() != daemon)
     }
 
     // MARK: Helpers
-
-    /// The daemon's process ID, from the first line of `--status`.
-    func daemonProcessID() async throws -> pid_t {
-        let line = try #require(try await maw.run(["--status"]).lines.first)
-        let match = try #require(line.firstMatch(of: /process (\d+)/), "\(line)")
-        return try #require(pid_t(match.1))
-    }
 
     func expectCleanShutdownInConsoleLog(sourceLocation: SourceLocation = #_sourceLocation)
         throws

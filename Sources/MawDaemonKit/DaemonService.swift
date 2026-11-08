@@ -12,10 +12,12 @@
     public final class DaemonService<C: Clock>: Sendable where C.Duration == Duration {
         /// Why sessions end on `shutdown`; shown to their clients.
         static var shutdownReason: String { "maw --shutdown was run" }
+        /// Why sessions end on `terminate`; shown to their clients.
+        static var terminateReason: String { "maw --terminate was run" }
 
         public let registry: MachineRegistry<C>
         public let lifetime: DaemonLifetime<C>
-        /// The installed distributions, which resolve the default for a session.
+        /// The installed distributions, which resolve the names and the default.
         public let store: DistributionStore?
         public let installer: Installer?
         private let clock: C
@@ -134,6 +136,18 @@
                         }
                         installation = nil
                         reply = .installCancelled(wasRunning: wasCancelled)
+                    case .listDistributions:
+                        reply = .distributions(await distributions())
+                    case .setDefault(let requested):
+                        let name = try installedName(requested)
+                        try store?.setDefaultDistribution(name)
+                        log.notice("process \(processID) made \(name) the default distribution")
+                        reply = .defaultSet(name)
+                    case .terminate(let requested):
+                        let machine = MachineID.distribution(try installedName(requested))
+                        log.notice("\(machine): terminate requested by process \(processID)")
+                        reply = .terminated(
+                            await registry.terminate(machine, reason: Self.terminateReason))
                     }
                 } catch {
                     reply = .failure(error)
@@ -162,13 +176,9 @@
 
         /// The machine a session runs on: the requested one, or the default distribution's.
         func resolve(_ requested: MachineID?) throws(MawError) -> MachineID {
-            if case .distribution(let name) = requested, let store {
-                // APFS ignores case, so `-d ubuntu-24.04` finds Ubuntu-24.04's files. The machine
-                // must carry the stored spelling, or one disk would get two machines.
-                guard let metadata = try store.metadata(for: name) else {
-                    throw .distributionNotInstalled(name)
-                }
-                return .distribution(metadata.name)
+            if case .distribution(let name) = requested, store != nil {
+                // The machine must carry the stored spelling, or one disk would get two machines.
+                return .distribution(try installedName(name))
             }
             if let requested {
                 return requested
@@ -177,6 +187,37 @@
                 throw .noDistributionInstalled
             }
             return .distribution(name)
+        }
+
+        /// The stored spelling of the installed distribution that `name` names without regard
+        /// to case. Without a store, nothing is installed.
+        func installedName(_ name: DistroName) throws(MawError) -> DistroName {
+            guard let metadata = try store?.installedDistribution(named: name) else {
+                throw .distributionNotInstalled(name)
+            }
+            return metadata.name
+        }
+
+        /// Every installed distribution with its machine's state, and the default.
+        func distributions() async -> DistributionList {
+            guard let store else {
+                return DistributionList(distributions: [], defaultDistribution: nil)
+            }
+            var states: [DistroName: DistributionState] = [:]
+            for machine in await registry.status() {
+                guard case .distribution(let name) = machine.machine else { continue }
+                states[name] =
+                    switch machine.state {
+                    case .starting: .starting
+                    case .running: .running
+                    case .stopping: .stopping
+                    }
+            }
+            let entries = store.installed().map {
+                DistributionEntry(name: $0.name, state: states[$0.name] ?? .stopped)
+            }
+            return DistributionList(
+                distributions: entries, defaultDistribution: store.defaultDistribution())
         }
 
         /// Runs an installation on a task of its own, so that this connection can still cancel

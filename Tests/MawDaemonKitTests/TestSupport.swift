@@ -96,7 +96,8 @@ struct TestFailure: Error, CustomStringConvertible {
     init(_ description: String) { self.description = description }
 }
 
-/// A machine that boots when the test says so, and whose agent connections are socket pairs.
+/// A machine that boots, and with `holdsStop` stops, when the test says so, and whose agent
+/// connections are socket pairs.
 final class FakeMachine: MachineHandle, @unchecked Sendable {
     let machine: MachineID
     let cpuCount = 2
@@ -107,16 +108,23 @@ final class FakeMachine: MachineHandle, @unchecked Sendable {
         initialState: (
             startCalls: 0, stopCalls: 0, connections: 0,
             release: CheckedContinuation<Void, Never>?(nil),
-            released: false
+            released: false,
+            stopRelease: CheckedContinuation<Void, Never>?(nil),
+            stopReleased: false
         ))
     private let startError: MawError?
     private let holdsStart: Bool
+    private let holdsStop: Bool
     private let stopContinuation: AsyncStream<String>.Continuation
 
-    init(machine: MachineID, startError: MawError? = nil, holdsStart: Bool = false) {
+    init(
+        machine: MachineID, startError: MawError? = nil, holdsStart: Bool = false,
+        holdsStop: Bool = false
+    ) {
         self.machine = machine
         self.startError = startError
         self.holdsStart = holdsStart
+        self.holdsStop = holdsStop
         (unexpectedStops, stopContinuation) = AsyncStream.makeStream(of: String.self)
     }
 
@@ -124,6 +132,7 @@ final class FakeMachine: MachineHandle, @unchecked Sendable {
     var stopCalls: Int { lock.withLock { $0.stopCalls } }
     var connections: Int { lock.withLock { $0.connections } }
     var isWaitingToStart: Bool { lock.withLock { $0.release != nil } }
+    var isWaitingToStop: Bool { lock.withLock { $0.stopRelease != nil } }
 
     func start() async throws(MawError) {
         lock.withLock { $0.startCalls += 1 }
@@ -164,8 +173,28 @@ final class FakeMachine: MachineHandle, @unchecked Sendable {
 
     func stop() async -> String {
         lock.withLock { $0.stopCalls += 1 }
+        if holdsStop {
+            await withCheckedContinuation { continuation in
+                let releaseNow = lock.withLock { state -> Bool in
+                    if state.stopReleased { return true }
+                    state.stopRelease = continuation
+                    return false
+                }
+                if releaseNow { continuation.resume() }
+            }
+        }
         stopContinuation.finish()
         return "stopped by the test"
+    }
+
+    /// Lets a held stop finish.
+    func finishStop() {
+        let continuation = lock.withLock { state -> CheckedContinuation<Void, Never>? in
+            state.stopReleased = true
+            defer { state.stopRelease = nil }
+            return state.stopRelease
+        }
+        continuation?.resume()
     }
 
     /// Simulates the guest powering off or crashing.
@@ -179,12 +208,16 @@ final class FakeMachine: MachineHandle, @unchecked Sendable {
 final class FakeFactory: Sendable {
     private let made = OSAllocatedUnfairLock(initialState: [FakeMachine]())
     private let configure: @Sendable (Int) -> (startError: MawError?, holdsStart: Bool)
+    private let holdsStop: Bool
 
+    /// - Parameter holdsStop: Whether every machine's stop waits for `finishStop()`.
     init(
+        holdsStop: Bool = false,
         _ configure: @escaping @Sendable (Int) -> (startError: MawError?, holdsStart: Bool) = {
             _ in (nil, false)
         }
     ) {
+        self.holdsStop = holdsStop
         self.configure = configure
     }
 
@@ -194,7 +227,9 @@ final class FakeFactory: Sendable {
         { [self] (machine: MachineID) throws(MawError) -> any MachineHandle in
             let index = made.withLock { $0.count }
             let (startError, holdsStart) = configure(index)
-            let fake = FakeMachine(machine: machine, startError: startError, holdsStart: holdsStart)
+            let fake = FakeMachine(
+                machine: machine, startError: startError, holdsStart: holdsStart,
+                holdsStop: holdsStop)
             made.withLock { $0.append(fake) }
             return fake
         }

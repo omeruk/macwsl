@@ -14,6 +14,14 @@ import Testing
         ["-d", "-v"],
         ["-e"],
         ["-l", "-o", "-v"],
+        ["-l", "-q", "-v"],
+        ["-l", "-o", "--running"],
+        ["-l", "-o", "-q"],
+        ["--running"],
+        ["-q"],
+        ["-l", "-d", "Ubuntu"],
+        ["-s", "Ubuntu", "-d", "Debian"],
+        ["-t"],
         ["--install", "a", "b"],
         ["-dUbuntu", "ls"],
     ]
@@ -82,9 +90,9 @@ import Testing
 
     @Test func reportsARuntimeErrorWithoutUsage() async throws {
         #expect(
-            try await failure(["-l", "-v"])
+            try await failure(["--unregister", "Ubuntu"])
                 == CommandFailure(
-                    output: "maw: --list --verbose is not implemented yet; phase 06 adds it.\n",
+                    output: "maw: --unregister is not implemented yet; phase 06b adds it.\n",
                     exitCode: .failure))
     }
 
@@ -166,9 +174,86 @@ import Testing
             printing: """
                 maw: The daemon has not yet confirmed the cancellation of the installation of
                 Ubuntu-24.04. The installation may still be ending.
-                Wait a moment, then run maw -d Ubuntu-24.04 -e true. It succeeds if
-                Ubuntu-24.04 was installed after all, and otherwise says that it is not.
+                Wait a moment, then run maw --list. It lists Ubuntu-24.04 if the installation
+                finished after all.
 
                 """)
+    }
+
+    @Test func fitsTheStopOfATerminatedMachine() throws {
+        try expectWithinEightyColumns(
+            .machineStopped(machine: "Ubuntu-24.04", reason: "maw --terminate was run"),
+            printing: """
+                maw: The session ended because the virtual machine Ubuntu-24.04 stopped:
+                maw --terminate was run.
+                Run the command again to start a new virtual machine.
+
+                """)
+    }
+
+    @Test func fitsTheStopOfAMachineThatWasShutDownOrIdle() throws {
+        try expectWithinEightyColumns(
+            .machineStopped(machine: "Ubuntu-24.04", reason: "maw --shutdown was run"),
+            printing: """
+                maw: The session ended because the virtual machine Ubuntu-24.04 stopped:
+                maw --shutdown was run.
+                Run the command again to start a new virtual machine.
+
+                """)
+        try expectWithinEightyColumns(
+            .machineStopped(machine: "Ubuntu-24.04", reason: "it was idle"),
+            printing: """
+                maw: The session ended because the virtual machine Ubuntu-24.04 stopped:
+                it was idle.
+                Run the command again to start a new virtual machine.
+
+                """)
+    }
+
+    @Test func fitsAMissingDistributionThatTheCatalogHas() throws {
+        let expected = """
+            maw: No distribution named 'Ubuntu-24.04' is installed.
+            Install it with maw --install Ubuntu-24.04, or see maw --list.
+
+            """
+        try expectWithinEightyColumns(
+            .distributionNotInstalled(try DistroName("Ubuntu-24.04")), printing: expected)
+    }
+
+    /// An alias names the catalog entry it belongs to, in the catalog's spelling.
+    @Test func fitsAMissingDistributionThatIsAnAliasInAnotherCase() throws {
+        try expectWithinEightyColumns(
+            .distributionNotInstalled(try DistroName("ubuntu")),
+            printing: """
+                maw: No distribution named 'ubuntu' is installed.
+                Install it with maw --install Ubuntu-24.04, or see maw --list.
+
+                """)
+    }
+
+    @Test func fitsAMissingDistributionThatTheCatalogDoesNotHave() throws {
+        try expectWithinEightyColumns(
+            .distributionNotInstalled(try DistroName("Work-12345678")),
+            printing: """
+                maw: No distribution named 'Work-12345678' is installed.
+                maw --list shows the installed distributions.
+
+                """)
+    }
+
+    @Test func fitsTheSuggestionOfAnUnknownOutcome() throws {
+        // The message itself is a single line of 184 columns, as many messages are wider than
+        // 80 (docs/known-limitations.md, phase 12b); the suggestion that changed in phase 06a
+        // fits.
+        let error = MawError.installationOutcomeUnknown(try DistroName("Ubuntu-24.04"))
+        let suggestion = try #require(error.recoverySuggestion)
+        #expect(
+            suggestion == """
+                maw --list shows whether Ubuntu-24.04 was installed. If it was not, run
+                maw --install again.
+                """)
+        for line in suggestion.split(separator: "\n") {
+            #expect(line.count <= 80, "\(line)")
+        }
     }
 }

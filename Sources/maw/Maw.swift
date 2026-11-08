@@ -19,7 +19,8 @@ struct Maw: AsyncParsableCommand {
             maw [-d <distro>] [-u <user>] [--cd <directory>] -- <command> [<argument>...]
             maw [-d <distro>] [-u <user>] [--cd <directory>] -e <command> [<argument>...]
             maw --install [<distro>] [--name <name>] [-u <user>]
-            maw --list [--verbose | --online]
+            maw --list [--running] [--verbose | --quiet]
+            maw --list --online
             maw --set-default <distro>
             maw --terminate <distro>
             maw --shutdown
@@ -39,7 +40,7 @@ struct Maw: AsyncParsableCommand {
             Examples:
               maw --install Ubuntu-24.04     Install Ubuntu 24.04.
               maw -l -v                      List distributions with their state.
-              maw -d Ubuntu -u root          Open a root shell in Ubuntu.
+              maw -d Ubuntu-24.04 -u root    Open a root shell in Ubuntu 24.04.
               maw -e uname -a                Run uname directly, without a shell.
               maw --export Ubuntu ubuntu.tar Back up Ubuntu to a tar file.
             """
@@ -98,7 +99,13 @@ struct Maw: AsyncParsableCommand {
             }
         case .list(.online):
             print(Reports.online(DistroCatalog.builtIn), terminator: "")
-        case .list, .setDefault, .terminate, .export, .importDistro, .unregister:
+        case .list(.installed(let options)):
+            try await Self.listDistributions(options)
+        case .setDefault(let name):
+            try await Self.setDefault(name)
+        case .terminate(let name):
+            try await Self.terminate(name)
+        case .export, .importDistro, .unregister:
             throw MawError.notImplemented(feature: action.displayName, phase: action.phase)
         }
     }
@@ -148,6 +155,32 @@ struct Maw: AsyncParsableCommand {
         let client = try await DaemonClient.connect(label: label)
         defer { client.close() }
         _ = try await client.shutdown()
+    }
+
+    /// `--list` without `--online`. The daemon owns the distributions and their machines, so
+    /// the listing comes from it, and launchd starts it if it does not run. It starts no
+    /// machine.
+    static func listDistributions(_ options: ListOptions) async throws {
+        let client = try await DaemonClient.connect()
+        defer { client.close() }
+        print(try Reports.installed(try await client.listDistributions(), options), terminator: "")
+    }
+
+    /// `--set-default`. Prints nothing, as `--shutdown` does. The daemon checks the name, so
+    /// launchd starts it if it does not run; it starts no machine.
+    static func setDefault(_ name: DistroName) async throws {
+        let client = try await DaemonClient.connect()
+        defer { client.close() }
+        try await client.setDefault(name)
+    }
+
+    /// `--terminate`. Prints nothing, and returns once the machine has stopped. Unlike
+    /// `--shutdown`, it starts the daemon if it does not run, because the daemon checks the
+    /// name; a distribution that is installed but not running then succeeds at once.
+    static func terminate(_ name: DistroName) async throws {
+        let client = try await DaemonClient.connect()
+        defer { client.close() }
+        try await client.terminate(name)
     }
 
     /// `--version`: maw, the daemon if it runs, and the installed guest files.
@@ -237,13 +270,27 @@ struct ManagingOptions: ParsableArguments {
         transform: { try DistroName($0) })
     var name: DistroName?
 
-    @Flag(name: CLIOption.list.names, help: "List installed distributions.")
+    @Flag(
+        name: CLIOption.list.names,
+        help: "List the installed distributions. * marks the default.")
     var list = false
 
     @Flag(
         name: CLIOption.verbose.names,
-        help: "With --list: also show each distribution's state and whether it is the default.")
+        help: "With --list: also show the state of each distribution's virtual machine.")
     var verbose = false
+
+    @Flag(
+        name: CLIOption.running.names,
+        help: ArgumentHelp(
+            "With --list: list only the distributions whose virtual machine runs.",
+            discussion: "This includes virtual machines that are starting or stopping."))
+    var running = false
+
+    @Flag(
+        name: CLIOption.quiet.names,
+        help: "With --list: print only the names, one per line.")
+    var quiet = false
 
     @Flag(
         name: CLIOption.online.names,
