@@ -32,7 +32,7 @@ distribution when maw updates it.
 
    systemd keeps a `/run` that is already mounted and reads runtime units from
    `/run/systemd/system`, so the agent runs without being installed in the distribution, and is
-   gone when the machine stops.
+   gone when the machine stops. Step 3 also writes the drop-in of item 7 there.
 2. **The agent's unit** has `DefaultDependencies=no`, so that it starts as soon as systemd does
    and is not stopped before the final kill at power-off; `KillMode=process`, so that a
    restarted agent keeps its sessions; `Restart=always`; and its output goes to the journal and
@@ -51,6 +51,24 @@ distribution when maw updates it.
    synchronization mode is `.full`: every flush from the guest issues `F_FULLFSYNC`, so that
    data the guest has flushed survives a crash or a power loss of the Mac. The measurements
    below record the cost and the choice.
+7. **`systemd-timesyncd` stops before `systemd-resolved`.** Next to the agent's unit, `/init`
+   writes the runtime drop-in
+   `/run/systemd/system/systemd-timesyncd.service.d/maw-order.conf`, with
+   `After=systemd-resolved.service` in its `[Unit]` section. A failure to write it prints a
+   warning on the console and does not stop the boot; nothing is written into the
+   distribution's own files.
+
+   Ubuntu 24.04's units do not order the two services, so systemd stops them at the same time.
+   For about the first 5.5 seconds of a boot, `systemd-timesyncd` is usually resolving its
+   time server, because the first DNS query that `systemd-resolved` sends after the DHCP lease
+   is not answered and is retried only after 5 s. When a shutdown begins during that lookup
+   and `systemd-resolved` exits before it answers, `systemd-timesyncd` exits about 5.0 s after
+   its stop began. The guest then misses the agent's 5 s limit, and the daemon falls back to
+   Virtualization.framework's stop request; `maw --shutdown`, `maw --terminate`, and idle
+   stops are all affected. Ordered after `systemd-resolved`, `systemd-timesyncd` stops first,
+   while `systemd-resolved` still runs, and its lookup fails at once. The ordering also makes
+   `systemd-timesyncd` start after `systemd-resolved`, which is not on the agent's path. Why the
+   first DNS query is not answered is not determined.
 
 ## Measurements
 
@@ -100,6 +118,22 @@ distribution's disk image on the Mac:
 The file system is mounted without the `discard` option, so deleting a file does not discard at
 once; the weekly trim returns the space, and `sudo fstrim /` does so on demand. Whether macOS 14
 advertises discard has not been verified on a Mac running macOS 14.
+
+**Shutdown soon after a boot** (item 7). Test distributions, M1 Pro, macOS 27, 2026-11-08,
+measured in part 4b of phase 06a with a runtime drop-in written by hand: 20 terminates each, at
+once after systemd reported `running`, under `.full` synchronization. A shutdown counts as slow
+when the guest did not power off within the agent's 5 s limit and the daemon fell back to the
+stop request.
+
+| `systemd-timesyncd` drop-in | Slow shutdowns |
+|-----------------------------|----------------|
+| None (Ubuntu's units, two passes of 10) | 10 of 20 |
+| `Before=systemd-resolved.service` | 13 of 20 |
+| `After=systemd-resolved.service` | 0 of 20 |
+
+Every slow shutdown spent 4.98 to 5.05 s between the start of `systemd-timesyncd`'s stop and
+its exit; no fast one spent more than 0.07 s. With `After=`, every boot still had a lookup
+pending at the stop, and `systemd-timesyncd` exited within 45 ms of its stop.
 
 ## Consequences
 
