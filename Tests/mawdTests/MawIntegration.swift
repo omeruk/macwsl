@@ -114,14 +114,17 @@ struct MawIntegration: Sendable {
             ["--install", "--name", name, "-u", user], standardInput: Data("\(password)\n".utf8))
     }
 
-    /// Removes a distribution that a test created: stops the test daemon's machines and deletes
-    /// its directory, as the README describes for users until phase 06b.
+    /// Removes a distribution that a test created: stops its machine with `maw --terminate`, which
+    /// leaves every other machine running, and deletes its directory, as the README describes for
+    /// users until phase 06b.
     func remove(_ name: String) async throws {
-        _ = try await run(["--shutdown"])
         let directory = paths.distroDirectory(for: try DistroName(name))
-        if FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)) {
-            try FileManager.default.removeItem(at: directory)
+        guard FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)) else {
+            return
         }
+        let terminate = try await run(["--terminate", name])
+        try #require(terminate.status == 0, "\(terminate.standardError)")
+        try FileManager.default.removeItem(at: directory)
     }
 
     /// The distribution directory of `name` and the test daemon's staging directories for it,
