@@ -101,15 +101,15 @@ import Testing
         let session = try start(recorder)
         #expect(await waitForOutput(recorder))
         // `ps -o tty=` names the controlling terminal, and `??` if there is none.
-        session.send(ArraySlice("echo \"tty:$(tty)|ctty:$(ps -o tty= -p $$)\"\n".utf8))
-        #expect(await waitUntil(seconds: 5) { recorder.text.contains("|ctty:") })
-        let line =
-            recorder.text.split(whereSeparator: \.isNewline)
-            .first { $0.hasPrefix("tty:") }
-            .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
-        let device = line.dropFirst("tty:/dev/".count).prefix { $0 != "|" }
-        #expect(line.hasPrefix("tty:/dev/ttys"), "\(recorder.text)")
-        #expect(line.hasSuffix("|ctty:\(device)"), "\(recorder.text)")
+        // printf builds the markers, so that the terminal's echo of the typed line, which
+        // may wrap anywhere, never matches them.
+        session.send(
+            ArraySlice(#"printf '%s=%s|%s=%s|\n' tty "$(tty)" ctty "$(ps -o tty= -p $$)"\#n"#.utf8)
+        )
+        let pattern = /tty=\/dev\/(ttys\d+)\|ctty=\s*(\S*?)\s*\|/
+        #expect(await waitUntil(seconds: 5) { recorder.text.firstMatch(of: pattern) != nil })
+        let match = try #require(recorder.text.firstMatch(of: pattern), "\(recorder.text)")
+        #expect(match.output.1 == match.output.2, "\(recorder.text)")
         session.terminate()
     }
 
@@ -134,8 +134,7 @@ import Testing
         #expect(await waitUntil(seconds: 5) { session.foregroundProcessName == "sleep" })
         session.send([0x1A])
         #expect(await waitUntil(seconds: 5) { !session.hasForegroundProcess })
-        session.send(ArraySlice("jobs -s\n".utf8))
-        #expect(await waitUntil(seconds: 5) { recorder.text.contains("sleep 30") })
+        #expect(await waitUntil(seconds: 5) { recorder.text.contains("Stopped") })
         session.send(ArraySlice("fg\n".utf8))
         #expect(await waitUntil(seconds: 5) { session.foregroundProcessName == "sleep" })
         session.send([0x03])
@@ -151,8 +150,9 @@ import Testing
         let marker = FileManager.default.temporaryDirectory
             .appending(path: "maw-hup-\(UUID().uuidString)").path
         defer { try? FileManager.default.removeItem(atPath: marker) }
-        session.send(ArraySlice("trap 'echo hup > \(marker); exit 0' HUP; echo trap-set\n".utf8))
-        #expect(await waitUntil(seconds: 5) { recorder.text.contains("trap-set\r\n") })
+        session.send(
+            ArraySlice("trap 'echo hup > \(marker); exit 0' HUP; echo trap-$((1 + 1))\n".utf8))
+        #expect(await waitUntil(seconds: 5) { recorder.text.contains("trap-2\r\n") })
         session.terminate()
         #expect(await waitUntil(seconds: 5) { FileManager.default.fileExists(atPath: marker) })
         #expect((try? String(contentsOfFile: marker, encoding: .utf8)) == "hup\n")
@@ -163,10 +163,10 @@ import Testing
         -> (LocalShellSession, pid_t)
     {
         let session = try start(recorder)
-        session.send(ArraySlice("trap '' HUP; echo pid:$$:; \(command)\n".utf8))
-        #expect(await waitUntil(seconds: 5) { recorder.text.contains(":\r\n") })
-        let line = recorder.text.split(whereSeparator: \.isNewline).first { $0.hasPrefix("pid:") }
-        let pid = line.flatMap { pid_t($0.dropFirst(4).prefix { $0 != ":" }) } ?? 0
+        session.send(ArraySlice("trap '' HUP; printf 'p%s=%s=\\n' id $$; \(command)\n".utf8))
+        let pattern = /pid=(\d+)=/
+        #expect(await waitUntil(seconds: 5) { recorder.text.firstMatch(of: pattern) != nil })
+        let pid = recorder.text.firstMatch(of: pattern).flatMap { pid_t($0.output.1) } ?? 0
         #expect(pid > 0, "\(recorder.text)")
         return (session, pid)
     }
