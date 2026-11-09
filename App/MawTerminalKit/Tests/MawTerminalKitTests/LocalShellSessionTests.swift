@@ -298,6 +298,7 @@ import Testing
 
     @Test func theExitStatusReachesThePane() async throws {
         let pane = PaneController(
+            profile: .localShell("/bin/sh"),
             session: LocalShellSession(shell: "/bin/sh", startDirectory: "/tmp"))
         pane.startIfNeeded()
         pane.send("exit 3\n")
@@ -373,7 +374,8 @@ import Testing
 
     @Test func aShellThatCannotBeExecutedReachesThePaneAsOnMain() async {
         // Not executable: refused before the start, with the suggestion, as main does.
-        let refused = PaneController(session: LocalShellSession(shell: "/etc/hosts"))
+        let refused = PaneController(
+            profile: .localShell("/etc/hosts"), session: LocalShellSession(shell: "/etc/hosts"))
         refused.startIfNeeded()
         #expect(refused.failure == .programNotFound(path: "/etc/hosts"))
         let text = await paneText(refused, contains: "Choose another shell")
@@ -387,7 +389,8 @@ import Testing
         try Data("not a program\n".utf8).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
         #expect(chmod(file.path, 0o755) == 0)
-        let pane = PaneController(session: LocalShellSession(shell: file.path))
+        let pane = PaneController(
+            profile: .localShell(file.path), session: LocalShellSession(shell: file.path))
         pane.startIfNeeded()
         let reason = "\(file.path) could not be executed: \(String(cString: strerror(ENOEXEC)))"
         #expect(pane.failure == .startFailed(reason: reason))

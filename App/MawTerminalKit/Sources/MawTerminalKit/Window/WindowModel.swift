@@ -57,10 +57,17 @@ final class WindowModel {
     var trafficLightsWidth: CGFloat = 78
 
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private let makeSession: @MainActor (Profile) -> any TerminalSession
 
-    init(settingsStore: SettingsStore, distributions: any DistributionProvider) {
+    /// - Parameter makeSession: Makes a pane's session for a profile. Tests pass fake
+    ///   sessions; the app asks the session layer (`Profile.makeSession()`).
+    init(
+        settingsStore: SettingsStore, distributions: any DistributionProvider,
+        makeSession: (@MainActor (Profile) -> any TerminalSession)? = nil
+    ) {
         self.settingsStore = settingsStore
         self.distributions = distributions
+        self.makeSession = makeSession ?? { profile in profile.makeSession() }
     }
 
     var settings: Settings { settingsStore.settings }
@@ -253,11 +260,7 @@ final class WindowModel {
     // MARK: Panes
 
     private func makePane(profile: Profile) -> PaneController {
-        let session: any TerminalSession =
-            switch profile.kind {
-            case .localShell(let shell): LocalShellSession(shell: shell)
-            }
-        let pane = PaneController(session: session)
+        let pane = PaneController(profile: profile, session: newSession(of: profile))
         pane.onCleanExit = { [weak self] id in self?.closePane(id, confirm: false) }
         pane.onFocus = { [weak self] id in self?.paneReceivedFocus(id) }
         pane.confirmPaste = { [weak self] text in self?.confirmPaste(text) ?? true }
@@ -267,20 +270,18 @@ final class WindowModel {
         return pane
     }
 
+    /// A session of `profile` as the settings configure it now, so that a new session of the
+    /// local shell's profile follows a change of the shell.
+    private func newSession(of profile: Profile) -> any TerminalSession {
+        makeSession(profiles.first { $0.id == profile.id } ?? profile)
+    }
+
+    /// Splits the focused pane. The new pane opens the profile the focused one was opened with.
     private func split(_ axis: SplitAxis) {
         guard let tab = selectedTab, var tree = tab.splitTree,
             let current = panes[tree.focusedPane]
         else { return }
-        let profile =
-            profiles.first { profile in
-                if case .localShell(let shell) = profile.kind,
-                    let local = current.session as? LocalShellSession
-                {
-                    return shell == local.shell
-                }
-                return false
-            } ?? defaultProfile
-        let pane = makePane(profile: profile)
+        let pane = makePane(profile: current.profile)
         tree.split(tree.focusedPane, axis: axis, newPane: pane.id)
         tabs.update(tab.id, content: .terminal(tree))
         focusSelectedTab()

@@ -32,6 +32,8 @@ struct TerminalAppearance: Equatable {
 @Observable
 final class PaneController {
     let id: PaneID
+    /// The profile the pane was opened with. A split opens it again.
+    let profile: Profile
     let session: any TerminalSession
     @ObservationIgnored let terminalView: MawTerminalView
 
@@ -53,8 +55,9 @@ final class PaneController {
     @ObservationIgnored private var appearance: TerminalAppearance?
     @ObservationIgnored private var started = false
 
-    init(id: PaneID = PaneID(), session: any TerminalSession) {
+    init(id: PaneID = PaneID(), profile: Profile, session: any TerminalSession) {
         self.id = id
+        self.profile = profile
         self.session = session
         terminalView = MawTerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 400))
         terminalView.hideScroller()

@@ -27,14 +27,14 @@ import Testing
     }
 
     @Test func theScrollerIsHidden() {
-        let pane = PaneController(session: IdleSession())
+        let pane = PaneController(profile: .localShell("/bin/sh"), session: IdleSession())
         let scrollers = pane.terminalView.subviews.compactMap { $0 as? NSScroller }
         #expect(!scrollers.isEmpty, "SwiftTerm no longer adds a scroller; update hideScroller()")
         #expect(scrollers.allSatisfy { $0.isHidden })
     }
 
     @Test func theGridUsesTheWidthTheScrollerWouldTake() {
-        let pane = PaneController(session: IdleSession())
+        let pane = PaneController(profile: .localShell("/bin/sh"), session: IdleSession())
         let hidden = pane.terminalView
         let shown = TerminalView(frame: hidden.frame)
         shown.font = hidden.font
@@ -60,7 +60,7 @@ import Testing
 
     @Test func aFailureAppearsInThePaneLineByLine() {
         let session = IdleSession()
-        let pane = PaneController(session: session)
+        let pane = PaneController(profile: .localShell("/bin/sh"), session: session)
         pane.session(session, didFailWith: TerminalSessionError(SampleError()))
         #expect(pane.failure == TerminalSessionError(SampleError()))
         let terminal = pane.terminalView.getTerminal()
