@@ -17,6 +17,10 @@ let package = Package(
         .executable(name: "maw-agent", targets: ["maw-agent"]),
         .library(name: "MawCore", targets: ["MawCore"]),
         .library(name: "MawProtocol", targets: ["MawProtocol"]),
+        // For the terminal app (App/MawTerminalKit), which opens sessions through the daemon.
+        // MawXPC holds the interface's types, such as DistributionList and SessionEnded.
+        .library(name: "MawXPC", targets: ["MawXPC"]),
+        .library(name: "MawClient", targets: ["MawClient"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.8.2"),
