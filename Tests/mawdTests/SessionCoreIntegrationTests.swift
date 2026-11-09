@@ -1,4 +1,5 @@
 import Foundation
+import RegexBuilder
 import Testing
 
 /// The session core (`DistributionSession` in MawClient), which the terminal app's Linux tabs
@@ -37,19 +38,21 @@ struct SessionCoreIntegrationTests {
         #expect(try await probe.send("close") == "closed hung-up", "\(probe.transcript)")
     }
 
+    /// Before a command's output, bash ends bracketed paste mode (`ESC [ ? 2004 l`) and
+    /// returns the cursor, so that the output's first line follows a carriage return.
     @Test func resizesTheGuestsTerminal() async throws {
         let probe = try await started()
         defer { probe.stop() }
         #expect(try await probe.send(#"send stty size\r"#) == "sent 10")
         let initial = await maw.eventually(within: .seconds(10)) {
-            probe.terminal.contains("\n24 80\r\n")
+            probe.terminal.contains(Self.line("24 80"))
         }
         #expect(initial, "\(probe.transcript)")
 
         #expect(try await probe.send("resize 40 132") == "resized")
         #expect(try await probe.send(#"send stty size\r"#) == "sent 10")
         let resized = await maw.eventually(within: .seconds(10)) {
-            probe.terminal.contains("\n40 132\r\n")
+            probe.terminal.contains(Self.line("40 132"))
         }
         #expect(resized, "\(probe.transcript)")
         #expect(try await probe.send("close") == "closed hung-up", "\(probe.transcript)")
@@ -59,10 +62,12 @@ struct SessionCoreIntegrationTests {
     @Test func closingEndsTheGuestsShell() async throws {
         let probe = try await started()
         defer { probe.stop() }
-        #expect(try await probe.send(#"send echo shell-$$\r"#) == "sent 15")
+        #expect(try await probe.send(#"send echo shell-$$\r"#) == "sent 14")
         var shell: Substring?
         let reported = await maw.eventually(within: .seconds(10)) {
-            shell = probe.terminal.firstMatch(of: /\nshell-(\d+)\r\n/)?.output.1
+            shell =
+                probe.terminal.firstMatch(
+                    of: /[\r\n]shell-(\d+)\r\n/.matchingSemantics(.unicodeScalar))?.output.1
             return shell != nil
         }
         let pid = try #require(shell, "\(reported) \(probe.transcript)")
@@ -82,6 +87,18 @@ struct SessionCoreIntegrationTests {
             return row.isEmpty || row.hasSuffix(" 0")
         }
         #expect(released, "\(row)")
+    }
+
+    /// A whole line of output: after a line feed, or after the carriage return that follows
+    /// bash's escape sequences, and ending in CR LF. It matches Unicode scalars, because a
+    /// `String` holds CR LF as one `Character`, which the scalars `\r` and `\n` in a pattern of
+    /// the default semantics do not match.
+    static func line(_ text: String) -> Regex<Substring> {
+        Regex {
+            CharacterClass.anyOf("\r\n")
+            text
+            "\r\n"
+        }.matchingSemantics(.unicodeScalar)
     }
 
     /// A probe whose session has started and shows the prompt of the test user's bash, which
