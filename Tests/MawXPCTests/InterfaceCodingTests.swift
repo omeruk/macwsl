@@ -196,8 +196,9 @@ import XPC
         let message = try InterfaceCoding.encode(
             DaemonReply.sessionOpened(SessionInfo(sessionID: 1, machine: .initramfs)),
             descriptor: fds[1])
-        let received = try #require(InterfaceCoding.descriptor(in: message))
+        let received = try #require(try InterfaceCoding.descriptor(in: message))
         #expect(received.rawValue != fds[1], "The message must hold a duplicate.")
+        #expect(fcntl(received.rawValue, F_GETFD) & FD_CLOEXEC != 0)
 
         var byte: UInt8 = 42
         #expect(write(received.rawValue, &byte, 1) == 1)
@@ -208,7 +209,7 @@ import XPC
 
     @Test func hasNoDescriptorUnlessOneWasAdded() throws {
         let message = try InterfaceCoding.encode(DaemonRequest.status)
-        #expect(InterfaceCoding.descriptor(in: message) == nil)
+        #expect(try InterfaceCoding.descriptor(in: message) == nil)
     }
 
     @Test func readsTheLabelFromTheEnvironment() {
