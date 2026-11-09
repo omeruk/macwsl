@@ -2,9 +2,11 @@ import SwiftUI
 
 /// The distributions screen (⌘⇧L), a tab of its own, as in `Distributions.dc.html`.
 ///
-/// With no distributions it shows the table header and `no distributions installed`. The table
-/// rows, the details box, and the memory chart are built and covered by previews with sample
-/// data; the running app shows them once a provider returns distributions.
+/// With no distributions it shows the table header and a note that the list arrives in a later
+/// version: the app does not ask the daemon for it yet, and must not claim that nothing is
+/// installed while Linux tabs work. The table rows, the details box, and the memory chart are
+/// built and covered by previews with sample data; the running app shows them once a provider
+/// returns distributions.
 struct DistributionsScreen: View {
     let model: WindowModel
     @State private var selection = 0
@@ -60,7 +62,7 @@ struct DistributionsContent: View {
                     row(Self.headers.map { ($0, chrome.textSecondary) }, background: nil)
                         .accessibilityAddTraits(.isHeader)
                     if distributions.isEmpty {
-                        Text("no distributions installed").chromeStyle(chrome.textMuted)
+                        Text("the list arrives in a later version").chromeStyle(chrome.textMuted)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .frame(height: Self.rowHeight)
                     }
