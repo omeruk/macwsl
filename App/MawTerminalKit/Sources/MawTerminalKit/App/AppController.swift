@@ -14,6 +14,8 @@ public final class AppController: NSObject, NSApplicationDelegate, NSMenuItemVal
     private var windows: [TerminalWindowController] = []
     private var keyMonitor: Any?
     private var lastMenuRegistry: CommandRegistry?
+    /// Set while a quit waits for the sessions' answers or for the user.
+    private var isAskingToQuit = false
 
     /// - Parameter fontsDirectory: The bundled fonts, registered at launch.
     public init(fontsDirectory: URL?) {
@@ -60,22 +62,33 @@ public final class AppController: NSObject, NSApplicationDelegate, NSMenuItemVal
         false
     }
 
+    /// Asks every session of every window at once what runs in it, without blocking the main
+    /// thread, and replies once they have answered or the user has, if a program runs. A
+    /// second quit while the question is open is cancelled.
     public func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply
     {
-        let running = windows.flatMap(\.model.runningProcessNames)
-        guard settingsStore.settings.confirmQuitWithRunningProcess, !running.isEmpty else {
+        let panes = windows.flatMap(\.model.panes.values)
+        guard settingsStore.settings.confirmQuitWithRunningProcess, !panes.isEmpty else {
             return .terminateNow
         }
-        let alert = NSAlert()
-        alert.messageText = "Quit maw?"
-        alert.informativeText =
-            "\(WindowModel.list(running)) \(running.count == 1 ? "is" : "are") still running "
-            + "and will be ended."
-        alert.addButton(withTitle: "Quit")
-        alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+        guard !isAskingToQuit else { return .terminateCancel }
+        isAskingToQuit = true
+        Task {
+            let quit = await WindowModel.confirmQuitting(panes) { question in
+                let alert = NSAlert()
+                alert.messageText = question.message
+                alert.informativeText = question.detail
+                alert.addButton(withTitle: question.confirmTitle)
+                alert.addButton(withTitle: "Cancel")
+                return alert.runModal() == .alertFirstButtonReturn
+            }
+            isAskingToQuit = false
+            NSApp.reply(toApplicationShouldTerminate: quit)
+        }
+        return .terminateLater
     }
 
+    /// Ends every session, which hangs up every Linux session and ends its lease.
     public func applicationWillTerminate(_ notification: Notification) {
         settingsStore.stopWatching()
         for window in windows {

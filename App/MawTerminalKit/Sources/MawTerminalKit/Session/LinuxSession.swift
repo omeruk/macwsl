@@ -140,10 +140,6 @@ public final class LinuxSession: TerminalSession {
         isRunning = false
     }
 
-    // Asked only through `foregroundProgram(within:)`, which waits for the guest.
-    public var hasForegroundProcess: Bool { false }
-    public var foregroundProcessName: String? { nil }
-
     public func foregroundProgram(within timeout: Duration) async -> ForegroundReport {
         guard isRunning, let core else { return .none }
         switch await core.foregroundProgram(within: timeout) {

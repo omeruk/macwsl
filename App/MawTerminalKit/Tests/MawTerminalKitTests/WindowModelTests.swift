@@ -6,7 +6,7 @@ import Testing
 
 @testable import MawTerminalKit
 
-/// The window model's splits, against fake sessions.
+/// The window model's close and quit questions and its splits, against fake sessions.
 @MainActor
 @Suite struct WindowModelTests {
     /// A session whose foreground answer comes at once, late, or never.
@@ -24,8 +24,6 @@ import Testing
         var isRunning = false
         var answer: Answer
         var terminated = 0
-        let hasForegroundProcess = false
-        let foregroundProcessName: String? = nil
 
         init(_ name: String, answer: Answer = .now(.none)) {
             displayName = name
@@ -104,6 +102,174 @@ import Testing
 
     var focused: (WindowModel) -> FakeSession? {
         { $0.focusedPane?.session as? FakeSession }
+    }
+
+    // MARK: Asking the sessions
+
+    @Test func theSessionsAreAskedAtOnceWithOneDeadline() async {
+        let sessions = [
+            FakeSession("a", answer: .now(.program(name: "vim"))),
+            FakeSession("b", answer: .after(.milliseconds(50), .none)),
+            FakeSession("c", answer: .after(.seconds(5), .program(name: "late"))),
+            FakeSession("d", answer: .never),
+        ]
+        let started = ContinuousClock.now
+        let reports = await WindowModel.foregroundReports(
+            of: sessions, within: .milliseconds(300))
+        let elapsed = ContinuousClock.now - started
+        #expect(reports == [.program(name: "vim"), .none, .noAnswer, .noAnswer])
+        #expect(elapsed >= .milliseconds(300) && elapsed < .seconds(2), "\(elapsed)")
+    }
+
+    @Test func sessionsThatAnswerAtOnceAreNotKeptWaiting() async {
+        let started = ContinuousClock.now
+        let reports = await WindowModel.foregroundReports(
+            of: [FakeSession("a"), FakeSession("b", answer: .now(.program(name: nil)))],
+            within: .seconds(5))
+        #expect(reports == [.none, .program(name: nil)])
+        #expect(ContinuousClock.now - started < .seconds(2))
+    }
+
+    @Test func theQuestionNamesTheProgramsAndTheSessionsThatDidNotAnswer() async {
+        let (model, _, _) = window()
+        defer { model.shutDown() }
+        func panes(_ sessions: [FakeSession]) -> [PaneController] {
+            sessions.map { PaneController(profile: .localShell("/bin/sh"), session: $0) }
+        }
+        #expect(await WindowModel.runningDetail(of: panes([FakeSession("zsh")])) == nil)
+        #expect(
+            await WindowModel.runningDetail(
+                of: panes([FakeSession("Ubuntu-24.04", answer: .now(.program(name: "sleep")))]))
+                == "sleep is still running and will be ended.")
+        #expect(
+            await WindowModel.runningDetail(
+                of: panes([
+                    FakeSession("zsh", answer: .now(.program(name: "vim"))),
+                    FakeSession("Ubuntu-24.04", answer: .now(.program(name: nil))),
+                    FakeSession("Debian-13", answer: .never),
+                ]), within: .milliseconds(100))
+                == "vim and a program in Ubuntu-24.04 are still running and will be ended. "
+                + "A program may be running in Debian-13, which did not answer within 100 ms.")
+    }
+
+    // MARK: Closing
+
+    @Test func atThePromptATabClosesWithoutAsking() async {
+        let (model, host, _) = window()
+        defer { model.shutDown() }
+        model.perform(.newTab(profile: Profile.localShellID))
+        #expect(model.tabs.count == 2)
+        let session = focused(model)
+        model.perform(.closePane)
+        #expect(await waitUntil(seconds: 5) { model.tabs.count == 1 })
+        #expect(host.questions.isEmpty)
+        #expect(session?.terminated == 1)
+    }
+
+    @Test func aRunningProgramIsNamedAndCancellingKeepsThePane() async {
+        let (model, host, _) = window()
+        defer { model.shutDown() }
+        focused(model)?.answer = .now(.program(name: "sleep"))
+        model.perform(.closePane)
+        #expect(await waitUntil(seconds: 5) { !host.questions.isEmpty })
+        #expect(host.questions.first?.message == "Close this tab?")
+        #expect(host.questions.first?.detail == "sleep is still running and will be ended.")
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(model.tabs.count == 1 && focused(model)?.terminated == 0)
+        #expect(!model.isAskingToClose)
+        host.answer = true
+        model.perform(.closePane)
+        #expect(await waitUntil(seconds: 5) { host.closed == 1 })
+    }
+
+    @Test func aSessionThatDoesNotAnswerMakesTheQuestionSaySoInTime() async {
+        let (model, host, _) = window(make: { _ in FakeSession("Ubuntu-24.04") })
+        defer { model.shutDown() }
+        focused(model)?.answer = .never
+        let started = ContinuousClock.now
+        model.perform(.closePane)
+        #expect(await waitUntil(seconds: 5) { !host.questions.isEmpty })
+        #expect(ContinuousClock.now - started < .seconds(2))
+        #expect(
+            host.questions.first?.detail
+                == "A program may be running in Ubuntu-24.04, which did not answer within 500 ms.")
+    }
+
+    @Test func aSecondCloseWhileAQuestionIsOpenIsIgnored() async {
+        let (model, host, _) = window()
+        defer { model.shutDown() }
+        focused(model)?.answer = .after(.milliseconds(200), .program(name: "top"))
+        host.delay = .milliseconds(300)
+        host.answer = true
+        model.perform(.closePane)
+        model.perform(.closePane)
+        model.requestCloseWindow()
+        #expect(await waitUntil(seconds: 5) { host.closed == 1 })
+        try? await Task.sleep(for: .milliseconds(300))
+        #expect(host.questions.count == 1)
+        #expect(host.closed == 1)
+    }
+
+    @Test func aWindowThatClosesWhileItsQueryWaitsAsksNothing() async {
+        let (model, host, _) = window()
+        focused(model)?.answer = .after(.milliseconds(200), .program(name: "sleep"))
+        model.perform(.closePane)
+        try? await Task.sleep(for: .milliseconds(50))
+        model.shutDown()
+        try? await Task.sleep(for: .milliseconds(400))
+        #expect(host.questions.isEmpty)
+        #expect(!model.isAskingToClose)
+    }
+
+    @Test func closingTheWindowAsksForEveryPaneAndClosesAtThePrompt() async {
+        let (model, host, _) = window()
+        defer { model.shutDown() }
+        model.perform(.splitRight)
+        focused(model)?.answer = .now(.program(name: "htop"))
+        host.answer = false
+        model.requestCloseWindow()
+        #expect(await waitUntil(seconds: 5) { !host.questions.isEmpty })
+        #expect(host.questions.first?.message == "Close this window?")
+        #expect(host.questions.first?.detail == "htop is still running and will be ended.")
+        #expect(await waitUntil(seconds: 5) { !model.isAskingToClose })
+        #expect(host.closed == 0)
+        focused(model)?.answer = .now(.none)
+        model.requestCloseWindow()
+        #expect(await waitUntil(seconds: 5) { host.closed == 1 })
+        #expect(host.questions.count == 1)
+    }
+
+    @Test func withTheQuestionTurnedOffNothingIsAsked() async {
+        let (model, host, _) = window { $0.confirmCloseWithRunningProcess = false }
+        defer { model.shutDown() }
+        focused(model)?.answer = .never
+        model.requestCloseWindow()
+        #expect(await waitUntil(seconds: 5) { host.closed == 1 })
+        #expect(host.questions.isEmpty)
+    }
+
+    @Test func quittingAsksAboutEveryPaneOnceTheyHaveAnswered() async {
+        let panes = [
+            PaneController(profile: .localShell("/bin/sh"), session: FakeSession("Ubuntu-24.04")),
+            PaneController(
+                profile: .localShell("/bin/sh"),
+                session: FakeSession(
+                    "Debian-13",
+                    answer: .after(
+                        .milliseconds(50),
+                        .program(
+                            name: "sleep")))),
+        ]
+        var questions: [MawTerminalKit.Confirmation] = []
+        let quit = await WindowModel.confirmQuitting(panes) { question in
+            questions.append(question)
+            return false
+        }
+        #expect(!quit)
+        #expect(questions.map(\.message) == ["Quit maw?"])
+        #expect(questions.first?.detail == "sleep is still running and will be ended.")
+        let idle = [PaneController(profile: .localShell("/bin/sh"), session: FakeSession("zsh"))]
+        #expect(await WindowModel.confirmQuitting(idle) { _ in false })
     }
 
     // MARK: Profiles

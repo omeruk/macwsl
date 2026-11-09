@@ -58,6 +58,10 @@ final class WindowModel {
 
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private let makeSession: @MainActor (Profile) -> any TerminalSession
+    /// Set while a close question waits for the sessions' answers or for the user, so that a
+    /// second ⌘W or close is ignored meanwhile.
+    @ObservationIgnored private(set) var isAskingToClose = false
+    @ObservationIgnored private var isShutDown = false
 
     /// - Parameter makeSession: Makes a pane's session for a profile. Tests pass fake
     ///   sessions; the app asks the session layer (`Profile.makeSession()`).
@@ -105,20 +109,15 @@ final class WindowModel {
         }
     }
 
-    /// Ends every session. Called when the window closes.
+    /// Ends every session, which hangs up Linux sessions and ends their leases. Called when
+    /// the window closes.
     func shutDown() {
+        isShutDown = true
         refreshTask?.cancel()
         for pane in panes.values {
             pane.terminate()
         }
         panes.removeAll()
-    }
-
-    /// Programs running in this window other than idle shells, for close and quit
-    /// confirmations.
-    var runningProcessNames: [String] {
-        panes.values.filter { $0.session.hasForegroundProcess }
-            .map { $0.session.foregroundProcessName ?? $0.displayName }
     }
 
     // MARK: Selection
@@ -239,8 +238,17 @@ final class WindowModel {
         guard let tab = tabs[id] else { return }
         let panesInTab = tab.splitTree?.panes.compactMap { panes[$0] } ?? []
         Task {
-            guard await confirmClosing(panesInTab) else { return }
+            guard await confirmClosing(panesInTab, message: "Close this tab?") else { return }
             removeTab(id)
+        }
+    }
+
+    /// Closes the window, asking first if a program is running in one of its panes.
+    func requestCloseWindow() {
+        Task {
+            let all = Array(panes.values)
+            guard await confirmClosing(all, message: "Close this window?") else { return }
+            host?.closeWindow()
         }
     }
 
@@ -299,19 +307,21 @@ final class WindowModel {
     }
 
     func closePane(_ id: PaneID, confirm: Bool) {
-        guard let tab = tabs.tabs.first(where: { $0.splitTree?.contains(id) == true }),
-            var tree = tab.splitTree
-        else { return }
+        guard let pane = panes[id] else { return }
         Task {
-            if confirm, let pane = panes[id] {
-                guard await confirmClosing([pane]) else { return }
+            if confirm {
+                let isLast = tabs.tabs.contains { $0.splitTree?.panes == [id] }
+                let message = isLast ? "Close this tab?" : "Close this pane?"
+                guard await confirmClosing([pane], message: message) else { return }
             }
+            // The tree may have changed while the question was open.
+            guard let tab = tabs.tabs.first(where: { $0.splitTree?.contains(id) == true }),
+                var tree = tab.splitTree
+            else { return }
             if tree.paneCount == 1 {
                 removeTab(tab.id)
                 return
             }
-            // The tree may have changed while the confirmation was open.
-            tree = tabs[tab.id]?.splitTree ?? tree
             tree.close(id)
             panes.removeValue(forKey: id)?.terminate()
             tabs.update(tab.id, content: .terminal(tree))
@@ -379,18 +389,86 @@ final class WindowModel {
 
     // MARK: Confirmations
 
-    private func confirmClosing(_ panes: [PaneController]) async -> Bool {
+    /// How long a session may take to say what runs in its foreground.
+    static let foregroundTimeout = Duration.milliseconds(500)
+
+    /// Asks before closing `panes` if a program runs in one of them. Returns false when the
+    /// user cancels, while another close question is pending, and when the window closed while
+    /// the sessions answered.
+    private func confirmClosing(_ panes: [PaneController], message: String) async -> Bool {
         guard settings.confirmCloseWithRunningProcess else { return true }
-        let running = panes.filter { $0.session.hasForegroundProcess }
-        guard !running.isEmpty else { return true }
-        let names = running.map { $0.session.foregroundProcessName ?? $0.displayName }
-        let many = panes.count > 1
-        return await host?.confirm(
-            Confirmation(
-                message: many ? "Close this tab?" : "Close this pane?",
-                detail: "\(Self.list(names)) \(names.count == 1 ? "is" : "are") still running "
-                    + "and will be ended.",
-                confirmTitle: "Close")) ?? true
+        guard !isAskingToClose else { return false }
+        isAskingToClose = true
+        defer { isAskingToClose = false }
+        let detail = await Self.runningDetail(of: panes)
+        guard !isShutDown else { return false }
+        guard let detail else { return true }
+        let question = Confirmation(message: message, detail: detail, confirmTitle: "Close")
+        return await host?.confirm(question) ?? false
+    }
+
+    /// Whether to quit: asks the sessions of `panes` at once, then `ask` if a program runs.
+    static func confirmQuitting(
+        _ panes: [PaneController], ask: (Confirmation) async -> Bool
+    ) async -> Bool {
+        guard let detail = await runningDetail(of: panes) else { return true }
+        return await ask(Confirmation(message: "Quit maw?", detail: detail, confirmTitle: "Quit"))
+    }
+
+    /// What a close or quit question says about `panes`, or `nil` when every shell waits at
+    /// its prompt. Names the programs, and the panes whose session did not answer in time.
+    static func runningDetail(
+        of panes: [PaneController], within timeout: Duration = foregroundTimeout
+    ) async -> String? {
+        let reports = await foregroundReports(of: panes.map(\.session), within: timeout)
+        var programs: [String] = []
+        var silent: [String] = []
+        for (pane, report) in zip(panes, reports) {
+            switch report {
+            case .none: break
+            case .program(let name): programs.append(name ?? "a program in \(pane.displayName)")
+            case .noAnswer: silent.append(pane.displayName)
+            }
+        }
+        var sentences: [String] = []
+        if !programs.isEmpty {
+            let verb = programs.count == 1 ? "is" : "are"
+            sentences.append("\(list(programs)) \(verb) still running and will be ended.")
+        }
+        if !silent.isEmpty {
+            let milliseconds = Int(timeout / .milliseconds(1))
+            sentences.append(
+                "A program may be running in \(list(silent)), which did not answer within "
+                    + "\(milliseconds) ms.")
+        }
+        return sentences.isEmpty ? nil : sentences.joined(separator: " ")
+    }
+
+    /// Asks every session at once what runs in its foreground, with one deadline. A session
+    /// that has not answered by then counts as `noAnswer`. The main actor only awaits.
+    static func foregroundReports(of sessions: [any TerminalSession], within timeout: Duration)
+        async -> [ForegroundReport]
+    {
+        var reports = [ForegroundReport](repeating: .noAnswer, count: sessions.count)
+        guard !sessions.isEmpty else { return reports }
+        let (answers, answer) = AsyncStream<(Int, ForegroundReport)?>.makeStream()
+        for (index, session) in sessions.enumerated() {
+            Task { answer.yield((index, await session.foregroundProgram(within: timeout))) }
+        }
+        let deadline = Task {
+            try? await Task.sleep(for: timeout)
+            answer.yield(nil)
+        }
+        var pending = sessions.count
+        for await next in answers {
+            guard let (index, report) = next else { break }
+            reports[index] = report
+            pending -= 1
+            if pending == 0 { break }
+        }
+        deadline.cancel()
+        answer.finish()
+        return reports
     }
 
     private func confirmPaste(_ text: String) -> Bool {

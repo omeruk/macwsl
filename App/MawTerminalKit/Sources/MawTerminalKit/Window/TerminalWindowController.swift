@@ -85,20 +85,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         updateTitleBarMetrics()
     }
 
+    /// The window closes once its sessions have said what runs in them, after a question if
+    /// a program runs (`WindowModel.requestCloseWindow()`).
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        let running = model.runningProcessNames
-        guard model.settings.confirmCloseWithRunningProcess, !running.isEmpty else { return true }
-        Task {
-            let confirmed = await confirm(
-                Confirmation(
-                    message: "Close this window?",
-                    detail: "\(WindowModel.list(running)) \(running.count == 1 ? "is" : "are") "
-                        + "still running and will be ended.",
-                    confirmTitle: "Close"))
-            if confirmed {
-                closeWindow()
-            }
-        }
+        model.requestCloseWindow()
         return false
     }
 

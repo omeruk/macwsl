@@ -93,22 +93,20 @@ public final class LocalShellSession: TerminalSession {
         isRunning = false
     }
 
-    public var hasForegroundProcess: Bool {
-        guard let group = foregroundProcessGroup, let process else { return false }
-        return group != process.pid
-    }
-
-    public var foregroundProcessName: String? {
-        guard let group = foregroundProcessGroup else { return nil }
-        var buffer = [CChar](repeating: 0, count: Int(MAXCOMLEN) * 2 + 1)
-        let length = proc_name(group, &buffer, UInt32(buffer.count))
-        guard length > 0 else { return nil }
-        return Self.string(fromCString: buffer)
-    }
-
     /// Answers at once: the terminal's foreground group is a local system call away.
     public func foregroundProgram(within timeout: Duration) async -> ForegroundReport {
-        hasForegroundProcess ? .program(name: foregroundProcessName) : .none
+        foreground
+    }
+
+    /// What runs in the foreground now: `none` while the shell's own group is in the
+    /// foreground, at its prompt.
+    var foreground: ForegroundReport {
+        guard let group = foregroundProcessGroup, let process, group != process.pid else {
+            return .none
+        }
+        var buffer = [CChar](repeating: 0, count: Int(MAXCOMLEN) * 2 + 1)
+        let length = proc_name(group, &buffer, UInt32(buffer.count))
+        return .program(name: length > 0 ? Self.string(fromCString: buffer) : nil)
     }
 
     public func terminalReportedTitle(_ title: String) {

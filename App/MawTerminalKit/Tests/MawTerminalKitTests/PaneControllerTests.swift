@@ -13,8 +13,6 @@ import Testing
         weak var delegate: (any TerminalSessionDelegate)?
         let workingDirectory: String? = nil
         let isRunning = false
-        let hasForegroundProcess = false
-        let foregroundProcessName: String? = nil
 
         func foregroundProgram(within timeout: Duration) async -> ForegroundReport { .none }
         func start(size: TerminalSize) throws(TerminalSessionError) {}

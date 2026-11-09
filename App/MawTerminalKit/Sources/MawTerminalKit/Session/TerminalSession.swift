@@ -130,13 +130,10 @@ public protocol TerminalSession: AnyObject {
     /// The current working directory, if known.
     var workingDirectory: String? { get }
     var isRunning: Bool { get }
-    /// Whether a program other than the shell itself is in the foreground, such as `vim` or a
-    /// build. Closing the pane or quitting asks first when this is true.
-    var hasForegroundProcess: Bool { get }
-    /// The name of the foreground program, for confirmation messages.
-    var foregroundProcessName: String? { get }
-    /// What runs in the foreground now, answered within `timeout`. Never cached, so that a
-    /// program that has just ended does not count. The main actor only awaits it.
+    /// What runs in the foreground now, such as `vim` or a build rather than the shell,
+    /// answered within `timeout`. Closing a pane or quitting asks first when a program runs.
+    /// Never cached, so that a program that has just ended does not count. The main actor only
+    /// awaits it.
     func foregroundProgram(within timeout: Duration) async -> ForegroundReport
 
     /// Starts the program with the terminal at `size`.

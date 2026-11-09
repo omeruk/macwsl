@@ -228,8 +228,6 @@ import os
         let recorder = Recorder()
         let (session, _) = try start(recorder, foreground: answer)
         #expect(await session.foregroundProgram(within: .milliseconds(500)) == report)
-        #expect(!session.hasForegroundProcess)
-        #expect(session.foregroundProcessName == nil)
     }
 
     @Test func titlesAndOSC7AreTheOnlySources() throws {
