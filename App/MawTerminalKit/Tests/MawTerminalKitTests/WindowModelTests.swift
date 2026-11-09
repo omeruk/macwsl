@@ -116,18 +116,10 @@ import Testing
         let started = ContinuousClock.now
         let reports = await WindowModel.foregroundReports(
             of: sessions, within: .milliseconds(300))
-        let elapsed = ContinuousClock.now - started
+        // The late answer and the missing one count as no answer, so the deadline ended the
+        // wait; how soon it did is checked in `Latency`.
         #expect(reports == [.program(name: "vim"), .none, .noAnswer, .noAnswer])
-        #expect(elapsed >= .milliseconds(300) && elapsed < .seconds(2), "\(elapsed)")
-    }
-
-    @Test func sessionsThatAnswerAtOnceAreNotKeptWaiting() async {
-        let started = ContinuousClock.now
-        let reports = await WindowModel.foregroundReports(
-            of: [FakeSession("a"), FakeSession("b", answer: .now(.program(name: nil)))],
-            within: .seconds(5))
-        #expect(reports == [.none, .program(name: nil)])
-        #expect(ContinuousClock.now - started < .seconds(2))
+        #expect(ContinuousClock.now - started >= .milliseconds(300))
     }
 
     @Test func theQuestionNamesTheProgramsAndTheSessionsThatDidNotAnswer() async {
@@ -186,10 +178,8 @@ import Testing
         let (model, host, _) = window(make: { _ in FakeSession("Ubuntu-24.04") })
         defer { model.shutDown() }
         focused(model)?.answer = .never
-        let started = ContinuousClock.now
         model.perform(.closePane)
         #expect(await waitUntil(seconds: 5) { !host.questions.isEmpty })
-        #expect(ContinuousClock.now - started < .seconds(2))
         #expect(
             host.questions.first?.detail
                 == "A program may be running in Ubuntu-24.04, which did not answer within 500 ms.")
@@ -212,13 +202,13 @@ import Testing
 
     @Test func aWindowThatClosesWhileItsQueryWaitsAsksNothing() async {
         let (model, host, _) = window()
-        focused(model)?.answer = .after(.milliseconds(200), .program(name: "sleep"))
+        focused(model)?.answer = .never
         model.perform(.closePane)
-        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await waitUntil(seconds: 5) { model.isAskingToClose })
         model.shutDown()
-        try? await Task.sleep(for: .milliseconds(400))
+        #expect(await waitUntil(seconds: 5) { !model.isAskingToClose })
         #expect(host.questions.isEmpty)
-        #expect(!model.isAskingToClose)
+        #expect(model.tabs.count == 1)
     }
 
     @Test func closingTheWindowAsksForEveryPaneAndClosesAtThePrompt() async {
@@ -369,5 +359,41 @@ import Testing
         let firstLine = try #require(error.description.split(separator: "\n").first)
         #expect(text.contains("maw: \(firstLine)"), "\(text)")
         #expect(text.contains("[↩ new session]"), "\(text)")
+    }
+}
+
+extension WindowModelTests {
+    /// Upper bounds on how long the questions wait (decision record 0018). CI runs this suite
+    /// after the others, one test at a time, because every test of this package shares the main
+    /// actor.
+    @MainActor
+    @Suite struct Latency {
+        @Test func theDeadlineEndsTheWaitForASessionThatDoesNotAnswer() async {
+            let started = ContinuousClock.now
+            let reports = await WindowModel.foregroundReports(
+                of: [FakeSession("a", answer: .never)], within: .milliseconds(300))
+            #expect(reports == [.noAnswer])
+            #expect(ContinuousClock.now - started < .seconds(2))
+        }
+
+        @Test func sessionsThatAnswerAtOnceAreNotKeptWaiting() async {
+            let started = ContinuousClock.now
+            let reports = await WindowModel.foregroundReports(
+                of: [FakeSession("a"), FakeSession("b", answer: .now(.program(name: nil)))],
+                within: .seconds(5))
+            #expect(reports == [.none, .program(name: nil)])
+            #expect(ContinuousClock.now - started < .seconds(2))
+        }
+
+        @Test func theQuestionAboutASilentSessionComesInTime() async {
+            let (model, host, _) = WindowModelTests().window(make: { _ in
+                FakeSession("Ubuntu-24.04", answer: .never)
+            })
+            defer { model.shutDown() }
+            let started = ContinuousClock.now
+            model.perform(.closePane)
+            #expect(await waitUntil(seconds: 5) { !host.questions.isEmpty })
+            #expect(ContinuousClock.now - started < .seconds(2))
+        }
     }
 }

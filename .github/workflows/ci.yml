@@ -85,9 +85,14 @@ jobs:
         working-directory: App/MawTerminalKit
         run: swift build -Xswiftc -warnings-as-errors
 
+      # Every test of this package runs on the main actor, so tests that bound a duration run
+      # after the others, one at a time, as the root package's latency group does
+      # (docs/decisions/0018-test-groups.md).
       - name: Test MawTerminalKit
         working-directory: App/MawTerminalKit
-        run: swift test -Xswiftc -warnings-as-errors
+        run: |
+          swift test -Xswiftc -warnings-as-errors --skip "/Latency/"
+          swift test -Xswiftc -warnings-as-errors --skip-build --filter "/Latency/" --no-parallel
 
       - name: Lint MawTerminalKit
         working-directory: App/MawTerminalKit
