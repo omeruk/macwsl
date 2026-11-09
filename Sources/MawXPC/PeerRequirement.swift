@@ -6,12 +6,13 @@
     /// Which programs may talk to the daemon. docs/daemon.md explains what the requirement
     /// protects against and how it tightens once phase 13 signs with a team identifier.
     public enum PeerRequirement {
-        /// The code signing identifiers of maw's executables. `scripts/sign-dev.sh` signs
-        /// `maw` and `mawd` with them. Phase 11b adds the terminal app, `dev.maw.app`.
-        public static let identifiers = ["dev.maw.maw", "dev.maw.mawd"]
+        /// The code signing identifiers of maw's executables and the terminal app.
+        /// `scripts/sign-dev.sh` signs `maw` and `mawd` with theirs, and Xcode signs the app
+        /// with its bundle identifier, `dev.maw.app`.
+        public static let identifiers = ["dev.maw.maw", "dev.maw.mawd", "dev.maw.app"]
 
         /// The requirement the daemon sets on every peer:
-        /// `identifier "dev.maw.maw" or identifier "dev.maw.mawd"`.
+        /// `identifier "dev.maw.maw" or identifier "dev.maw.mawd" or identifier "dev.maw.app"`.
         public static var codeSigningRequirement: String {
             identifiers.map { "identifier \"\($0)\"" }.joined(separator: " or ")
         }
