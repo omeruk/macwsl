@@ -97,6 +97,13 @@ let package = Package(
 
         // Helpers for the test targets that run processes. Not part of any product.
         .target(name: "MawTestSupport", path: "Tests/MawTestSupport"),
+        // The integration tests' client of the test daemon, which accepts only maw's signing
+        // identifiers; scripts/integration-test.sh signs it. Not part of any product.
+        .executableTarget(
+            name: "maw-integration-probe",
+            dependencies: ["MawClient", "MawCore", "MawProtocol", "MawXPC"],
+            path: "Tests/maw-integration-probe"
+        ),
         .testTarget(name: "MawCoreTests", dependencies: ["MawCore"]),
         .testTarget(
             name: "MawProtocolTests",

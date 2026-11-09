@@ -6,6 +6,13 @@
 # both, and then runs `swift test --skip-build`, so that the tests cannot relink them and drop
 # their signatures.
 #
+# The tests that need a client of the daemon in their own code, such as the foreground-program
+# report, run the integration probe (Tests/maw-integration-probe) as a subprocess, because the
+# daemon accepts only clients signed with maw's identifiers. This script is the only thing that
+# signs the probe: it signs it in the build directory with the identifier dev.maw.maw after
+# scripts/sign-dev.sh, which does not sign it, and nothing installs it. The probe refuses to run
+# unless MAW_DAEMON_LABEL names the test daemon below.
+#
 # The daemon tests need a daemon registered with launchd. So that they never disturb the
 # installed daemon (dev.maw.mawd), the script registers one of its own under a separate label
 # and Mach service name, with its logs in a temporary directory, a short machine idle timeout,
@@ -57,6 +64,8 @@ machine_idle_timeout=3
 swift build --build-tests
 scripts/sign-dev.sh
 bin_path=$(swift build --show-bin-path)
+probe="$bin_path/maw-integration-probe"
+codesign --force --sign - --identifier dev.maw.maw "$probe"
 
 log_directory=$(mktemp -d "${TMPDIR:-/tmp}/maw-integration.XXXXXX")
 image_cache="$log_directory/images"
@@ -305,6 +314,7 @@ fi
 # may select tests, they run in one `swift test` without the check.
 with_test_environment() {
     env MAW_INTEGRATION=1 MAWD_PATH="$bin_path/mawd" MAW_PATH="$bin_path/maw" \
+        MAW_INTEGRATION_PROBE_PATH="$probe" \
         MAW_DAEMON_LABEL="$label" MAW_TEST_LOG_DIRECTORY="$log_directory" \
         MAW_TEST_MACHINE_IDLE_TIMEOUT="$machine_idle_timeout" \
         MAW_TEST_DISTRIBUTION="$test_distribution" MAW_TEST_USER="$test_user" \
@@ -330,9 +340,11 @@ if ! codesign --display --entitlements - "$bin_path/mawd" 2> /dev/null |
     echo "integration-test.sh: $bin_path/mawd lost its signature during the run." >&2
     exit 1
 fi
-if ! codesign --display --verbose "$bin_path/maw" 2>&1 | grep -q '^Identifier=dev.maw.maw$'; then
-    echo "integration-test.sh: $bin_path/maw lost its signature during the run." >&2
-    exit 1
-fi
+for signed in "$bin_path/maw" "$probe"; do
+    if ! codesign --display --verbose "$signed" 2>&1 | grep -q '^Identifier=dev.maw.maw$'; then
+        echo "integration-test.sh: $signed lost its signature during the run." >&2
+        exit 1
+    fi
+done
 
 exit "$status"
