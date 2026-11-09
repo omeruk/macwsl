@@ -1,6 +1,6 @@
 # The maw daemon
 
-`mawd` owns every virtual machine. `maw`, and from phase 11b the terminal app, are its clients.
+`mawd` owns every virtual machine. `maw` and the terminal app are its clients.
 They talk to it over XPC. For a session, the daemon has the guest agent open a vsock
 connection to it and hands that connection's descriptor to the client, which runs the guest
 protocol (`docs/protocol.md`) itself, so terminal bytes never pass through the daemon.
@@ -330,8 +330,8 @@ exits, crashes, or closes the connection, libxpc invalidates the daemon's side, 
 releases every lease the connection holds. That drives the 60-second idle timer without
 trusting the client to report anything.
 
-A connection should therefore open one session. `maw` opens one connection per invocation; the
-terminal app will open one per tab.
+A connection should therefore open one session. `maw` opens one connection per invocation, and
+each Linux session of the terminal app opens one of its own (see the next section).
 
 ### The client library
 
@@ -351,6 +351,26 @@ The daemon-related errors point to `~/Library/Logs/maw/mawd.log`. An interrupted
 final: libxpc would send the next message to a new daemon process, which knows neither the
 client nor its sessions, so the client cancels the connection and reports the loss.
 
+`DistributionSession` (`Sources/MawClient/DistributionSession.swift`) is the terminal app's
+session without its interface: it connects a `DaemonClient` of its own, opens a session on the
+default or a named distribution, and runs the login shell there on a pseudo-terminal with
+`GuestAgentClient` and `GuestProcess`. It closes its connection, and so releases the lease, on
+every ending:
+
+| How the session ends | `Ending` |
+|----------------------|----------|
+| The shell exits | `exited(ExitStatus)` |
+| The machine stops (`maw --terminate`, `maw --shutdown`, a crash) | `failed(machineStopped)` |
+| The guest connection ends, and the daemon gives no reason within 1 second | `failed(sessionConnectionEnded)` |
+| The daemon exits or closes the connection | `failed(daemonConnectionLost)` |
+| The agent fails | `failed(guestAgentFailed)` |
+| The session cannot open | `failed` with the error of connecting, opening, or starting the shell |
+| `hangUp()`, also while the session opens | `hungUp`, which reports nothing |
+
+`hangUp()` closes the guest connection, so that the agent sends the shell SIGHUP, and the
+daemon connection, so that the lease ends at once and the machine's idle timer starts. `maw`
+reports its sessions' endings through the same code (`SessionEnding`).
+
 ## Peer validation
 
 The daemon accepts a connection only if both checks pass (`XPCServiceListener`):
@@ -360,14 +380,16 @@ The daemon accepts a connection only if both checks pass (`XPCServiceListener`):
    (`PeerRequirement.codeSigningRequirement`):
 
    ```
-   identifier "dev.maw.maw" or identifier "dev.maw.mawd"
+   identifier "dev.maw.maw" or identifier "dev.maw.mawd" or identifier "dev.maw.app"
    ```
 
    It is set with `xpc_connection_set_peer_code_signing_requirement` before the connection is
    activated, and libxpc checks every message against it. `mawd` is included because
-   `mawd uninstall` asks the daemon to stop its machines.
+   `mawd uninstall` asks the daemon to stop its machines, and `dev.maw.app` is the terminal
+   app.
 
-`scripts/sign-dev.sh` signs the development builds ad hoc with these identifiers. A plain
+`scripts/sign-dev.sh` signs the development builds of `maw` and `mawd` ad hoc with their
+identifiers. A plain
 `swift build` relinks them with a signature whose identifier is derived from the file name,
 such as `maw-5555…`, which the daemon rejects. Because a rejected client sees only an
 interrupted connection, `DaemonClient` checks its own identifier first and reports
@@ -394,8 +416,13 @@ anchor apple generic and certificate leaf[subject.OU] = "<TEAM ID>" and
 
 ### The terminal app
 
-Phase 11b, which connects the terminal app to the daemon, adds the app's identifier,
-`dev.maw.app`, to `PeerRequirement.identifiers`.
+Xcode signs the app with its bundle identifier, `dev.maw.app` (`App/project.yml`), and a
+development build is signed ad hoc as well. `codesign -dv` reports `Identifier=dev.maw.app` for
+the bundle and its main executable. The Debug build puts the code in
+`Contents/MacOS/maw.debug.dylib`, whose identifier is `maw.debug`; that does not matter, because
+libxpc evaluates the requirement against the process's main executable. The app is not
+sandboxed, so it can look up the daemon's Mach service. As for `maw`, the same-user check stays
+the boundary until phase 13.
 
 ## Log files
 

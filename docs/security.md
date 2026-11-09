@@ -24,12 +24,19 @@ reviews it as a whole.
 
 `mawd` serves the Mach service `dev.maw.mawd` ([docs/daemon.md](daemon.md)). It accepts a
 connection only if the peer runs as the same user (`xpc_connection_get_euid`) and satisfies the
-code signing requirement `identifier "dev.maw.maw" or identifier "dev.maw.mawd"`.
+code signing requirement
+`identifier "dev.maw.maw" or identifier "dev.maw.mawd" or identifier "dev.maw.app"`.
 
 - With ad-hoc signing, any local program can claim those identifiers, so the requirement guards
   against stale or unrelated builds, not against malicious programs. Until phase 13 signs with a
   Developer ID, **the same-user check is the boundary**: only processes of the user who already
   controls maw can use it.
+- Since phase 11b, the terminal app (`dev.maw.app`) is a client as well. It sends the requests
+  that `maw` sends and receives a session's descriptor in the same way, so accepting it gives
+  that user nothing that `maw` does not already give them. Each of its Linux sessions holds a
+  connection of its own, and with it a lease, only while the session is open. The descriptor
+  is duplicated with close-on-exec set (`InterfaceCoding.descriptor(in:)`), so that no program
+  that the client starts afterwards inherits the session.
 - Since interface version 3, a client can also change the default distribution
   (`setDefault`) and stop one distribution (`terminate`). Any process of the same user could
   already do both: `shutdown` stops every distribution, and `state.json`, which records the

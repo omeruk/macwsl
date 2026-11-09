@@ -72,15 +72,6 @@ from `main`.
     this item; the decision record lists the measurements.
   - **Phase:** 08, together with DNS under VPNs.
 
-## Phase 11b: Linux sessions in the app
-
-- **The terminal app is not a client of the daemon.**
-  - **Seen:** The daemon accepts only `maw` and `mawd` as peers. The terminal app runs local
-    shells only.
-  - **Evidence:** [docs/daemon.md, "The terminal app"](daemon.md#the-terminal-app): phase 11b
-    adds `dev.maw.app` to `PeerRequirement.identifiers`.
-  - **Phase:** 11b.
-
 ## Phase 12: Configuration and lifecycle
 
 - **No setting for `.fsync` disk synchronization.**
