@@ -15,8 +15,8 @@ import MawCore
 /// queues the output it receives for a second thread, which hands it to the `OutputHandler`.
 /// Every method is safe to call from any thread or task.
 ///
-/// Standard input and its end travel in order. `signal` and `resize` overtake the input that
-/// has not been sent yet, and the input window (`AgentProtocol.inputWindow`) keeps the input
+/// Standard input and its end travel in order. `signal`, `resize`, and `foregroundQuery`
+/// overtake the input that has not been sent yet, and the input window (`AgentProtocol.inputWindow`) keeps the input
 /// already sent small enough for the agent to read the connection at all times, so that both
 /// reach the agent at once however much input the process leaves unread. The I/O thread never
 /// waits for the `OutputHandler`, so that they also reach it while the handler blocks.
@@ -36,8 +36,9 @@ public final class GuestProcess: @unchecked Sendable {
     private let lock = ConditionLock()
     /// Standard input and its end, in order.
     private var queue: [Frame] = []
-    /// `signal` and `resize`, sent before `queue`. Each signal is queued once, as a process's
-    /// pending signals are, and only the latest size, so that this stays small.
+    /// `signal`, `resize`, and `foregroundQuery`, sent before `queue`. Each signal is queued
+    /// once, as a process's pending signals are, only the latest size, and at most one query,
+    /// so that this stays small.
     private var controlQueue: [ControlMessage] = []
     private var queuedInputBytes = 0
     /// Standard input sent and not yet reported consumed by the agent. Used by the I/O thread
@@ -53,6 +54,17 @@ public final class GuestProcess: @unchecked Sendable {
     private var waiters: [CheckedContinuation<Result<ExitStatus, MawError>, Never>] = []
     /// Set by the I/O thread when the connection ended before the exit status arrived.
     private var endedBeforeExit = false
+    /// Set by `hangUp()`. The I/O thread then closes the connection.
+    private var hangUpRequested = false
+    /// Callers of `foregroundProgram(within:)` that wait for an answer, by a token of their
+    /// own.
+    private var foregroundWaiters: [UInt64: ForegroundWaiter] = [:]
+    private var nextWaiterToken: UInt64 = 0
+    /// The last `foregroundQuery` ID used. IDs count from 1.
+    private var lastQueryID: UInt32 = 0
+    /// The ID of the query in `controlQueue` that has not been sent yet, which callers that
+    /// ask meanwhile share.
+    private var unsentQueryID: UInt32?
     private let wakeReader: OwnedDescriptor
     private let wakeWriter: OwnedDescriptor
 
@@ -134,6 +146,23 @@ public final class GuestProcess: @unchecked Sendable {
         }
     }
 
+    /// Ends the session from the host's side, as closing a terminal window ends an ssh
+    /// session: the I/O thread closes the connection without waiting for the exit, and the
+    /// agent sends SIGHUP to the process, in terminal mode to the foreground process group
+    /// (docs/protocol.md, "Host disconnect"). Output that has arrived is still delivered;
+    /// `waitForExit()` then throws `guestAgentFailed`, and `foregroundProgram(within:)` answers
+    /// `none`. Has no effect once the session has ended.
+    public func hangUp() {
+        let accepted = lock.withLock {
+            guard ending == nil else { return false }
+            hangUpRequested = true
+            return true
+        }
+        if accepted {
+            wake()
+        }
+    }
+
     private func enqueue(_ add: () -> Void) {
         let accepted = lock.withLock {
             guard ending == nil else { return false }
@@ -148,6 +177,92 @@ public final class GuestProcess: @unchecked Sendable {
     private func wake() {
         var byte: UInt8 = 1
         _ = systemWrite(wakeWriter.rawValue, &byte, 1)
+    }
+
+    // MARK: Foreground program
+
+    private struct ForegroundWaiter {
+        var queryID: UInt32
+        var continuation: CheckedContinuation<ForegroundAnswer, Never>
+        /// Answers `noAnswer` when the time allowed has passed.
+        var timer: Task<Void, Never>?
+    }
+
+    /// Asks the agent which program runs in the foreground of the session's terminal, and
+    /// returns its answer, or `noAnswer` if none arrives within `timeout` or the task is
+    /// cancelled. A session that has ended answers `none` at once. The query overtakes
+    /// standard input that has not been sent yet; callers that ask while a query waits to be
+    /// sent share its answer. A program's name is sanitized (`ForegroundAnswer`).
+    public func foregroundProgram(within timeout: Duration) async -> ForegroundAnswer {
+        let token = lock.withLock {
+            nextWaiterToken += 1
+            return nextWaiterToken
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation {
+                (continuation: CheckedContinuation<ForegroundAnswer, Never>) in
+                let (immediate, queued) = lock.withLock { () -> (ForegroundAnswer?, Bool) in
+                    guard ending == nil else { return (ForegroundAnswer.none, false) }
+                    guard !Task.isCancelled else { return (.noAnswer, false) }
+                    let id: UInt32
+                    var queued = false
+                    if let unsentQueryID {
+                        id = unsentQueryID
+                    } else {
+                        lastQueryID = lastQueryID == UInt32.max ? 1 : lastQueryID + 1
+                        id = lastQueryID
+                        unsentQueryID = id
+                        controlQueue.append(.foregroundQuery(id: id))
+                        queued = true
+                    }
+                    foregroundWaiters[token] = ForegroundWaiter(
+                        queryID: id, continuation: continuation)
+                    return (nil, queued)
+                }
+                if let immediate {
+                    continuation.resume(returning: immediate)
+                    return
+                }
+                if queued {
+                    wake()
+                }
+                let timer = Task { [weak self] in
+                    try? await Task.sleep(for: timeout)
+                    guard !Task.isCancelled else { return }
+                    self?.answerForegroundWaiter(token, with: .noAnswer)
+                }
+                let answered = lock.withLock {
+                    guard foregroundWaiters[token] != nil else { return true }
+                    foregroundWaiters[token]?.timer = timer
+                    return false
+                }
+                if answered {
+                    timer.cancel()
+                }
+            }
+        } onCancel: {
+            answerForegroundWaiter(token, with: .noAnswer)
+        }
+    }
+
+    private func answerForegroundWaiter(_ token: UInt64, with answer: ForegroundAnswer) {
+        guard let waiter = lock.withLock({ foregroundWaiters.removeValue(forKey: token) }) else {
+            return
+        }
+        waiter.timer?.cancel()
+        waiter.continuation.resume(returning: answer)
+    }
+
+    /// Answers every caller waiting for the query `id`. Called by the I/O thread.
+    private func answerForegroundQuery(_ id: UInt32, with answer: ForegroundAnswer) {
+        let waiting = lock.withLock {
+            let tokens = foregroundWaiters.filter { $0.value.queryID == id }.map(\.key)
+            return tokens.compactMap { foregroundWaiters.removeValue(forKey: $0) }
+        }
+        for waiter in waiting {
+            waiter.timer?.cancel()
+            waiter.continuation.resume(returning: answer)
+        }
     }
 
     // MARK: Exit
@@ -236,7 +351,11 @@ public final class GuestProcess: @unchecked Sendable {
         let outcome: Result<ExitStatus, MawError>
         var endedEarly = false
         do {
-            outcome = .success(try serve(connection))
+            if let status = try serve(connection) {
+                outcome = .success(status)
+            } else {
+                outcome = .failure(.guestAgentFailed(reason: "exec: the host hung up"))
+            }
         } catch {
             switch error {
             case .closed, .frame(.truncated): endedEarly = true
@@ -249,12 +368,19 @@ public final class GuestProcess: @unchecked Sendable {
         end(outcome)
     }
 
-    /// Records how the connection ended: writers stop waiting, and the output thread
-    /// publishes `outcome` once it has delivered the output before it.
+    /// Records how the connection ended: writers stop waiting, callers of
+    /// `foregroundProgram(within:)` receive `none`, and the output thread publishes `outcome`
+    /// once it has delivered the output before it.
     private func end(_ outcome: Result<ExitStatus, MawError>) {
-        lock.withLock {
+        let waiting = lock.withLock {
             ending = outcome
             lock.broadcast()
+            defer { foregroundWaiters.removeAll() }
+            return Array(foregroundWaiters.values)
+        }
+        for waiter in waiting {
+            waiter.timer?.cancel()
+            waiter.continuation.resume(returning: .none)
         }
     }
 
@@ -268,7 +394,9 @@ public final class GuestProcess: @unchecked Sendable {
         }
     }
 
-    private func serve(_ connection: FrameConnection) throws(ConnectionError) -> ExitStatus {
+    /// Runs the connection until the exit status arrives, and returns it, or until `hangUp()`,
+    /// and returns `nil`.
+    private func serve(_ connection: FrameConnection) throws(ConnectionError) -> ExitStatus? {
         var drain = [UInt8](repeating: 0, count: 64)
         // Set when the agent has closed its side, typically right after sending `exited`.
         // What it sent before is still read; what is queued for it is dropped.
@@ -292,6 +420,15 @@ public final class GuestProcess: @unchecked Sendable {
                     switch message {
                     case .exited(let status):
                         return status
+                    case .foregroundProgram(let id, let program):
+                        let wasSent = lock.withLock {
+                            id != 0 && id <= lastQueryID && id != unsentQueryID
+                        }
+                        guard wasSent else {
+                            throw .unexpectedMessage(
+                                "foregroundProgram answers query \(id), which was not sent")
+                        }
+                        answerForegroundQuery(id, with: ForegroundAnswer(program))
                     case .error(let error):
                         throw .remote(error)
                     default:
@@ -317,6 +454,9 @@ public final class GuestProcess: @unchecked Sendable {
             }
             if connection.isAtEndOfInput {
                 throw .closed
+            }
+            if lock.withLock({ hangUpRequested }) {
+                return nil
             }
 
             let framesRemain = moveQueuedFrames(to: connection)
@@ -377,6 +517,7 @@ public final class GuestProcess: @unchecked Sendable {
                 connection.enqueue(.control(message))
             }
             controlQueue.removeAll()
+            unsentQueryID = nil
 
             var moved = 0
             var heldByWindow = false

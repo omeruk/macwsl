@@ -249,7 +249,9 @@ host                                   agent
   signal ended the process. SIGINT gives 130.
 - **Host disconnect**: if the host closes the connection before `exited`, the agent sends
   SIGHUP to the process (the foreground process group in terminal mode), as sshd does, and
-  SIGKILL two seconds later if it is still running.
+  SIGKILL two seconds later if it is still running. `GuestProcess.hangUp()` closes the
+  connection in this way, for a client that ends a session as closing a terminal window ends
+  an ssh session.
 
 ## Foreground program
 
