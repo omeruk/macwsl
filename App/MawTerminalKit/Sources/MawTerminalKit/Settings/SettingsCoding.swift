@@ -42,8 +42,9 @@ extension SettingsError: LocalizedError {
 /// Upgrades settings files from older format versions.
 ///
 /// Each migration takes the file from version `n` to `n + 1`, as JSON, before the typed
-/// decoding. Version 1 is the first format, so there are no migrations yet; the next format
-/// change adds `2: { ... }` to `steps`.
+/// decoding. Version 2 adds the default distribution's profile: a version 1 file names the local
+/// shell as the new-tab profile only because it was the only profile, so it moves to the default
+/// distribution.
 public struct SettingsMigration: Sendable {
     public typealias Step = @Sendable (inout JSONValue) -> Void
 
@@ -55,7 +56,13 @@ public struct SettingsMigration: Sendable {
         self.currentVersion = currentVersion
     }
 
-    public static let standard = SettingsMigration()
+    public static let standard = SettingsMigration(steps: [
+        2: { json in
+            if json["defaultProfile"] == .string(Profile.localShellID) {
+                json["defaultProfile"] = .string(Profile.defaultDistributionID)
+            }
+        }
+    ])
 
     /// Brings `json` to `currentVersion` and sets its `version` key. A file without a version is
     /// treated as version 1.

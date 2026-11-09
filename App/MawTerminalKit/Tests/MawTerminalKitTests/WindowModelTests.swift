@@ -6,7 +6,7 @@ import Testing
 
 @testable import MawTerminalKit
 
-/// The window model's close and quit questions and its splits, against fake sessions.
+/// The window model's close and quit questions, its splits, and ⌘T, against fake sessions.
 @MainActor
 @Suite struct WindowModelTests {
     /// A session whose foreground answer comes at once, late, or never.
@@ -275,12 +275,99 @@ import Testing
     // MARK: Profiles
 
     @Test func eachSplitOpensTheProfileItsPaneWasOpenedWith() {
-        let (model, _, asked) = window()
+        let (model, _, asked) = window { $0.defaultProfile = Profile.localShellID }
         defer { model.shutDown() }
         let local = model.settings.localShellProfile
         #expect(asked() == [local])
         model.perform(.splitRight)
         #expect(asked() == [local, local])
-        #expect(model.focusedPane?.profile == local)
+        model.perform(.newTab(profile: Profile.defaultDistributionID))
+        model.perform(.splitDown)
+        #expect(asked() == [local, local, .defaultDistribution, .defaultDistribution])
+        #expect(model.focusedPane?.profile == .defaultDistribution)
+    }
+
+    @Test func everyProfileListOffersTheDefaultDistributionAndTheLocalShell() {
+        let (model, _, asked) = window()
+        defer { model.shutDown() }
+        #expect(asked() == [.defaultDistribution])
+        #expect(model.profiles.map(\.id) == ["default-distribution", "local"])
+        #expect(model.registry[.newTab(profile: "default-distribution")]?.shortcut == .command("t"))
+        #expect(
+            model.registry[.newTab(profile: "local")]?.title
+                == "new tab: \(model.settings.localShellProfile.paletteName)")
+        let form = SettingsForm(settings: model.settings, profiles: model.profiles)
+        let field = form.fields(on: .general).first { $0.id == .defaultProfile }
+        #expect(field?.value == "default distribution")
+    }
+
+    // MARK: ⌘T
+
+    /// A window whose default distribution's sessions run on fake cores that end with
+    /// `ending`, or open `Ubuntu-24.04` without one.
+    func linuxWindow(ending: DistributionSession.Ending?) -> (WindowModel, FakeHost) {
+        let (model, host, _) = window(make: { profile in
+            guard profile.kind == .defaultDistribution else { return FakeSession("zsh") }
+            return LinuxSession(name: nil, fallback: { FakeSession("zsh") }) { terminal, output in
+                let core = LinuxSessionTests.FakeCore(
+                    terminal: terminal, output: output,
+                    name: ending == nil ? "Ubuntu-24.04" : nil, foreground: .none)
+                if let ending { core.end(ending) }
+                return core
+            }
+        })
+        model.focusedPane?.startIfNeeded()
+        return (model, host)
+    }
+
+    /// The pane's text, with the terminal's line breaks removed, so that a wrapped line reads
+    /// as one.
+    func text(of pane: PaneController?) -> String {
+        guard let pane else { return "" }
+        let data = pane.terminalView.getTerminal().getBufferAsData()
+        return String(decoding: data, as: UTF8.self).replacingOccurrences(of: "\n", with: "")
+    }
+
+    @Test func commandTOpensTheDefaultDistribution() async {
+        let (model, _) = linuxWindow(ending: nil)
+        defer { model.shutDown() }
+        #expect(model.focusedPane?.session is LinuxSession)
+        #expect(await waitUntil(seconds: 5) { model.focusedPane?.displayName == "Ubuntu-24.04" })
+    }
+
+    @Test(arguments: [
+        MawError.noDistributionInstalled, .daemonNotInstalled(label: "dev.maw.mawd"),
+    ])
+    func withNothingInstalledCommandTOpensTheLocalShellWithANotice(error: MawError) async {
+        let (model, _) = linuxWindow(ending: .failed(error))
+        defer { model.shutDown() }
+        #expect(await waitUntil(seconds: 5) { model.focusedPane?.session is FakeSession })
+        #expect(model.focusedPane?.session.isRunning == true)
+        #expect(model.focusedPane?.offersNewSession == false)
+        let expected =
+            error == .noDistributionInstalled
+            ? "No Linux distribution is installed" : "maw: The maw daemon is not installed"
+        #expect(text(of: model.focusedPane).contains(expected))
+    }
+
+    @Test(arguments: [
+        MawError.daemonUnreachable(reason: "the connection was invalidated"),
+        .daemonConnectionLost(during: "openSession"),
+        .daemonProtocolError(reason: "a field is missing"),
+        .daemonVersionMismatch(client: 3, daemon: 2),
+        .clientSignatureRejected(identifier: "dev.maw.app"),
+        .launchctlTimedOut(command: "launchctl print", seconds: 10),
+    ])
+    func anyOtherFailureShowsTheErrorInALinuxPane(error: MawError) async throws {
+        let (model, _) = linuxWindow(ending: .failed(error))
+        defer { model.shutDown() }
+        #expect(await waitUntil(seconds: 5) { model.focusedPane?.offersNewSession == true })
+        let pane = try #require(model.focusedPane)
+        #expect(pane.session is LinuxSession)
+        #expect(pane.displayName == "linux")
+        let text = text(of: pane)
+        let firstLine = try #require(error.description.split(separator: "\n").first)
+        #expect(text.contains("maw: \(firstLine)"), "\(text)")
+        #expect(text.contains("[↩ new session]"), "\(text)")
     }
 }

@@ -64,14 +64,17 @@ final class WindowModel {
     @ObservationIgnored private var isShutDown = false
 
     /// - Parameter makeSession: Makes a pane's session for a profile. Tests pass fake
-    ///   sessions; the app asks the session layer (`Profile.makeSession()`).
+    ///   sessions; the app asks the session layer (`Profile.makeSession(localShell:)`).
     init(
         settingsStore: SettingsStore, distributions: any DistributionProvider,
         makeSession: (@MainActor (Profile) -> any TerminalSession)? = nil
     ) {
         self.settingsStore = settingsStore
         self.distributions = distributions
-        self.makeSession = makeSession ?? { profile in profile.makeSession() }
+        self.makeSession =
+            makeSession ?? { [settingsStore] profile in
+                profile.makeSession(localShell: settingsStore.settings.localShellProfile)
+            }
     }
 
     var settings: Settings { settingsStore.settings }
@@ -87,7 +90,7 @@ final class WindowModel {
 
     var chrome: ChromePalette { effectiveSettings.selectedTheme.chromePalette }
 
-    var profiles: [Profile] { [settings.localShellProfile] }
+    var profiles: [Profile] { settings.profiles }
 
     var registry: CommandRegistry {
         CommandRegistry(profiles: profiles, defaultProfile: settings.defaultProfile)

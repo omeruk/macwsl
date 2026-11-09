@@ -1,11 +1,14 @@
 import Foundation
 
-/// A kind of session that a new tab or pane can start. This phase has one profile, the local
-/// login shell. Linux distributions become profiles in a later phase.
+/// A kind of session that a new tab or pane can start: the default Linux distribution or the
+/// local login shell. One profile per installed distribution arrives in a later version.
 public struct Profile: Hashable, Sendable, Identifiable {
     public enum Kind: Hashable, Sendable {
         /// The user's login shell on this Mac. `shell` is the executable's path.
         case localShell(shell: String)
+        /// The distribution that `maw --set-default` chose, resolved by the daemon each time a
+        /// session opens.
+        case defaultDistribution
     }
 
     /// Stable across launches, so that settings can name the default profile.
@@ -20,22 +23,31 @@ public struct Profile: Hashable, Sendable, Identifiable {
     /// The identifier of the local shell profile.
     public static let localShellID = "local"
 
+    /// The identifier of the default distribution's profile.
+    public static let defaultDistributionID = "default-distribution"
+
+    public static let defaultDistribution = Profile(
+        id: defaultDistributionID, kind: .defaultDistribution)
+
     /// The local shell profile for `shell`.
     public static func localShell(_ shell: String) -> Profile {
         Profile(id: localShellID, kind: .localShell(shell: shell))
     }
 
-    /// The short name in tab and pane titles, for example `zsh`.
+    /// The short name in tab and pane titles, for example `zsh`. A Linux session's title
+    /// becomes the distribution's name once it opens.
     public var name: String {
         switch kind {
         case .localShell(let shell): (shell as NSString).lastPathComponent
+        case .defaultDistribution: "linux"
         }
     }
 
-    /// The name in the command palette, for example `zsh on this mac`.
+    /// The name in the command palette and the settings, for example `zsh on this mac`.
     public var paletteName: String {
         switch kind {
         case .localShell: "\(name) on this mac"
+        case .defaultDistribution: "default distribution"
         }
     }
 

@@ -119,8 +119,7 @@ public final class AppController: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     private var currentRegistry: CommandRegistry {
         let settings = settingsStore.settings
-        return CommandRegistry(
-            profiles: [settings.localShellProfile], defaultProfile: settings.defaultProfile)
+        return CommandRegistry(profiles: settings.profiles, defaultProfile: settings.defaultProfile)
     }
 
     // MARK: Settings
