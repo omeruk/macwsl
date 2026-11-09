@@ -339,7 +339,9 @@ import Testing
     /// Runs `command` with `/bin/sh` through `posix_spawn` without
     /// `POSIX_SPAWN_CLOEXEC_DEFAULT`, and returns its wait status.
     static func runShell(_ command: String) throws -> Int32 {
-        let argv = ["/bin/sh", "-c", command].map { strdup($0) } + [nil]
+        let arguments: [String] = ["/bin/sh", "-c", command]
+        var argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) }
+        argv.append(nil)
         defer {
             for argument in argv { free(argument) }
         }
