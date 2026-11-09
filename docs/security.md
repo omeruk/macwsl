@@ -58,19 +58,28 @@ daemon hands over) and starts local shells, which run any program the user types
 that a local shell inherited would let any of those programs read and write a Linux session's
 terminal, so the app keeps them apart in two layers:
 
-- **Local shells start with `posix_spawn` and `POSIX_SPAWN_CLOEXEC_DEFAULT`**
-  (`App/MawTerminalKit/Sources/MawTerminalKit/Session/PseudoTerminalProcess.swift`). The shell
-  receives its terminal as standard input, output, and error, and no other descriptor of the
-  app, whether or not it is marked close-on-exec. This covers every descriptor of the app,
-  including those that frameworks create, and leaves no window between a descriptor's creation
-  and its flag. The terminal's own primary side is opened with `O_CLOEXEC` as well. Phase 11a
-  started local shells with `forkpty`, which closed nothing.
+- **Local shells start through a fork that closes every other descriptor**
+  (`maw_terminal_spawn` in `App/MawTerminalKit/Sources/CMawTerminal/terminal.c`). The child,
+  which makes only async-signal-safe calls, resets every signal to its default, starts a
+  session, makes the pseudo-terminal its controlling terminal and its standard input, output,
+  and error, closes every other descriptor below the soft `RLIMIT_NOFILE` (capped at
+  `kern.maxfilesperproc`, above which the kernel hands out none), clears its signal mask, and
+  executes the shell. The shell therefore receives no descriptor of the app, whether or not it
+  is marked close-on-exec, including those that frameworks create, and no window remains between
+  a descriptor's creation and its flag. The terminal's own primary side is opened with
+  `O_CLOEXEC` as well. Phase 11a started local shells with `forkpty`, which closed nothing.
+  - `posix_spawn` with `POSIX_SPAWN_CLOEXEC_DEFAULT` would close the descriptors as well, but it
+    cannot give the shell a controlling terminal on macOS: it runs its file actions before
+    `POSIX_SPAWN_SETSID`, so the child opens the terminal before it leads a session, and it
+    cannot call `TIOCSCTTY`. Without a controlling terminal, zsh has no job control, and Ctrl-C
+    and Ctrl-Z reach no program. This was measured during phase 11b.
 - **A received descriptor is duplicated with close-on-exec set**
   (`InterfaceCoding.descriptor(in:)`, `F_DUPFD_CLOEXEC`), as a second defence. libxpc set
   `FD_CLOEXEC` on the descriptors it returned on macOS 27.0.1, but does not document it.
 
-A unit test opens a pipe without close-on-exec in the test process, starts a local shell, and
-checks through `/dev/fd` that the shell does not have it; with `forkpty`, the same test fails.
+A unit test opens a pipe without close-on-exec in the test process, starts a local shell
+(`/bin/sh` and `/bin/zsh`), and checks through `/dev/fd` that the shell does not have it; with
+`forkpty`, the same test fails.
 
 ### The guest agent over vsock
 
