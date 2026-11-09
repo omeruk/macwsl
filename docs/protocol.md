@@ -1,13 +1,14 @@
 # Host and guest agent protocol
 
 The host (`mawd`, and the client library in `MawProtocol`) talks to the guest agent,
-`maw-agent`, over vsock. This document specifies protocol version **3**. The code is in
+`maw-agent`, over vsock. This document specifies protocol version **4**. The code is in
 `Sources/MawProtocol` (both sides) and `Sources/MawAgentKit` (the agent). Version 2 added the
 user a session runs as, its program (a command, a shell command line, or a login shell), its
 locale, and the input window, with which `signal` and `resize` overtake queued standard input
 ([0016](decisions/0016-input-window.md)). Version 3 adds the dial-back: the `dialBack`
 request, its `dialedBack` reply, the `dialBackNonce` frame, and the `dialBackFailed` error.
-Every session runs on a connection that the agent dials.
+Every session runs on a connection that the agent dials. Version 4 adds `foregroundQuery` and
+`foregroundProgram`.
 
 ## Transport
 
@@ -101,6 +102,7 @@ names, missing required fields, and wrong types are protocol errors.
 | `stdinEOF` | none | Pipe mode: closes the process's standard input once the queued input is written. Terminal mode: writes the terminal's end-of-file character (VEOF, normally Ctrl-D), as ssh does. `stdin` frames after it are discarded, and a second `stdinEOF` has no effect. |
 | `signal` | `name`: signal name without `SIG`, such as `"INT"` | Sends the signal at once. Pipe mode: to the process group. Terminal mode: to the terminal's foreground process group. |
 | `resize` | `rows`, `columns`: u16 | Terminal mode: sets the window size at once, and the kernel sends SIGWINCH. Pipe mode: ignored. |
+| `foregroundQuery` | `id`: u32 | Asks which program runs in the foreground of the terminal. The agent replies at once with `foregroundProgram` and the same `id`; see [Foreground program](#foreground-program). |
 
 Signals travel by name because macOS and Linux number several of them differently. The names
 are `HUP INT QUIT ILL TRAP ABRT BUS FPE KILL USR1 SEGV USR2 PIPE ALRM TERM CHLD CONT STOP
@@ -115,6 +117,7 @@ TSTP TTIN TTOU URG XCPU XFSZ VTALRM PROF WINCH IO SYS`.
 | `agentInfo` | `agentVersion`: string, `protocolVersion`: u32, `kernelRelease`: string, `uptimeMilliseconds`: u64 | Reply to `info`. |
 | `shutdownAcknowledged` | none | The agent has asked `init` to power off. The VM stops shortly after. |
 | `dialedBack` | none | Reply to `dialBack`: the agent has connected to the host and sends the nonce first on that connection. |
+| `foregroundProgram` | `id`: u32, optional `processGroup`: i32, optional `name`: string | Reply to `foregroundQuery` with its `id`. `processGroup` is present exactly when a program other than the shell is in the foreground; `name` is its leader's command name, absent when the leader has exited. A `name` without `processGroup` is a protocol violation. |
 | `error` | `code`: string, `message`: string, optional `hostVersion`, `guestVersion`: u32, optional `user`: string | A request failed, or the agent is closing the connection because of a protocol error. |
 
 Error codes:
@@ -248,6 +251,47 @@ host                                   agent
   SIGHUP to the process (the foreground process group in terminal mode), as sshd does, and
   SIGKILL two seconds later if it is still running.
 
+## Foreground program
+
+`foregroundQuery` asks which program runs in the foreground of an exec session's terminal, so
+that a client can ask before it closes a session in which a program other than the shell runs.
+The host sends it only when it needs the answer, so an idle session carries no extra traffic.
+Either message outside an exec session is a protocol violation, and so is `foregroundProgram`
+from the host or `foregroundQuery` from the agent.
+
+```json
+host to guest:  {"foregroundQuery":{"id":7}}
+guest to host:  {"foregroundProgram":{"id":7}}                                    none
+                {"foregroundProgram":{"id":7,"name":"sleep","processGroup":812}}  a program
+                {"foregroundProgram":{"id":7,"processGroup":812}}                 its leader has exited
+```
+
+The agent answers as follows:
+
+- **None** in pipe mode, and once the process has exited.
+- Otherwise the foreground process group is `tcgetpgrp` on the pseudo-terminal's primary
+  side. If there is none, the answer is none.
+- **The shell is in the foreground**, and the answer is none, when the group's leader is the
+  shell. That is the process the agent started, for a session that the agent starts directly,
+  including a command's own program. For a login shell started through `runuser -l`, it is a
+  child of the process the agent started, because the shell makes a process group of its own;
+  while `runuser` itself leads the foreground group, the answer is none as well.
+- **An `exec`'d shell**: for a login shell, if the shell's process has a command name other
+  than the basename of the account's shell (truncated to 15 bytes), the shell has run `exec`,
+  and the answer is that program, so that `exec vim` is reported. Sessions that are not login
+  shells skip this check.
+- **Another group** is a program. Its `name` is the leader's `/proc/<pgid>/comm`: what `ps` and
+  `top` show, at most 15 bytes (`TASK_COMM_LEN`). If `/proc/<pgid>` does not exist, or the state
+  in `/proc/<pgid>/stat` is `Z`, the leader has exited, as it may have in a pipeline, and the
+  answer is a program without a name. `stat` is parsed from its last `)`, because a command name
+  may contain spaces and parentheses.
+
+The host (`GuestProcess.foregroundProgram(within:)`) counts `id` from 1. It ignores a reply
+whose query it stopped waiting for, and treats a reply to a query that it has not sent as a
+protocol violation. The name comes from the guest: before anything shows it, the host replaces
+control and format characters with U+FFFD and keeps at most 64 bytes of it. Once the session
+has ended, the host answers none without asking.
+
 ## Flow control and ordering
 
 Neither side buffers without bound, and a control message never waits behind input that the
@@ -262,11 +306,12 @@ design and the alternatives.
   window, plus the terminal's end-of-file character, and the agent reads the connection at all
   times. Input beyond the window is a protocol violation, and so is a `stdinConsumed` frame
   that returns more than is outstanding.
-- **Order.** `stdin` frames and `stdinEOF` arrive in the order the host queued them. `signal`
-  and `resize` overtake the input that the host has not sent yet, and the agent acts on them as
-  they arrive. A signal therefore reaches the process however much input waits for it, for
+- **Order.** `stdin` frames and `stdinEOF` arrive in the order the host queued them. `signal`,
+  `resize`, and `foregroundQuery` overtake the input that the host has not sent yet, and the
+  agent acts on them as they arrive. A signal therefore reaches the process however much input waits for it, for
   example Ctrl-C in `yes | maw -e sleep 1000`. The host queues each signal once, as a process's
-  pending signals are, and only the latest window size.
+  pending signals are, only the latest window size, and at most one `foregroundQuery` that it
+  has not sent yet, whose answer every caller that asked meanwhile shares.
 - **Input on the host.** `GuestProcess.write` blocks its caller while 256 KiB of input is
   queued and not yet sent.
 - **Output.** The agent reads the process's output only while less than 64 KiB waits to be

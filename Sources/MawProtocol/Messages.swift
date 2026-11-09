@@ -32,6 +32,10 @@ public enum ControlMessage: Equatable, Sendable {
     case signal(Signal)
     /// Changes the terminal's window size. Ignored in pipe mode.
     case resize(TerminalSize)
+    /// Asks which program runs in the foreground of the session's terminal. The agent answers
+    /// with `foregroundProgram` and the same `id`, a counter of the host's, so that a late
+    /// reply to a query that the host stopped waiting for never answers a later one.
+    case foregroundQuery(id: UInt32)
 
     // Guest to host.
 
@@ -46,6 +50,10 @@ public enum ControlMessage: Equatable, Sendable {
     /// The reply to `dialBack`: the agent has connected to the host and queued the nonce on
     /// that connection.
     case dialedBack
+    /// The reply to `foregroundQuery` with the same `id`. `program` is `nil` when no program
+    /// other than the session's shell is in the foreground, which is always the case in pipe
+    /// mode and after the process has exited.
+    case foregroundProgram(id: UInt32, program: ForegroundProcess?)
     /// A request failed, or the connection is being closed because of a protocol error.
     case error(AgentError)
 
@@ -59,11 +67,13 @@ public enum ControlMessage: Equatable, Sendable {
         case .stdinEOF: "stdinEOF"
         case .signal: "signal"
         case .resize: "resize"
+        case .foregroundQuery: "foregroundQuery"
         case .started: "started"
         case .exited: "exited"
         case .agentInfo: "agentInfo"
         case .shutdownAcknowledged: "shutdownAcknowledged"
         case .dialedBack: "dialedBack"
+        case .foregroundProgram: "foregroundProgram"
         case .error: "error"
         }
     }
@@ -190,6 +200,22 @@ public struct TerminalSize: Codable, Equatable, Sendable {
     public init(rows: UInt16, columns: UInt16) {
         self.rows = rows
         self.columns = columns
+    }
+}
+
+/// The program in the foreground of a session's terminal, other than the session's shell: the
+/// terminal's foreground process group.
+public struct ForegroundProcess: Equatable, Sendable {
+    /// The foreground process group's ID in the guest.
+    public var processGroup: Int32
+    /// The command name of the group's leader, as `/proc/<pid>/comm` shows it: at most 15
+    /// bytes. `nil` when the leader has exited, as it may have in a pipeline. It comes from the
+    /// guest; a host sanitizes it before showing it (`ForegroundAnswer`).
+    public var name: String?
+
+    public init(processGroup: Int32, name: String?) {
+        self.processGroup = processGroup
+        self.name = name
     }
 }
 
@@ -405,6 +431,16 @@ extension ControlMessage: Codable {
         var signal: Int32?
     }
 
+    private struct ForegroundQueryFields: Codable {
+        var id: UInt32
+    }
+
+    private struct ForegroundProgramFields: Codable {
+        var id: UInt32
+        var processGroup: Int32?
+        var name: String?
+    }
+
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: Key.self)
         let key = Key(name)
@@ -419,6 +455,13 @@ extension ControlMessage: Codable {
             try container.encode(SignalFields(name: signal), forKey: key)
         case .resize(let size):
             try container.encode(size, forKey: key)
+        case .foregroundQuery(let id):
+            try container.encode(ForegroundQueryFields(id: id), forKey: key)
+        case .foregroundProgram(let id, let program):
+            try container.encode(
+                ForegroundProgramFields(
+                    id: id, processGroup: program?.processGroup, name: program?.name),
+                forKey: key)
         case .started(let pid):
             try container.encode(StartedFields(pid: pid), forKey: key)
         case .exited(.exited(let code)):
@@ -470,6 +513,23 @@ extension ControlMessage: Codable {
             self = .signal(try container.decode(SignalFields.self, forKey: key).name)
         case "resize":
             self = .resize(try container.decode(TerminalSize.self, forKey: key))
+        case "foregroundQuery":
+            self = .foregroundQuery(
+                id: try container.decode(ForegroundQueryFields.self, forKey: key).id)
+        case "foregroundProgram":
+            let fields = try container.decode(ForegroundProgramFields.self, forKey: key)
+            switch (fields.processGroup, fields.name) {
+            case (nil, nil):
+                self = .foregroundProgram(id: fields.id, program: nil)
+            case (let group?, let name):
+                self = .foregroundProgram(
+                    id: fields.id, program: ForegroundProcess(processGroup: group, name: name))
+            case (nil, _?):
+                throw DecodingError.dataCorrupted(
+                    .init(
+                        codingPath: decoder.codingPath + [key],
+                        debugDescription: "foregroundProgram has a name without a processGroup"))
+            }
         case "started":
             self = .started(pid: try container.decode(StartedFields.self, forKey: key).pid)
         case "exited":
