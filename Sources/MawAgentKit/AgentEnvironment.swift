@@ -71,7 +71,8 @@ private func readTextFile(_ path: String) -> String? {
     readBytes(path, limit: 1 << 20).map { String(decoding: $0, as: UTF8.self) }
 }
 
-private func readBytes(_ path: String, limit: Int) -> [UInt8]? {
+/// A file's bytes, or `nil` if it cannot be read or is larger than `limit`.
+func readBytes(_ path: String, limit: Int) -> [UInt8]? {
     let descriptor = open(path, O_RDONLY | O_CLOEXEC)
     guard descriptor >= 0 else { return nil }
     defer { close(descriptor) }

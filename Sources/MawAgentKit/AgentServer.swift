@@ -28,6 +28,9 @@ public struct AgentConfiguration: Sendable {
     /// Opens the connection to the host that a `dialBack` request asks for. The guest dials
     /// over vsock (`DialBackDialer`); tests supply their own.
     public var dialBack: @Sendable () throws(DialBackError) -> OwnedDescriptor
+    /// Where the foreground probe reads the process files that answer `foregroundQuery`:
+    /// `/proc` in the guest, a fixture in tests.
+    public var processDirectory: String
 
     public init(
         maximumConnections: Int = AgentProtocol.maximumConnections,
@@ -38,6 +41,7 @@ public struct AgentConfiguration: Sendable {
             () throws(DialBackError) -> OwnedDescriptor in
             try DialBackDialer().dial()
         },
+        processDirectory: String = "/proc",
         powerOff: @escaping @Sendable () throws(SystemError) -> Void
     ) {
         self.maximumConnections = maximumConnections
@@ -45,6 +49,7 @@ public struct AgentConfiguration: Sendable {
         self.system = system
         self.systemBusTimeout = systemBusTimeout
         self.dialBack = dialBack
+        self.processDirectory = processDirectory
         self.powerOff = powerOff
     }
 }
@@ -181,8 +186,10 @@ public final class AgentServer: @unchecked Sendable {
             }
         case .exec(let execRequest):
             let child: ChildProcess
+            let shell: ShellIdentity
             do {
                 let plan = try SessionPlanner.plan(execRequest, system: configuration.system)
+                shell = plan.shell
                 if plan.waitsForSystemBus {
                     waitForSystemBus()
                 }
@@ -192,7 +199,10 @@ public final class AgentServer: @unchecked Sendable {
                     .control(.error(AgentError(error.code, error.message, user: error.user))))
                 break
             }
-            try ExecSession(connection: connection, child: child, logger: logger).run()
+            try ExecSession(
+                connection: connection, child: child, logger: logger, shell: shell,
+                probe: ForegroundProbe(processDirectory: configuration.processDirectory)
+            ).run()
             return nil
         case .dialBack(let nonce):
             // A dialed connection is the host's session; it does not ask for another.
