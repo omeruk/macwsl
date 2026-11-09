@@ -22,9 +22,10 @@ final class PseudoTerminalProcess: Sendable {
         executable: String, argv0: String, environment: [String], directory: String,
         size: winsize, output: OutputPump<TerminationStatus>
     ) throws(TerminalSessionError) {
-        let primary = posix_openpt(O_RDWR | O_NOCTTY)
+        // posix_openpt(3) opens this device but documents no O_CLOEXEC, and openpty(3) returns
+        // both sides without it; open(2) sets it atomically.
+        let primary = open("/dev/ptmx", O_RDWR | O_NOCTTY | O_CLOEXEC)
         guard primary >= 0 else { throw Self.failure("no pseudo-terminal is available") }
-        _ = fcntl(primary, F_SETFD, FD_CLOEXEC)
         var name = [CChar](repeating: 0, count: 128)
         var size = size
         // The size is set on the secondary side, as openpty does; the primary side refuses it
@@ -91,11 +92,10 @@ final class PseudoTerminalProcess: Sendable {
         self.pid = pid
         descriptors = OSAllocatedUnfairLock(initialState: (primary, queue))
         input = TerminalInput(descriptor: writer)
-        let reaper = Reaper(pid: pid, primary: primary, queue: queue, output: output)
         let input = input
         Thread.detachNewThread { input.run() }
         Thread.detachNewThread { [self] in
-            let status = reaper.run(closing: closeDescriptors)
+            let status = readUntilExit(primary: primary, queue: queue, into: output)
             input.finish()
             output.finish(TerminationStatus(waitStatus: status))
         }
@@ -121,10 +121,7 @@ final class PseudoTerminalProcess: Sendable {
         input.finish()
         descriptors.withLock { descriptors in
             guard descriptors.queue >= 0 else { return }
-            var trigger = kevent(
-                ident: 0, filter: Int16(EVFILT_USER), flags: 0, fflags: UInt32(NOTE_TRIGGER),
-                data: 0, udata: nil)
-            _ = kevent(descriptors.queue, &trigger, 1, nil, 0, nil)
+            Self.watch(descriptors.queue, 0, EVFILT_USER, fflags: UInt32(NOTE_TRIGGER))
         }
     }
 
@@ -138,37 +135,38 @@ final class PseudoTerminalProcess: Sendable {
             }
         }
     }
-}
 
-/// The reading thread's loop: output until the terminal closes, then the exit.
-private struct Reaper: Sendable {
-    let pid: pid_t
-    let primary: Int32
-    let queue: Int32
-    let output: OutputPump<TerminationStatus>
+    @discardableResult
+    private static func watch(
+        _ queue: Int32, _ ident: Int32, _ filter: Int32, flags: Int32 = 0, fflags: UInt32 = 0
+    ) -> Bool {
+        var change = kevent(
+            ident: UInt(ident), filter: Int16(filter), flags: UInt16(flags), fflags: fflags,
+            data: 0, udata: nil)
+        return kevent(queue, &change, 1, nil, 0, nil) == 0
+    }
 
-    /// Returns the `waitpid` status. `close(queueToo:)` closes the primary side, and the queue
-    /// with it at the end.
-    func run(closing close: (_ queueToo: Bool) -> Void) -> Int32 {
+    /// The reading thread: output until the terminal closes, then the exit. Returns the
+    /// `waitpid` status. The primary side closes at the end of the output, when the pane no
+    /// longer reads it, or on `hangUp()`; the queue closes at the exit.
+    private func readUntilExit(
+        primary: Int32, queue: Int32, into output: OutputPump<TerminationStatus>
+    ) -> Int32 {
         var isOpen = true
+        var buffer = [UInt8](repeating: 0, count: 128 << 10)
+        func forward() -> Bool {
+            let count = read(primary, &buffer, buffer.count)
+            guard count > 0 else { return count < 0 && errno == EINTR }
+            return buffer.withUnsafeBytes { output.write(.init(rebasing: $0.prefix(count))) }
+        }
         func closePrimary() {
-            if isOpen { close(false) }
+            if isOpen { closeDescriptors(queueToo: false) }
             isOpen = false
         }
-        var read = kevent(
-            ident: UInt(primary), filter: Int16(EVFILT_READ), flags: UInt16(EV_ADD), fflags: 0,
-            data: 0, udata: nil)
-        var hangUp = kevent(
-            ident: 0, filter: Int16(EVFILT_USER), flags: UInt16(EV_ADD | EV_CLEAR), fflags: 0,
-            data: 0, udata: nil)
-        var exit = kevent(
-            ident: UInt(pid), filter: Int16(EVFILT_PROC), flags: UInt16(EV_ADD),
-            fflags: NOTE_EXIT, data: 0, udata: nil)
-        _ = kevent(queue, &read, 1, nil, 0, nil)
-        _ = kevent(queue, &hangUp, 1, nil, 0, nil)
+        Self.watch(queue, primary, EVFILT_READ, flags: EV_ADD)
+        Self.watch(queue, 0, EVFILT_USER, flags: EV_ADD | EV_CLEAR)
         // A child that has already exited cannot be watched (ESRCH); it is reaped below.
-        var exited = kevent(queue, &exit, 1, nil, 0, nil) < 0
-        var buffer = [UInt8](repeating: 0, count: 128 << 10)
+        var exited = !Self.watch(queue, pid, EVFILT_PROC, flags: EV_ADD, fflags: NOTE_EXIT)
         while !exited {
             var event = kevent()
             let count = kevent(queue, nil, 0, &event, 1, nil)
@@ -176,8 +174,7 @@ private struct Reaper: Sendable {
             guard count == 1 else { continue }
             switch Int32(event.filter) {
             case EVFILT_READ:
-                // The end of the output, or a pane that no longer reads it.
-                if !forward(&buffer) { closePrimary() }
+                if !forward() { closePrimary() }
             case EVFILT_USER:
                 closePrimary()
             default:
@@ -189,16 +186,10 @@ private struct Reaper: Sendable {
         // What the program wrote before it exited is still in the terminal.
         if isOpen {
             _ = fcntl(primary, F_SETFL, O_NONBLOCK)
-            for _ in 0..<8 where forward(&buffer) {}
+            for _ in 0..<8 where forward() {}
         }
-        close(true)
+        closeDescriptors(queueToo: true)
         return status
-    }
-
-    private func forward(_ buffer: inout [UInt8]) -> Bool {
-        let count = read(primary, &buffer, buffer.count)
-        guard count > 0 else { return count < 0 && errno == EINTR }
-        return buffer.withUnsafeBytes { output.write(.init(rebasing: $0.prefix(count))) }
     }
 }
 
