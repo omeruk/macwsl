@@ -31,14 +31,21 @@ public enum ShellLocale {
                 environment[name] = nil
             }
         }
-        let effective = characterTypeVariables.lazy
-            .compactMap { environment[$0] }
-            .first { !$0.isEmpty }
-        if let effective, isValid(effective) {
+        if inherited(environment, isValid: isValid) != nil {
             return environment
         }
         environment["LANG"] = candidates(for: locale).first(where: isValid)
         return environment
+    }
+
+    /// The inherited `LC_ALL`, `LC_CTYPE`, or `LANG` that `environment(_:locale:isValid:)`
+    /// keeps unchanged, in that order of precedence, or `nil` if it would choose one. A Linux
+    /// session asks the guest for this locale.
+    public static func inherited(
+        _ environment: [String: String], isValid: (String) -> Bool = isValidCharacterType
+    ) -> String? {
+        characterTypeVariables.lazy.compactMap { environment[$0] }
+            .first { !$0.isEmpty && isValid($0) }
     }
 
     /// The locales to try, best first: the language with the user's region, the language with
