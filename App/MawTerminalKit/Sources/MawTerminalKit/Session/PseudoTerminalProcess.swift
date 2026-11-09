@@ -1,14 +1,15 @@
+import CMawTerminal
 import Darwin
 import Foundation
 import os
 
-/// A program on a pseudo-terminal of its own, started with `posix_spawn`: the local shell.
+/// A program on a pseudo-terminal of its own: the local shell.
 ///
-/// `POSIX_SPAWN_CLOEXEC_DEFAULT` gives the child its terminal as standard input, output, and
-/// error, and no other descriptor of the app, whether or not it is marked close-on-exec, so a
-/// local shell never inherits a Linux session's connection (docs/security.md). The child leads
-/// a session of its own (`POSIX_SPAWN_SETSID`) and opens the terminal's secondary side first,
-/// which makes it the session's controlling terminal.
+/// `maw_terminal_spawn` (CMawTerminal) forks a child that leads a session of its own with the
+/// terminal as its controlling terminal, so that job control works, and that closes every
+/// descriptor of the app before `execve`, whether or not it is marked close-on-exec, so that a
+/// local shell never inherits a Linux session's connection (docs/security.md). `posix_spawn`
+/// cannot do the former on macOS.
 ///
 /// One thread reads the output into an `OutputPump` and reaps the child, through a kqueue;
 /// another writes the input, so that typed keys never wait behind output.
@@ -44,51 +45,29 @@ final class PseudoTerminalProcess: Sendable {
             throw failure
         }
 
-        var actions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&actions)
-        defer { posix_spawn_file_actions_destroy(&actions) }
-        posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, name, O_RDWR, 0)
-        posix_spawn_file_actions_adddup2(&actions, STDIN_FILENO, STDOUT_FILENO)
-        posix_spawn_file_actions_adddup2(&actions, STDIN_FILENO, STDERR_FILENO)
-        // forkpty ignored a start directory that does not exist, and so does this.
-        var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory),
-            isDirectory.boolValue
-        {
-            posix_spawn_file_actions_addchdir_np(&actions, directory)
-        }
-        var attributes: posix_spawnattr_t?
-        posix_spawnattr_init(&attributes)
-        defer { posix_spawnattr_destroy(&attributes) }
-        var everySignal = sigset_t()
-        sigfillset(&everySignal)
-        var noSignal = sigset_t()
-        sigemptyset(&noSignal)
-        posix_spawnattr_setsigdefault(&attributes, &everySignal)
-        posix_spawnattr_setsigmask(&attributes, &noSignal)
-        posix_spawnattr_setflags(
-            &attributes,
-            Int16(
-                POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF
-                    | POSIX_SPAWN_SETSIGMASK))
-
-        let argv = [strdup(argv0)] + [nil]
-        let envp = environment.map { strdup($0) } + [nil]
-        defer { for argument in argv + envp { free(argument) } }
-        var pid: pid_t = 0
-        let spawned = posix_spawn(&pid, executable, &actions, &attributes, argv, envp)
-        let queue = spawned == 0 ? kqueue() : -1
+        let queue = kqueue()
         guard queue >= 0 else {
-            let failure = Self.failure("\(executable) could not start", code: spawned)
+            let failure = Self.failure("no kqueue is available")
             close(primary)
             close(writer)
-            if spawned == 0 {
-                kill(pid, SIGKILL)
-                waitpid(pid, nil, 0)
-            }
             throw failure
         }
         _ = fcntl(queue, F_SETFD, FD_CLOEXEC)
+
+        // Everything the child needs is prepared here, because it may not allocate.
+        let argv = [strdup(argv0)] + [nil]
+        let envp = environment.map { strdup($0) } + [nil]
+        defer { for argument in argv + envp { free(argument) } }
+        var step: Int32 = 0
+        var code: Int32 = 0
+        let pid = maw_terminal_spawn(
+            executable, argv, envp, directory, secondary, Self.descriptorLimit, &step, &code)
+        guard pid > 0 else {
+            close(primary)
+            close(writer)
+            close(queue)
+            throw Self.failure(Self.describe(step, executable: executable), code: code)
+        }
         self.pid = pid
         descriptors = OSAllocatedUnfairLock(initialState: (primary, queue))
         input = TerminalInput(descriptor: writer)
@@ -103,6 +82,38 @@ final class PseudoTerminalProcess: Sendable {
 
     private static func failure(_ what: String, code: Int32 = errno) -> TerminalSessionError {
         .startFailed(reason: "\(what): \(String(cString: strerror(code)))")
+    }
+
+    /// What failed, for the start failure's reason.
+    private static func describe(_ step: Int32, executable: String) -> String {
+        switch maw_terminal_step(rawValue: UInt32(step)) {
+        case MAW_TERMINAL_STEP_PIPE: "the pipe for the shell's start could not be created"
+        case MAW_TERMINAL_STEP_FORK: "no process could be created for \(executable)"
+        case MAW_TERMINAL_STEP_SIGNALS: "the shell's signals could not be reset"
+        case MAW_TERMINAL_STEP_SESSION: "the shell's session could not be created"
+        case MAW_TERMINAL_STEP_CONTROLLING_TERMINAL:
+            "the pseudo-terminal could not become the shell's controlling terminal"
+        case MAW_TERMINAL_STEP_STANDARD_DESCRIPTORS:
+            "the pseudo-terminal could not become the shell's standard input and output"
+        case MAW_TERMINAL_STEP_SIGNAL_MASK: "the shell's signal mask could not be cleared"
+        default: "\(executable) could not be executed"
+        }
+    }
+
+    /// The child closes every descriptor below this number except its terminal: the soft
+    /// `RLIMIT_NOFILE`, capped at `kern.maxfilesperproc`, at and above which the kernel hands out
+    /// no descriptor whatever the soft limit says (`getdtablesize()` reports the same minimum).
+    /// An app that launchd starts has 256; a shell's `ulimit -n` may be far larger, and the cap
+    /// is then 61,440 on this Mac. If the cap cannot be read, 65,536 stands in for it.
+    static var descriptorLimit: Int32 {
+        var limit = rlimit()
+        let soft = getrlimit(RLIMIT_NOFILE, &limit) == 0 ? limit.rlim_cur : .max
+        var perProcess: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        let cap: rlim_t =
+            sysctlbyname("kern.maxfilesperproc", &perProcess, &size, nil, 0) == 0
+                && perProcess > 0 ? rlim_t(perProcess) : 65_536
+        return Int32(min(soft, cap))
     }
 
     /// Calls `body` with the primary side, unless the process has ended.

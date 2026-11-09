@@ -46,7 +46,8 @@ public final class LocalShellSession: TerminalSession {
 
     public func start(size: TerminalSize) throws(TerminalSessionError) {
         guard !isRunning else { return }
-        guard FileManager.default.isExecutableFile(atPath: shell) else {
+        // The child calls execve, which searches no PATH, so the path must be absolute.
+        guard shell.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: shell) else {
             throw .programNotFound(path: shell)
         }
         self.size = size

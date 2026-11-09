@@ -96,10 +96,32 @@ import Testing
         await waitUntil(seconds: 5) { !recorder.output.isEmpty }
     }
 
-    @Test func theShellsControllingTerminalIsThePseudoTerminal() async throws {
+    /// The shells that the job-control tests run: `/bin/sh`, which is bash, and `/bin/zsh`,
+    /// the default login shell on macOS. bash makes its terminal its controlling terminal
+    /// itself when it starts and has none, so only zsh shows whether the session gave it one.
+    enum Shell: String, CaseIterable, Sendable {
+        case sh = "/bin/sh"
+        case zsh = "/bin/zsh"
+    }
+
+    /// Starts `shell` in /tmp and waits until it is ready for input.
+    func start(_ shell: Shell, _ recorder: Recorder) async throws -> LocalShellSession {
+        switch shell {
+        case .sh:
+            let session = try start(recorder)
+            #expect(await waitForOutput(recorder))
+            return session
+        case .zsh:
+            let session = try startZsh(recorder, environment: finderLikeEnvironment())
+            #expect(await waitForPrompt(recorder), "\(recorder.text)")
+            return session
+        }
+    }
+
+    @Test(arguments: Shell.allCases)
+    func theShellsControllingTerminalIsThePseudoTerminal(_ shell: Shell) async throws {
         let recorder = Recorder()
-        let session = try start(recorder)
-        #expect(await waitForOutput(recorder))
+        let session = try await start(shell, recorder)
         // `ps -o tty=` names the controlling terminal, and `??` if there is none.
         // printf builds the markers, so that the terminal's echo of the typed line, which
         // may wrap anywhere, never matches them.
@@ -113,10 +135,42 @@ import Testing
         session.terminate()
     }
 
-    @Test func controlCInterruptsTheForegroundProgram() async throws {
+    /// Seen from outside while the shell waits at its prompt: `ps` names the pseudo-terminal as
+    /// the shell's terminal, and the terminal's foreground group is the shell's own group.
+    @Test(arguments: Shell.allCases)
+    func atThePromptTheShellsGroupHasTheTerminal(_ shell: Shell) async throws {
         let recorder = Recorder()
-        let session = try start(recorder)
-        #expect(await waitForOutput(recorder))
+        let session = try await start(shell, recorder)
+        session.send(ArraySlice(#"printf '%s=%s|%s=%s|\n' tty "$(tty)" pid $$\#n"#.utf8))
+        let pattern = /tty=\/dev\/(ttys\d+)\|pid=(\d+)\|/
+        #expect(await waitUntil(seconds: 5) { recorder.text.firstMatch(of: pattern) != nil })
+        let match = try #require(recorder.text.firstMatch(of: pattern), "\(recorder.text)")
+        let pid = try #require(pid_t(match.output.2))
+        // Waits until the shell is idle at its prompt again.
+        try await Task.sleep(for: .milliseconds(300))
+        let fields = try Self.processStatus(pid, "tty=,pgid=,tpgid=")
+        #expect(fields == [String(match.output.1), "\(pid)", "\(pid)"], "\(fields)")
+        session.terminate()
+    }
+
+    /// The fields of `ps -o <format> -p <pid>`, split at white space.
+    static func processStatus(_ pid: pid_t, _ format: String) throws -> [String] {
+        let process = Process()
+        process.executableURL = URL(filePath: "/bin/ps")
+        process.arguments = ["-o", format, "-p", "\(pid)"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(decoding: data, as: UTF8.self).split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+    }
+
+    @Test(arguments: Shell.allCases)
+    func controlCInterruptsTheForegroundProgram(_ shell: Shell) async throws {
+        let recorder = Recorder()
+        let session = try await start(shell, recorder)
         session.send(ArraySlice("sleep 30\n".utf8))
         #expect(await waitUntil(seconds: 5) { session.hasForegroundProcess })
         session.send([0x03])
@@ -126,15 +180,19 @@ import Testing
         session.terminate()
     }
 
-    @Test func controlZSuspendsTheForegroundProgramAndFgResumesIt() async throws {
+    @Test(arguments: Shell.allCases)
+    func controlZSuspendsTheForegroundProgramAndFgResumesIt(_ shell: Shell) async throws {
         let recorder = Recorder()
-        let session = try start(recorder)
-        #expect(await waitForOutput(recorder))
+        let session = try await start(shell, recorder)
         session.send(ArraySlice("sleep 30\n".utf8))
         #expect(await waitUntil(seconds: 5) { session.foregroundProcessName == "sleep" })
         session.send([0x1A])
         #expect(await waitUntil(seconds: 5) { !session.hasForegroundProcess })
-        #expect(await waitUntil(seconds: 5) { recorder.text.contains("Stopped") })
+        // bash reports "Stopped", zsh "suspended".
+        #expect(
+            await waitUntil(seconds: 5) {
+                recorder.text.contains("Stopped") || recorder.text.contains("suspended")
+            }, "\(recorder.text)")
         session.send(ArraySlice("fg\n".utf8))
         #expect(await waitUntil(seconds: 5) { session.foregroundProcessName == "sleep" })
         session.send([0x03])
@@ -144,9 +202,10 @@ import Testing
         session.terminate()
     }
 
-    @Test func closingSendsTheShellSIGHUP() async throws {
+    @Test(arguments: Shell.allCases)
+    func closingSendsTheShellSIGHUP(_ shell: Shell) async throws {
         let recorder = Recorder()
-        let session = try start(recorder)
+        let session = try await start(shell, recorder)
         let marker = FileManager.default.temporaryDirectory
             .appending(path: "maw-hup-\(UUID().uuidString)").path
         defer { try? FileManager.default.removeItem(atPath: marker) }
@@ -158,11 +217,46 @@ import Testing
         #expect((try? String(contentsOfFile: marker, encoding: .utf8)) == "hup\n")
     }
 
-    /// Starts `/bin/sh`, ignores SIGHUP in it, runs `then`, and returns the shell's process.
-    func startIgnoringSIGHUP(_ recorder: Recorder, then command: String) async throws
-        -> (LocalShellSession, pid_t)
+    /// An app may itself ignore SIGINT and SIGPIPE, as a background command of a shell does,
+    /// and block signals on the thread that starts the shell. The shell must start with every
+    /// signal at its default and none blocked, or Ctrl-C would not reach its programs.
+    @Test(arguments: Shell.allCases)
+    func theShellStartsWithDefaultSignalsWhateverTheAppIgnoresOrBlocks(_ shell: Shell)
+        async throws
     {
-        let session = try start(recorder)
+        let recorder = Recorder()
+        let session: LocalShellSession
+        do {
+            let previousInterrupt = signal(SIGINT, SIG_IGN)
+            let previousPipe = signal(SIGPIPE, SIG_IGN)
+            var blocked = sigset_t()
+            sigemptyset(&blocked)
+            sigaddset(&blocked, SIGINT)
+            var previousMask = sigset_t()
+            pthread_sigmask(SIG_BLOCK, &blocked, &previousMask)
+            defer {
+                pthread_sigmask(SIG_SETMASK, &previousMask, nil)
+                signal(SIGPIPE, previousPipe)
+                signal(SIGINT, previousInterrupt)
+            }
+            session = try await start(shell, recorder)
+        }
+        session.send(ArraySlice(#"printf '%s=%s=\n' mask "$(ps -o sigmask= -p $$)"\#n"#.utf8))
+        let pattern = /mask=\s*(\S+)\s*=/
+        #expect(await waitUntil(seconds: 5) { recorder.text.firstMatch(of: pattern) != nil })
+        #expect(recorder.text.firstMatch(of: pattern)?.output.1 == "0", "\(recorder.text)")
+        session.send(ArraySlice("sleep 30\n".utf8))
+        #expect(await waitUntil(seconds: 5) { session.foregroundProcessName == "sleep" })
+        session.send([0x03])
+        #expect(await waitUntil(seconds: 5) { !session.hasForegroundProcess })
+        session.terminate()
+    }
+
+    /// Starts `shell`, ignores SIGHUP in it, runs `then`, and returns the shell's process.
+    func startIgnoringSIGHUP(_ shell: Shell, _ recorder: Recorder, then command: String)
+        async throws -> (LocalShellSession, pid_t)
+    {
+        let session = try await start(shell, recorder)
         session.send(ArraySlice("trap '' HUP; printf 'p%s=%s=\\n' id $$; \(command)\n".utf8))
         let pattern = /pid=(\d+)=/
         #expect(await waitUntil(seconds: 5) { recorder.text.firstMatch(of: pattern) != nil })
@@ -176,9 +270,10 @@ import Testing
         kill(pid, 0) == 0 || errno != ESRCH
     }
 
-    @Test func aShellIgnoringSIGHUPEndsWhenTheTerminalHangsUp() async throws {
+    @Test(arguments: Shell.allCases)
+    func aShellIgnoringSIGHUPEndsWhenTheTerminalHangsUp(_ shell: Shell) async throws {
         let recorder = Recorder()
-        let (session, pid) = try await startIgnoringSIGHUP(recorder, then: "true")
+        let (session, pid) = try await startIgnoringSIGHUP(shell, recorder, then: "true")
         let started = ContinuousClock.now
         session.terminate()
         #expect(ContinuousClock.now - started < .milliseconds(500))
@@ -187,10 +282,11 @@ import Testing
         #expect(await waitUntil(seconds: 5) { !exists(pid) })
     }
 
-    @Test func aProgramIgnoringSIGHUPIsReapedOnceItExits() async throws {
+    @Test(arguments: Shell.allCases)
+    func aProgramIgnoringSIGHUPIsReapedOnceItExits(_ shell: Shell) async throws {
         let recorder = Recorder()
         // The shell becomes `sleep`, which keeps ignoring SIGHUP and never reads the terminal.
-        let (session, pid) = try await startIgnoringSIGHUP(recorder, then: "exec sleep 2")
+        let (session, pid) = try await startIgnoringSIGHUP(shell, recorder, then: "exec sleep 2")
         let started = ContinuousClock.now
         session.terminate()
         #expect(ContinuousClock.now - started < .milliseconds(500))
@@ -212,7 +308,8 @@ import Testing
         #expect(text.contains("[exited with status 3]"), "\(text)")
     }
 
-    @Test func aDescriptorWithoutCloseOnExecIsNotInherited() async throws {
+    @Test(arguments: Shell.allCases)
+    func aDescriptorWithoutCloseOnExecIsNotInherited(_ shell: Shell) async throws {
         var ends: [Int32] = [0, 0]
         #expect(pipe(&ends) == 0)
         // A number well above the test process's own, as an app's descriptor would be.
@@ -226,7 +323,7 @@ import Testing
         #expect(fcntl(leaked, F_GETFD) & FD_CLOEXEC == 0)
 
         let recorder = Recorder()
-        let session = try start(recorder)
+        let session = try await start(shell, recorder)
         let probe =
             "for fd in 1 \(leaked); do if [ -e /dev/fd/$fd ]; then echo fd-$fd-open; "
             + "else echo fd-$fd-closed; fi; done; exit\n"
@@ -261,6 +358,55 @@ import Testing
         session.terminalReportedWorkingDirectory("file://far-away-host.example/elsewhere")
         #expect(session.workingDirectory == "/Users/someone/project")
         session.terminate()
+    }
+
+    /// The text of a pane's terminal, once it contains `expected`.
+    func paneText(_ pane: PaneController, contains expected: String) async -> String {
+        let terminal = pane.terminalView.getTerminal()
+        var text = ""
+        _ = await waitUntil(seconds: 5) {
+            text = String(decoding: terminal.getBufferAsData(), as: UTF8.self)
+            return text.contains(expected)
+        }
+        return text
+    }
+
+    @Test func aShellThatCannotBeExecutedReachesThePaneAsOnMain() async {
+        // Not executable: refused before the start, with the suggestion, as main does.
+        let refused = PaneController(session: LocalShellSession(shell: "/etc/hosts"))
+        refused.startIfNeeded()
+        #expect(refused.failure == .programNotFound(path: "/etc/hosts"))
+        let text = await paneText(refused, contains: "Choose another shell")
+        #expect(text.contains("/etc/hosts does not exist or is not executable"), "\(text)")
+    }
+
+    @Test func aShellThatExecveRefusesReachesThePaneAsAStartFailure() async throws {
+        // Executable, but no program: execve fails in the child, which reports it.
+        let file = FileManager.default.temporaryDirectory
+            .appending(path: "maw-not-a-program-\(UUID().uuidString)")
+        try Data("not a program\n".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        #expect(chmod(file.path, 0o755) == 0)
+        let pane = PaneController(session: LocalShellSession(shell: file.path))
+        pane.startIfNeeded()
+        let reason = "\(file.path) could not be executed: \(String(cString: strerror(ENOEXEC)))"
+        #expect(pane.failure == .startFailed(reason: reason))
+        let text = await paneText(pane, contains: "Open a new tab")
+        #expect(text.contains("could not be executed"), "\(text)")
+        #expect(!pane.isRunning)
+    }
+
+    @Test func aStartDirectoryThatDoesNotExistIsIgnoredAsOnMain() async throws {
+        let recorder = Recorder()
+        let session = LocalShellSession(shell: "/bin/sh", startDirectory: "/nonexistent-maw")
+        session.delegate = recorder
+        try session.start(size: .default)
+        session.send(ArraySlice(#"printf '%s=[%s]\n' dir "$(pwd -P)"; exit\#n"#.utf8))
+        #expect(await waitUntil(seconds: 5) { recorder.status != nil })
+        // The shell starts where the app is, as forkpty's child did.
+        let here = canonicalPath(FileManager.default.currentDirectoryPath)
+        #expect(recorder.text.contains("dir=[\(here)]"), "\(recorder.text)")
+        #expect(recorder.status == .exited(0))
     }
 
     @Test func refusesAMissingShell() {

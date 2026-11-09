@@ -19,9 +19,12 @@ let package = Package(
         .package(name: "maw", path: "../.."),
     ],
     targets: [
+        // The fork that starts a local shell, whose child may only make async-signal-safe calls.
+        .target(name: "CMawTerminal"),
         .target(
             name: "MawTerminalKit",
             dependencies: [
+                "CMawTerminal",
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
                 .product(name: "MawClient", package: "maw"),
                 .product(name: "MawXPC", package: "maw"),
