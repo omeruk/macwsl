@@ -39,7 +39,8 @@ final class PaneController {
     private(set) var workingDirectory: String?
     private(set) var size = TerminalSize.default
     private(set) var termination: TerminationStatus?
-    private(set) var startError: TerminalSessionError?
+    /// Why the session could not start, or why it failed afterwards.
+    private(set) var failure: TerminalSessionError?
 
     /// Called when the session ends with status 0, so that the window can close the pane, as
     /// Windows Terminal does by default. A pane whose process failed stays open with its status.
@@ -75,11 +76,18 @@ final class PaneController {
         do {
             try session.start(size: size)
         } catch {
-            startError = error
-            let message = [error.errorDescription, error.recoverySuggestion]
-                .compactMap { $0 }.joined(separator: "\r\n")
-            terminalView.feed(text: "\u{1B}[31m\(message)\u{1B}[0m\r\n")
+            show(error)
         }
+    }
+
+    /// Prints a failure in red. Part d of phase 11b replaces this with maw's format and the
+    /// offer of a new session.
+    private func show(_ error: TerminalSessionError) {
+        failure = error
+        let message = [error.errorDescription, error.recoverySuggestion]
+            .compactMap { $0 }.joined(separator: "\n")
+            .replacingOccurrences(of: "\n", with: "\r\n")
+        terminalView.feed(text: "\u{1B}[31m\(message)\u{1B}[0m\r\n")
     }
 
     func apply(_ appearance: TerminalAppearance) {
@@ -112,6 +120,10 @@ extension PaneController: TerminalSessionDelegate {
 
     func session(_ session: any TerminalSession, didChangeWorkingDirectory directory: String) {
         workingDirectory = directory
+    }
+
+    func session(_ session: any TerminalSession, didFailWith error: TerminalSessionError) {
+        show(error)
     }
 
     func session(_ session: any TerminalSession, didTerminateWith status: TerminationStatus) {

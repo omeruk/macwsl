@@ -12,6 +12,7 @@ import Testing
         var titles: [String] = []
         var directories: [String] = []
         var status: TerminationStatus?
+        var failure: TerminalSessionError?
 
         var text: String { String(decoding: output, as: UTF8.self) }
 
@@ -29,6 +30,10 @@ import Testing
 
         func session(_ session: any TerminalSession, didTerminateWith status: TerminationStatus) {
             self.status = status
+        }
+
+        func session(_ session: any TerminalSession, didFailWith error: TerminalSessionError) {
+            failure = error
         }
     }
 
@@ -76,6 +81,11 @@ import Testing
         session.send(ArraySlice("sleep 30\n".utf8))
         #expect(await waitUntil(seconds: 5) { session.hasForegroundProcess })
         #expect(session.foregroundProcessName == "sleep")
+        #expect(
+            await session.foregroundProgram(within: .milliseconds(500)) == .program(name: "sleep"))
+        session.send([0x03])
+        #expect(await waitUntil(seconds: 5) { !session.hasForegroundProcess })
+        #expect(await session.foregroundProgram(within: .milliseconds(500)) == .none)
         session.terminate()
     }
 

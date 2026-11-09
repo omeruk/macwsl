@@ -16,6 +16,7 @@ import Testing
         let hasForegroundProcess = false
         let foregroundProcessName: String? = nil
 
+        func foregroundProgram(within timeout: Duration) async -> ForegroundReport { .none }
         func start(size: TerminalSize) throws(TerminalSessionError) {}
         func send(_ bytes: ArraySlice<UInt8>) {}
         func resize(to size: TerminalSize) {}
@@ -41,5 +42,29 @@ import Testing
             view.setFrameSize(NSSize(width: 800, height: 400))
         }
         #expect(hidden.getTerminal().cols > shown.getTerminal().cols)
+    }
+
+    struct SampleError: LocalizedError {
+        var errorDescription: String? { "first line\nsecond line" }
+        var recoverySuggestion: String? { "Try this." }
+    }
+
+    @Test func aFailureKeepsTheErrorsMessageAndSuggestion() {
+        #expect(
+            TerminalSessionError(SampleError())
+                == .failed(message: "first line\nsecond line", suggestion: "Try this."))
+        let error = TerminalSessionError.failed(message: "message", suggestion: nil)
+        #expect(error.errorDescription == "message")
+        #expect(error.recoverySuggestion == nil)
+    }
+
+    @Test func aFailureAppearsInThePaneLineByLine() {
+        let session = IdleSession()
+        let pane = PaneController(session: session)
+        pane.session(session, didFailWith: TerminalSessionError(SampleError()))
+        #expect(pane.failure == TerminalSessionError(SampleError()))
+        let terminal = pane.terminalView.getTerminal()
+        let rows = (0..<3).map { terminal.getLine(row: $0)?.translateToString(trimRight: true) }
+        #expect(rows == ["first line", "second line", "Try this."])
     }
 }

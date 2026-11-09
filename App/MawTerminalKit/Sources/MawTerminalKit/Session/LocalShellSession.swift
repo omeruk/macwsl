@@ -105,6 +105,11 @@ public final class LocalShellSession: TerminalSession {
         return Self.string(fromCString: buffer)
     }
 
+    /// Answers at once: the terminal's foreground group is a local system call away.
+    public func foregroundProgram(within timeout: Duration) async -> ForegroundReport {
+        hasForegroundProcess ? .program(name: foregroundProcessName) : .none
+    }
+
     public func terminalReportedTitle(_ title: String) {
         delegate?.session(self, didChangeTitle: title)
     }

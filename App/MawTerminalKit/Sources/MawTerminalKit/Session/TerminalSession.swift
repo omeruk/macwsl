@@ -51,11 +51,32 @@ public enum TerminationStatus: Hashable, Sendable {
     }
 }
 
-/// Errors starting a session.
+/// Errors starting or running a session.
 public enum TerminalSessionError: Error, Hashable, Sendable {
     /// The shell or program does not exist or is not executable.
     case programNotFound(path: String)
     case startFailed(reason: String)
+    /// Any other error, kept as its message and suggested fix, so that the window does not
+    /// depend on the kind of session that failed.
+    case failed(message: String, suggestion: String?)
+
+    /// The error's message and suggested fix, as `LocalizedError` gives them.
+    public init(_ error: some LocalizedError) {
+        self = .failed(
+            message: error.errorDescription ?? String(describing: error),
+            suggestion: error.recoverySuggestion)
+    }
+}
+
+/// What runs in the foreground of a session's terminal, for close and quit confirmations.
+public enum ForegroundReport: Hashable, Sendable {
+    /// The shell itself, waiting at its prompt, or nothing because the session has ended.
+    case none
+    /// A program other than the shell. `name` is `nil` if it is not known, for example because
+    /// the leader of the foreground process group has exited.
+    case program(name: String?)
+    /// The session did not answer in time, so a program may be running.
+    case noAnswer
 }
 
 extension TerminalSessionError: LocalizedError {
@@ -63,6 +84,7 @@ extension TerminalSessionError: LocalizedError {
         switch self {
         case .programNotFound(let path): "\(path) does not exist or is not executable"
         case .startFailed(let reason): "The session could not start: \(reason)"
+        case .failed(let message, _): message
         }
     }
 
@@ -72,6 +94,7 @@ extension TerminalSessionError: LocalizedError {
             "Choose another shell for the local profile in settings, under general."
         case .startFailed:
             "Open a new tab to try again."
+        case .failed(_, let suggestion): suggestion
         }
     }
 }
@@ -85,10 +108,13 @@ public protocol TerminalSessionDelegate: AnyObject {
     func session(_ session: any TerminalSession, didChangeTitle title: String)
     func session(_ session: any TerminalSession, didChangeWorkingDirectory directory: String)
     func session(_ session: any TerminalSession, didTerminateWith status: TerminationStatus)
+    /// The session could not open, or something other than its program ended it, such as the
+    /// machine of a Linux session stopping. No `didTerminateWith` follows.
+    func session(_ session: any TerminalSession, didFailWith error: TerminalSessionError)
 }
 
-/// A program running behind a terminal pane: the local shell in this phase, a Linux
-/// distribution's shell later.
+/// A program running behind a terminal pane: the local shell (`LocalShellSession`) or a Linux
+/// distribution's login shell (`LinuxSession`).
 ///
 /// Nothing outside the session layer depends on which kind of session it is. The terminal view
 /// decodes escape sequences, so title (OSC 0 and 2) and working-directory (OSC 7) reports reach
@@ -109,6 +135,9 @@ public protocol TerminalSession: AnyObject {
     var hasForegroundProcess: Bool { get }
     /// The name of the foreground program, for confirmation messages.
     var foregroundProcessName: String? { get }
+    /// What runs in the foreground now, answered within `timeout`. Never cached, so that a
+    /// program that has just ended does not count. The main actor only awaits it.
+    func foregroundProgram(within timeout: Duration) async -> ForegroundReport
 
     /// Starts the program with the terminal at `size`.
     func start(size: TerminalSize) throws(TerminalSessionError)
