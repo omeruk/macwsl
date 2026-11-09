@@ -269,6 +269,7 @@ final class WindowModel {
 
     private func makePane(profile: Profile) -> PaneController {
         let pane = PaneController(profile: profile, session: newSession(of: profile))
+        pane.makeSession = { [weak self] profile in self?.newSession(of: profile) }
         pane.onCleanExit = { [weak self] id in self?.closePane(id, confirm: false) }
         pane.onFocus = { [weak self] id in self?.paneReceivedFocus(id) }
         pane.confirmPaste = { [weak self] text in self?.confirmPaste(text) ?? true }

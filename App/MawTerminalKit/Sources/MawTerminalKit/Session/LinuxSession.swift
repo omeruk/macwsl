@@ -44,6 +44,7 @@ public final class LinuxSession: TerminalSession {
     public private(set) var displayName: String
 
     private let makeCore: MakeCore
+    private let fallback: (@MainActor () -> any TerminalSession)?
     private var core: (any LinuxSessionCore)?
     private var pump: OutputPump<Ending>?
     private var size = TerminalSize.default
@@ -55,22 +56,28 @@ public final class LinuxSession: TerminalSession {
     ///   - environment: The app's environment, whose valid `LC_ALL`, `LC_CTYPE`, or `LANG` the
     ///     guest uses if it has it (`ShellLocale.inherited`).
     ///   - locale: The Mac's language and region, for the guest's locale otherwise.
+    ///   - fallback: The session to offer instead when no distribution or no daemon is
+    ///     installed, such as the local shell.
     public convenience init(
         distribution: DistroName?,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        locale: Locale = .current
+        locale: Locale = .current, fallback: (@MainActor () -> any TerminalSession)? = nil
     ) {
         let guestLocale = Self.guestLocale(environment: environment, locale: locale)
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-        self.init(name: distribution?.rawValue) { terminal, output in
+        self.init(name: distribution?.rawValue, fallback: fallback) { terminal, output in
             DistributionSession(
                 distribution: distribution, terminal: terminal, locale: guestLocale,
                 programVersion: version, output: output)
         }
     }
 
-    init(name: String?, makeCore: @escaping MakeCore) {
+    init(
+        name: String?, fallback: (@MainActor () -> any TerminalSession)? = nil,
+        makeCore: @escaping MakeCore
+    ) {
         displayName = name ?? "linux"
+        self.fallback = fallback
         self.makeCore = makeCore
     }
 
@@ -116,7 +123,14 @@ public final class LinuxSession: TerminalSession {
             delegate?.session(self, didTerminateWith: Self.terminationStatus(status))
         case .failed(let error):
             Logger.session.info("A Linux session failed: \(error.description, privacy: .public)")
-            delegate?.session(self, didFailWith: TerminalSessionError(error))
+            if let fallback, let notice = Self.fallbackNotice(for: error) {
+                delegate?.session(self, didFallBackTo: fallback(), notice: notice)
+            } else {
+                delegate?.session(
+                    self,
+                    didFailWith: .failed(
+                        message: error.description, suggestion: Self.suggestion(for: error)))
+            }
         case .hungUp:
             break
         }
@@ -187,6 +201,60 @@ public final class LinuxSession: TerminalSession {
                 }
             }
             return host.map { .signaled(Int32($0)) } ?? .unknown
+        }
+    }
+
+    // MARK: Errors in the pane
+
+    /// Why a tab opens its fallback, the local shell, in lines that end in a line feed. Only when
+    /// no distribution or no daemon is installed: in every other case a user expects Linux, so
+    /// the pane shows the error instead, and never runs a command on the Mac by mistake.
+    static func fallbackNotice(for error: MawError) -> String? {
+        switch error {
+        case .noDistributionInstalled:
+            "No Linux distribution is installed, so this tab opened the local shell.\n"
+        case .daemonNotInstalled: runtimeErrorText(error)
+        default: nil
+        }
+    }
+
+    /// maw's suggested fix, or the app's own where maw's names a step that does not apply in a
+    /// pane: running a command again, where Enter starts a new session; a command's option; a
+    /// user that the app never names; or signing `maw` rather than the app.
+    static func suggestion(for error: MawError) -> String? {
+        switch error {
+        case .clientSignatureRejected, .daemonVersionMismatch:
+            "Build the app and the daemon from the same commit, the app with Xcode, which signs "
+                + "it as dev.maw.app, then run mawd install from that build."
+        case .virtualizationEntitlementMissing:
+            "Sign the daemon with scripts/sign-dev.sh and run mawd install, so that launchd "
+                + "starts the signed build. Then press Enter to start a new session."
+        case .machineStopped:
+            "Press Enter to start a new session, which starts the virtual machine again."
+        case .launchctlTimedOut:
+            "launchd did not answer in time. Press Enter to try again; if it still does not "
+                + "finish, log out and back in, which restarts your launchd session."
+        case .diskImageInUse:
+            "A virtual machine of a daemon that stopped may still be exiting; press Enter in a "
+                + "moment to try again. Otherwise another process runs it."
+        case .sessionDialBackFailed, .sessionDialBackMissing:
+            "Press Enter to try again. If it fails again, restart the virtual machines with "
+                + "maw --shutdown; the console log in ~/Library/Logs/maw has the agent's warning "
+                + "or the connections that were refused."
+        case .sessionDialBackBusy:
+            "Wait for other sessions to start, then press Enter to try again."
+        case .userNotFound(let user, let distribution):
+            "Sessions run as the default user, [user] default in /etc/maw.conf. Create the "
+                + "user with maw -d \(distribution) -u root -e adduser \(user), or name another "
+                + "one there."
+        case .guestCommandNotFound:
+            "The default user's login shell, which /etc/passwd names, or runuser is missing in "
+                + "the distribution. Install it, or give the user another shell with usermod -s, "
+                + "as root through maw -d <name> -u root."
+        case .diskImageNotFound:
+            "Restore the distribution's disk image from a backup, or remove the distribution "
+                + "as the README explains and install it again with maw --install."
+        default: error.recoverySuggestion
         }
     }
 }

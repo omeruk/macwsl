@@ -93,7 +93,7 @@ extension TerminalSessionError: LocalizedError {
         case .programNotFound:
             "Choose another shell for the local profile in settings, under general."
         case .startFailed:
-            "Open a new tab to try again."
+            "Press Enter to try again."
         case .failed(_, let suggestion): suggestion
         }
     }
@@ -111,6 +111,12 @@ public protocol TerminalSessionDelegate: AnyObject {
     /// The session could not open, or something other than its program ended it, such as the
     /// machine of a Linux session stopping. No `didTerminateWith` follows.
     func session(_ session: any TerminalSession, didFailWith error: TerminalSessionError)
+    /// The session could not open and offers `replacement` in its place, not yet started, as
+    /// a new tab of the default distribution opens the local shell when no distribution is
+    /// installed. `notice` says why, in lines that end in a line feed. Nothing else follows.
+    func session(
+        _ session: any TerminalSession, didFallBackTo replacement: any TerminalSession,
+        notice: String)
 }
 
 /// A program running behind a terminal pane: the local shell (`LocalShellSession`) or a Linux

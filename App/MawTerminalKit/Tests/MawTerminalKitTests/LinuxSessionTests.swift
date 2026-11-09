@@ -84,6 +84,7 @@ import os
         var directories: [String] = []
         var status: TerminationStatus?
         var failure: TerminalSessionError?
+        var fallback: (replacement: any TerminalSession, notice: String)?
         /// Called with the bytes received so far, before each slice is added.
         var onSlice: ((Int) -> Void)?
 
@@ -108,15 +109,23 @@ import os
         func session(_ session: any TerminalSession, didFailWith error: TerminalSessionError) {
             failure = error
         }
+
+        func session(
+            _ session: any TerminalSession, didFallBackTo replacement: any TerminalSession,
+            notice: String
+        ) {
+            fallback = (replacement, notice)
+        }
     }
 
     /// Starts a session on a fake core and returns both.
     func start(
         _ recorder: Recorder, name: String? = "Ubuntu-24.04", opens: String? = "Ubuntu-24.04",
-        foreground: ForegroundAnswer = .none, size: MawTerminalKit.TerminalSize = .default
+        foreground: ForegroundAnswer = .none, size: MawTerminalKit.TerminalSize = .default,
+        fallback: (@MainActor () -> any TerminalSession)? = nil
     ) throws -> (LinuxSession, FakeCore) {
         var core: FakeCore?
-        let session = LinuxSession(name: name) { terminal, output in
+        let session = LinuxSession(name: name, fallback: fallback) { terminal, output in
             let made = FakeCore(
                 terminal: terminal, output: output, name: opens, foreground: foreground)
             core = made
@@ -174,8 +183,13 @@ import os
         let error = MawError.machineStopped(machine: "Ubuntu-24.04", reason: "it was stopped")
         core.emit([Array("last words\r\n".utf8)], then: .failed(error))
         #expect(await waitUntil(seconds: 5) { recorder.failure != nil })
-        #expect(recorder.failure == TerminalSessionError(error))
-        #expect(recorder.failure?.recoverySuggestion == error.recoverySuggestion)
+        #expect(
+            recorder.failure
+                == .failed(
+                    message: "The session ended because the virtual machine Ubuntu-24.04 "
+                        + "stopped:\nit was stopped.",
+                    suggestion: "Press Enter to start a new session, which starts the virtual "
+                        + "machine again."))
         #expect(recorder.text == "last words\r\n")
         #expect(recorder.status == nil)
         #expect(!session.isRunning)
@@ -228,6 +242,92 @@ import os
         let recorder = Recorder()
         let (session, _) = try start(recorder, foreground: answer)
         #expect(await session.foregroundProgram(within: .milliseconds(500)) == report)
+    }
+
+    /// Ends a session of the default distribution, with the local shell as its fallback,
+    /// with `error` before it opens.
+    func failBeforeOpening(with error: MawError) async throws -> (LinuxSession, Recorder) {
+        let recorder = Recorder()
+        let (session, core) = try start(recorder, name: nil, opens: nil) {
+            LocalShellSession(shell: "/bin/sh")
+        }
+        core.end(.failed(error))
+        #expect(await waitUntil(seconds: 5) { recorder.failure != nil || recorder.fallback != nil })
+        #expect(!session.isRunning)
+        return (session, recorder)
+    }
+
+    @Test func withNothingInstalledTheTabOpensTheLocalShellAndSaysSo() async throws {
+        let (_, recorder) = try await failBeforeOpening(with: .noDistributionInstalled)
+        #expect(recorder.failure == nil)
+        #expect(recorder.fallback?.replacement is LocalShellSession)
+        #expect(
+            recorder.fallback?.notice
+                == "No Linux distribution is installed, so this tab opened the local shell.\n")
+    }
+
+    @Test func withoutTheDaemonTheTabOpensTheLocalShellWithMawsMessage() async throws {
+        let (_, recorder) = try await failBeforeOpening(
+            with: .daemonNotInstalled(label: "dev.maw.mawd"))
+        #expect(recorder.failure == nil)
+        #expect(recorder.fallback?.replacement is LocalShellSession)
+        #expect(
+            recorder.fallback?.notice
+                == "maw: The maw daemon is not installed: launchd has no LaunchAgent named "
+                + "dev.maw.mawd.\nRegister the daemon with mawd install.\n")
+    }
+
+    /// A user who expects Linux must never get a shell on the Mac by mistake (Q3).
+    @Test(arguments: [
+        MawError.daemonUnreachable(reason: "the connection was invalidated"),
+        .daemonConnectionLost(during: "openSession"),
+        .daemonProtocolError(reason: "a field is missing"),
+        .daemonVersionMismatch(client: 3, daemon: 2),
+        .clientSignatureRejected(identifier: "dev.maw.app"),
+        .launchctlTimedOut(command: "launchctl print", seconds: 10),
+    ])
+    func everyOtherFailureShowsTheErrorAndNeverTheLocalShell(error: MawError) async throws {
+        let (session, recorder) = try await failBeforeOpening(with: error)
+        #expect(recorder.fallback == nil)
+        #expect(session.displayName == "linux")
+        #expect(
+            recorder.failure
+                == .failed(
+                    message: error.description, suggestion: LinuxSession.suggestion(for: error)))
+    }
+
+    /// The suggestions that name a step of `maw` that does not apply in a pane, which the app
+    /// words for itself (the plan's "Suggestions that do not hold in the app").
+    @Test(arguments: [
+        MawError.clientSignatureRejected(identifier: "dev.maw.app"),
+        .daemonVersionMismatch(client: 3, daemon: 2),
+        .virtualizationEntitlementMissing,
+        .machineStopped(machine: "Ubuntu-24.04", reason: "maw --terminate was run"),
+        .launchctlTimedOut(command: "launchctl print", seconds: 10),
+        .diskImageInUse(path: "/disk.img"),
+        .sessionDialBackFailed(reason: "refused"),
+        .sessionDialBackMissing(milliseconds: 2000),
+        .sessionDialBackBusy(limit: 8),
+        .userNotFound("ayse", distribution: "Ubuntu-24.04"),
+        .guestCommandNotFound(command: "the login shell", reason: "no such file"),
+        .diskImageNotFound(path: "/disk.img"),
+    ])
+    func suggestionsNameOnlyStepsThatWorkFromTheApp(error: MawError) throws {
+        let suggestion = try #require(LinuxSession.suggestion(for: error))
+        #expect(suggestion != error.recoverySuggestion)
+        for step in ["the command again", "run it again", "--create-disk", "Check the name"] {
+            #expect(!suggestion.contains(step), "\(suggestion)")
+        }
+    }
+
+    @Test func otherSuggestionsAreMaws() {
+        for error in [
+            MawError.daemonNotInstalled(label: "dev.maw.mawd"), .noDistributionInstalled,
+            .sessionConnectionEnded(distribution: "Ubuntu-24.04"),
+            .daemonUnreachable(reason: "gone"), .launchAgentFailed(reason: "failed"),
+        ] {
+            #expect(LinuxSession.suggestion(for: error) == error.recoverySuggestion)
+        }
     }
 
     @Test func titlesAndOSC7AreTheOnlySources() throws {

@@ -35,6 +35,11 @@ import Testing
         func session(_ session: any TerminalSession, didFailWith error: TerminalSessionError) {
             failure = error
         }
+
+        func session(
+            _ session: any TerminalSession, didFallBackTo replacement: any TerminalSession,
+            notice: String
+        ) {}
     }
 
     func start(_ recorder: Recorder, size: TerminalSize = .default) throws -> LocalShellSession {
@@ -306,7 +311,7 @@ import Testing
         #expect(pane.termination == .exited(3))
         let terminal = pane.terminalView.getTerminal()
         let text = String(decoding: terminal.getBufferAsData(), as: UTF8.self)
-        #expect(text.contains("[exited with status 3]"), "\(text)")
+        #expect(text.contains("[exited with status 3]\n[↩ new session]"), "\(text)")
     }
 
     @Test(arguments: Shell.allCases)
@@ -394,8 +399,10 @@ import Testing
         pane.startIfNeeded()
         let reason = "\(file.path) could not be executed: \(String(cString: strerror(ENOEXEC)))"
         #expect(pane.failure == .startFailed(reason: reason))
-        let text = await paneText(pane, contains: "Open a new tab")
-        #expect(text.contains("could not be executed"), "\(text)")
+        let text = await paneText(pane, contains: "Press Enter to try again")
+        let unwrapped = text.replacingOccurrences(of: "\n", with: "")
+        #expect(unwrapped.contains("maw: The session could not start: "), "\(text)")
+        #expect(unwrapped.contains("could not be executed"), "\(text)")
         #expect(!pane.isRunning)
     }
 
