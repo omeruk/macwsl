@@ -1,13 +1,11 @@
 import Darwin
 import Foundation
-import SwiftTerm
 import os
 
-/// The user's login shell on this Mac, on a pseudo-terminal, through SwiftTerm's `LocalProcess`.
+/// The user's login shell on this Mac, on a pseudo-terminal (`PseudoTerminalProcess`).
 ///
-/// `LocalProcess` delivers output on the main queue in time-limited batches, and stops reading
-/// from the pseudo-terminal while more than a few megabytes are waiting. A flood such as
-/// `yes | head -n 2000000` therefore blocks the writer instead of the user interface.
+/// Output reaches the delegate through an `OutputPump`, so a flood such as
+/// `yes | head -n 2000000` blocks the writer instead of the user interface.
 @MainActor
 public final class LocalShellSession: TerminalSession {
     public let id = UUID()
@@ -15,7 +13,7 @@ public final class LocalShellSession: TerminalSession {
     public weak var delegate: (any TerminalSessionDelegate)?
     public private(set) var isRunning = false
 
-    private var process: LocalProcess?
+    private var process: PseudoTerminalProcess?
     private var size = TerminalSize.default
     private var tracker = WorkingDirectoryTracker()
     private let startDirectory: String
@@ -52,46 +50,51 @@ public final class LocalShellSession: TerminalSession {
             throw .programNotFound(path: shell)
         }
         self.size = size
-        let process = LocalProcess(delegate: self, dispatchQueue: .main)
-        self.process = process
+        let pump = OutputPump<TerminationStatus>()
         // A leading dash in argv[0] makes the shell a login shell, as Terminal.app starts it.
-        process.startProcess(
-            executable: shell, args: [],
+        let process = try PseudoTerminalProcess(
+            executable: shell, argv0: "-" + displayName,
             environment: Self.environment(from: baseEnvironment, locale: locale),
-            execName: "-" + displayName, currentDirectory: startDirectory)
-        guard process.running else {
-            self.process = nil
-            throw .startFailed(reason: "the pseudo-terminal for \(shell) could not be created")
-        }
+            directory: startDirectory, size: Self.windowSize(size), output: pump)
+        self.process = process
         isRunning = true
-        Logger.session.info(
-            "Started \(self.shell, privacy: .public) as process \(process.shellPid)")
+        Logger.session.info("Started \(self.shell, privacy: .public) as process \(process.pid)")
+        Task { [weak self] in
+            let status = await pump.deliver { bytes in
+                self?.tracker.outputArrived(at: .now)
+                if let self { self.delegate?.session(self, didReceive: bytes) }
+            }
+            if let status, let self, self.process === process {
+                self.isRunning = false
+                Logger.session.info(
+                    "\(self.shell, privacy: .public) \(status.description, privacy: .public)")
+                self.delegate?.session(self, didTerminateWith: status)
+            }
+        }
     }
 
     public func send(_ bytes: ArraySlice<UInt8>) {
-        process?.send(data: bytes)
+        process?.send(bytes)
     }
 
     public func resize(to size: TerminalSize) {
         guard size != self.size else { return }
         self.size = size
-        guard let process, process.running else { return }
         var windowSize = Self.windowSize(size)
-        _ = PseudoTerminalHelpers.setWinSize(
-            masterPtyDescriptor: process.childfd, windowSize: &windowSize)
+        _ = process?.withPrimary { ioctl($0, TIOCSWINSZ, &windowSize) }
     }
 
     public func terminate() {
         guard let process, isRunning else { return }
         // SIGHUP, as when a terminal closes: the shell passes it on to its jobs.
-        kill(process.shellPid, SIGHUP)
-        process.terminate()
+        process.hangUp()
+        self.process = nil
         isRunning = false
     }
 
     public var hasForegroundProcess: Bool {
         guard let group = foregroundProcessGroup, let process else { return false }
-        return group != process.shellPid
+        return group != process.pid
     }
 
     public var foregroundProcessName: String? {
@@ -118,7 +121,7 @@ public final class LocalShellSession: TerminalSession {
     public func refresh(isVisible: Bool) {
         let now = ContinuousClock.now
         guard isRunning, tracker.shouldPoll(at: now, isVisible: isVisible) else { return }
-        let pid = foregroundProcessGroup ?? process?.shellPid
+        let pid = foregroundProcessGroup ?? process?.pid
         let directory = pid.flatMap(Self.workingDirectory(of:))
         if tracker.polled(directory, at: now), let directory {
             delegate?.session(self, didChangeWorkingDirectory: directory)
@@ -130,9 +133,8 @@ public final class LocalShellSession: TerminalSession {
     /// The foreground process group of the terminal, which is the shell's own group while the
     /// shell waits at its prompt.
     private var foregroundProcessGroup: pid_t? {
-        guard let process, process.running, process.childfd >= 0 else { return nil }
-        let group = tcgetpgrp(process.childfd)
-        return group > 0 ? group : nil
+        guard isRunning, let group = process?.withPrimary(tcgetpgrp), group > 0 else { return nil }
+        return group
     }
 
     /// The current directory of `pid`, from `proc_pidinfo`. `nil` if the process is gone or
@@ -184,28 +186,5 @@ public final class LocalShellSession: TerminalSession {
         winsize(
             ws_row: UInt16(clamping: size.rows), ws_col: UInt16(clamping: size.columns),
             ws_xpixel: 0, ws_ypixel: 0)
-    }
-}
-
-// LocalProcess calls its delegate on the queue it was given, which is the main queue. The
-// conformance is isolated to the main actor and checked at run time.
-extension LocalShellSession: @preconcurrency LocalProcessDelegate {
-    public func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
-        guard source === process else { return }
-        isRunning = false
-        // LocalProcess passes the raw status from waitpid.
-        let status = exitCode.map(TerminationStatus.init(waitStatus:)) ?? .unknown
-        Logger.session.info(
-            "\(self.shell, privacy: .public) \(status.description, privacy: .public)")
-        delegate?.session(self, didTerminateWith: status)
-    }
-
-    public func dataReceived(slice: ArraySlice<UInt8>) {
-        tracker.outputArrived(at: .now)
-        delegate?.session(self, didReceive: slice)
-    }
-
-    public func getWindowSize() -> winsize {
-        Self.windowSize(size)
     }
 }

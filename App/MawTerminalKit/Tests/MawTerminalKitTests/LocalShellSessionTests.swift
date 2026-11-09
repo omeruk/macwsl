@@ -79,6 +79,111 @@ import Testing
         session.terminate()
     }
 
+    // MARK: The pseudo-terminal and job control
+
+    /// Waits until the shell has printed its first output, its prompt.
+    func waitForOutput(_ recorder: Recorder) async -> Bool {
+        await waitUntil(seconds: 5) { !recorder.output.isEmpty }
+    }
+
+    @Test func theShellsControllingTerminalIsThePseudoTerminal() async throws {
+        let recorder = Recorder()
+        let session = try start(recorder)
+        #expect(await waitForOutput(recorder))
+        // `ps -o tty=` names the controlling terminal, and `??` if there is none.
+        session.send(ArraySlice("echo \"tty:$(tty)|ctty:$(ps -o tty= -p $$)\"\n".utf8))
+        #expect(await waitUntil(seconds: 5) { recorder.text.contains("|ctty:") })
+        let line =
+            recorder.text.split(whereSeparator: \.isNewline)
+            .first { $0.hasPrefix("tty:") }
+            .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        let device = line.dropFirst("tty:/dev/".count).prefix { $0 != "|" }
+        #expect(line.hasPrefix("tty:/dev/ttys"), "\(recorder.text)")
+        #expect(line.hasSuffix("|ctty:\(device)"), "\(recorder.text)")
+        session.terminate()
+    }
+
+    @Test func controlCInterruptsTheForegroundProgram() async throws {
+        let recorder = Recorder()
+        let session = try start(recorder)
+        #expect(await waitForOutput(recorder))
+        session.send(ArraySlice("sleep 30\n".utf8))
+        #expect(await waitUntil(seconds: 5) { session.hasForegroundProcess })
+        session.send([0x03])
+        #expect(await waitUntil(seconds: 5) { !session.hasForegroundProcess })
+        session.send(ArraySlice("echo after-$((40 + 2))\n".utf8))
+        #expect(await waitUntil(seconds: 5) { recorder.text.contains("after-42") })
+        session.terminate()
+    }
+
+    @Test func controlZSuspendsTheForegroundProgramAndFgResumesIt() async throws {
+        let recorder = Recorder()
+        let session = try start(recorder)
+        #expect(await waitForOutput(recorder))
+        session.send(ArraySlice("sleep 30\n".utf8))
+        #expect(await waitUntil(seconds: 5) { session.foregroundProcessName == "sleep" })
+        session.send([0x1A])
+        #expect(await waitUntil(seconds: 5) { !session.hasForegroundProcess })
+        session.send(ArraySlice("jobs -s\n".utf8))
+        #expect(await waitUntil(seconds: 5) { recorder.text.contains("sleep 30") })
+        session.send(ArraySlice("fg\n".utf8))
+        #expect(await waitUntil(seconds: 5) { session.foregroundProcessName == "sleep" })
+        session.send([0x03])
+        #expect(await waitUntil(seconds: 5) { !session.hasForegroundProcess })
+        session.send(ArraySlice("echo resumed-$((40 + 2))\n".utf8))
+        #expect(await waitUntil(seconds: 5) { recorder.text.contains("resumed-42") })
+        session.terminate()
+    }
+
+    @Test func closingSendsTheShellSIGHUP() async throws {
+        let recorder = Recorder()
+        let session = try start(recorder)
+        let marker = FileManager.default.temporaryDirectory
+            .appending(path: "maw-hup-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: marker) }
+        session.send(ArraySlice("trap 'echo hup > \(marker); exit 0' HUP; echo trap-set\n".utf8))
+        #expect(await waitUntil(seconds: 5) { recorder.text.contains("trap-set\r\n") })
+        session.terminate()
+        #expect(await waitUntil(seconds: 5) { FileManager.default.fileExists(atPath: marker) })
+        #expect((try? String(contentsOfFile: marker, encoding: .utf8)) == "hup\n")
+    }
+
+    @Test func theExitStatusReachesThePane() async throws {
+        let pane = PaneController(
+            session: LocalShellSession(shell: "/bin/sh", startDirectory: "/tmp"))
+        pane.startIfNeeded()
+        pane.send("exit 3\n")
+        #expect(await waitUntil(seconds: 5) { pane.termination != nil })
+        #expect(pane.termination == .exited(3))
+        let terminal = pane.terminalView.getTerminal()
+        let text = String(decoding: terminal.getBufferAsData(), as: UTF8.self)
+        #expect(text.contains("[exited with status 3]"), "\(text)")
+    }
+
+    @Test func aDescriptorWithoutCloseOnExecIsNotInherited() async throws {
+        var ends: [Int32] = [0, 0]
+        #expect(pipe(&ends) == 0)
+        // A number well above the test process's own, as an app's descriptor would be.
+        let leaked = fcntl(ends[0], F_DUPFD, 200)
+        defer {
+            close(leaked)
+            close(ends[0])
+            close(ends[1])
+        }
+        #expect(leaked >= 200)
+        #expect(fcntl(leaked, F_GETFD) & FD_CLOEXEC == 0)
+
+        let recorder = Recorder()
+        let session = try start(recorder)
+        let probe =
+            "for fd in 1 \(leaked); do if [ -e /dev/fd/$fd ]; then echo fd-$fd-open; "
+            + "else echo fd-$fd-closed; fi; done; exit\n"
+        session.send(ArraySlice(probe.utf8))
+        #expect(await waitUntil(seconds: 5) { recorder.status != nil })
+        #expect(recorder.text.contains("fd-1-open\r\n"), "\(recorder.text)")
+        #expect(recorder.text.contains("fd-\(leaked)-closed\r\n"), "\(recorder.text)")
+    }
+
     @Test func pollsTheWorkingDirectoryWithoutOSC7() async throws {
         let recorder = Recorder()
         let session = try start(recorder)
