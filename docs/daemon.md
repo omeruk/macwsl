@@ -371,6 +371,13 @@ every ending:
 daemon connection, so that the lease ends at once and the machine's idle timer starts. `maw`
 reports its sessions' endings through the same code (`SessionEnding`).
 
+The app's `LinuxSession` calls `hangUp()` when its pane, tab, or window closes and when the app
+quits. It shows a failure in the pane as `maw` prints it (`runtimeErrorText` in `MawClient`),
+except that where maw's suggestion names a step that does not apply in a pane, such as running
+the command again, it words its own (`LinuxSession.suggestion(for:)`); the pane then offers a
+new session. A new tab of the default distribution opens the local shell instead, with a
+one-line notice, only on `noDistributionInstalled` and `daemonNotInstalled`.
+
 ## Peer validation
 
 The daemon accepts a connection only if both checks pass (`XPCServiceListener`):

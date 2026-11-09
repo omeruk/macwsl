@@ -231,6 +231,17 @@ from `main`.
 
 ## No phase yet
 
+- **`maw` suggests `--create-disk` when an installed distribution's disk image is missing.**
+  - **Seen:** `maw -d <name>` reports `diskImageNotFound` with the suggestion "Pass
+    --create-disk <size> to create it as a sparse image.", an option of `mawd debug-boot` that
+    neither `maw` nor the terminal app has. The app shows its own suggestion instead: restore
+    the image from a backup, or remove the distribution and install it again.
+  - **Evidence:** `Sources/MawCore/MawError.swift`, `recoverySuggestion` for
+    `diskImageNotFound`; `App/MawTerminalKit/Sources/MawTerminalKit/Session/LinuxSession.swift`,
+    `suggestion(for:)`. `MawCore` is a Guest workflow path, which phase 11b does not change after
+    its first part.
+  - **Phase:** None yet; a `fix/` branch gives the error a suggestion for `maw` that depends on
+    where it arises.
 - **The root file system repair command.**
   - **Seen:** maw reports a root file system that fails its check and leaves the disk image
     unchanged except for what `e2fsck -p` repaired. A repair needs e2fsck from a Linux system,
