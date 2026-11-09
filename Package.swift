@@ -127,6 +127,8 @@ let package = Package(
         .testTarget(
             name: "MawXPCTests", dependencies: ["MawXPC", "MawCore", "MawProtocol", "CMawSystem"]),
         .testTarget(
+            name: "MawClientTests", dependencies: ["MawClient", "MawCore", "MawProtocol", "MawXPC"]),
+        .testTarget(
             name: "mawTests",
             dependencies: [
                 "maw",
