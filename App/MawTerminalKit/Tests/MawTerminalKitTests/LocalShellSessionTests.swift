@@ -148,6 +148,48 @@ import Testing
         #expect((try? String(contentsOfFile: marker, encoding: .utf8)) == "hup\n")
     }
 
+    /// Starts `/bin/sh`, ignores SIGHUP in it, runs `then`, and returns the shell's process.
+    func startIgnoringSIGHUP(_ recorder: Recorder, then command: String) async throws
+        -> (LocalShellSession, pid_t)
+    {
+        let session = try start(recorder)
+        session.send(ArraySlice("trap '' HUP; echo pid:$$:; \(command)\n".utf8))
+        #expect(await waitUntil(seconds: 5) { recorder.text.contains(":\r\n") })
+        let line = recorder.text.split(whereSeparator: \.isNewline).first { $0.hasPrefix("pid:") }
+        let pid = line.flatMap { pid_t($0.dropFirst(4).prefix { $0 != ":" }) } ?? 0
+        #expect(pid > 0, "\(recorder.text)")
+        return (session, pid)
+    }
+
+    /// Whether `pid` still exists, as a running process or as a zombie that nobody reaped.
+    func exists(_ pid: pid_t) -> Bool {
+        kill(pid, 0) == 0 || errno != ESRCH
+    }
+
+    @Test func aShellIgnoringSIGHUPEndsWhenTheTerminalHangsUp() async throws {
+        let recorder = Recorder()
+        let (session, pid) = try await startIgnoringSIGHUP(recorder, then: "true")
+        let started = ContinuousClock.now
+        session.terminate()
+        #expect(ContinuousClock.now - started < .milliseconds(500))
+        #expect(!session.isRunning)
+        // The hung-up terminal gives the shell an end of input, and the session reaps it.
+        #expect(await waitUntil(seconds: 5) { !exists(pid) })
+    }
+
+    @Test func aProgramIgnoringSIGHUPIsReapedOnceItExits() async throws {
+        let recorder = Recorder()
+        // The shell becomes `sleep`, which keeps ignoring SIGHUP and never reads the terminal.
+        let (session, pid) = try await startIgnoringSIGHUP(recorder, then: "exec sleep 2")
+        let started = ContinuousClock.now
+        session.terminate()
+        #expect(ContinuousClock.now - started < .milliseconds(500))
+        // Closing waits for nothing: the main actor runs on while the program lives.
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(exists(pid))
+        #expect(await waitUntil(seconds: 5) { !exists(pid) })
+    }
+
     @Test func theExitStatusReachesThePane() async throws {
         let pane = PaneController(
             session: LocalShellSession(shell: "/bin/sh", startDirectory: "/tmp"))
