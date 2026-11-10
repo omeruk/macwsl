@@ -76,12 +76,15 @@ public struct SettingsForm: Sendable {
                     value: "\(Int((settings.backgroundOpacity * 100).rounded()))%", kind: .number),
             ]
         case .general:
+            // The options are the profiles given; a setting that names a distribution the list
+            // does not contain still shows that name, which ⌘T opens.
             let names = profiles.map(\.paletteName)
+            let newTab = settings.newTabProfile
             let selected =
-                profiles.first { $0.id == settings.defaultProfile }?.paletteName ?? names.first
+                profiles.first { $0.isNamed(by: newTab.id) }?.paletteName ?? newTab.paletteName
             let shell = settings.localShell ?? ""
             return [
-                choice(.defaultProfile, "default profile", names, selected: selected ?? ""),
+                choice(.defaultProfile, "default profile", names, selected: selected),
                 Field(
                     id: .localShell, label: "local shell",
                     value: shell.isEmpty ? "login shell (\(Profile.userLoginShell()))" : shell,

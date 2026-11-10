@@ -90,15 +90,19 @@ final class WindowModel {
 
     var chrome: ChromePalette { effectiveSettings.selectedTheme.chromePalette }
 
-    var profiles: [Profile] { settings.profiles }
+    /// The profiles that the menus, the palette, and the settings offer: the default
+    /// distribution, each one the daemon reported, and the local shell.
+    var profiles: [Profile] {
+        settings.profiles(distributions: distributions.distributions.map(\.name))
+    }
 
     var registry: CommandRegistry {
-        CommandRegistry(profiles: profiles, defaultProfile: settings.defaultProfile)
+        CommandRegistry(profiles: profiles, newTabProfile: defaultProfile)
     }
 
-    var defaultProfile: Profile {
-        profiles.first { $0.id == settings.defaultProfile } ?? profiles[0]
-    }
+    /// The profile of a new tab, from the setting itself rather than from the list, so that a
+    /// distribution opens whether or not the list has arrived or contains it.
+    var defaultProfile: Profile { settings.newTabProfile }
 
     // MARK: Lifecycle
 
@@ -160,7 +164,7 @@ final class WindowModel {
         }
         switch id {
         case .newTab(let profileID):
-            newTab(profile: profiles.first { $0.id == profileID } ?? defaultProfile)
+            newTab(profile: settings.profile(id: profileID) ?? defaultProfile)
         case .newWindow:
             host?.openNewWindow()
         case .closePane:
@@ -186,12 +190,14 @@ final class WindowModel {
         case .equalizePanes:
             updateSelectedTree { $0.equalize() }
         case .openDistributions:
+            distributions.refresh()
             tabs.openScreen(.distributions)
         case .installDistribution, .settingsMove, .settingsChange, .settingsOpenList,
             .settingsSwitchBox:
             break
         case .commandPalette:
             if palette == nil {
+                distributions.refresh()
                 palette = PaletteState()
             } else {
                 closePalette(restoringTheme: palette?.mode == .themes)
@@ -290,7 +296,7 @@ final class WindowModel {
     /// A session of `profile` as the settings configure it now, so that a new session of the
     /// local shell's profile follows a change of the shell.
     private func newSession(of profile: Profile) -> any TerminalSession {
-        makeSession(profiles.first { $0.id == profile.id } ?? profile)
+        makeSession(settings.profile(id: profile.id) ?? profile)
     }
 
     /// Splits the focused pane. The new pane opens what its session names, such as the

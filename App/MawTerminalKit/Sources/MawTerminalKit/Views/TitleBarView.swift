@@ -23,7 +23,9 @@ struct TitleBarView: View {
                             model: model, target: tab.id, dragged: $draggedTab))
             }
             Button {
-                model.perform(.newTab(profile: model.defaultProfile.id))
+                if let command = model.registry.newTabCommand {
+                    model.perform(command)
+                }
             } label: {
                 Text("+").chromeStyle(chrome.textSecondary)
                     .padding(.horizontal, 10)

@@ -82,6 +82,7 @@ import Testing
     /// was asked for.
     func window(
         settings change: (inout Settings) -> Void = { _ in },
+        distributions: (any DistributionProvider)? = nil,
         make: @escaping (Profile) -> any TerminalSession = { FakeSession($0.name) }
     ) -> (WindowModel, FakeHost, () -> [Profile]) {
         let file = FileManager.default.temporaryDirectory
@@ -90,7 +91,8 @@ import Testing
         store.update(change)
         try? FileManager.default.removeItem(at: file)
         var asked: [Profile] = []
-        let model = WindowModel(settingsStore: store, distributions: NoDistributions()) {
+        let provider = distributions ?? FakeDaemonClient().provider()
+        let model = WindowModel(settingsStore: store, distributions: provider) {
             asked.append($0)
             return make($0)
         }
@@ -352,6 +354,162 @@ import Testing
         let form = SettingsForm(settings: model.settings, profiles: model.profiles)
         let field = form.fields(on: .general).first { $0.id == .defaultProfile }
         #expect(field?.value == "default distribution")
+    }
+
+    @Test(arguments: [[], ["Ubuntu-24.04"], ["Debian-13", "Ubuntu-24.04"]])
+    func theProfilesAreTheDefaultEachReportedDistributionAndTheLocalShell(names: [String]) async {
+        let daemon = FakeDaemonClient()
+        daemon.install(names)
+        let provider = daemon.provider()
+        await provider.refreshed()
+        let (model, _, _) = window(distributions: provider)
+        defer { model.shutDown() }
+        let local = model.settings.localShellProfile
+        #expect(
+            model.profiles.map(\.id)
+                == ["default-distribution"] + names.map { "distribution:\($0)" } + ["local"])
+        let newTabs = model.registry.commands.filter {
+            if case .newTab = $0.id { return true }
+            return false
+        }
+        #expect(
+            newTabs.map(\.title)
+                == ["new tab: default distribution"] + names.map { "new tab: \($0)" }
+                + ["new tab: \(local.paletteName)"])
+        #expect(model.registry.newTabCommand == .newTab(profile: "default-distribution"))
+        let form = SettingsForm(settings: model.settings, profiles: model.profiles)
+        let field = form.fields(on: .general).first { $0.id == .defaultProfile }
+        #expect(
+            field?.kind
+                == .choice(
+                    options: ["default distribution"] + names + [local.paletteName], selected: 0))
+        if let last = names.last {
+            let index = names.count
+            #expect(
+                form.choosing(.defaultProfile, index: index).defaultProfile
+                    == "distribution:\(last)")
+        }
+    }
+
+    /// The list is asked for when the palette or the distributions screen opens, and never
+    /// for ⌘T or a split.
+    @Test func thePaletteAndTheScreenRefreshTheListAndNothingElseDoes() async {
+        let daemon = FakeDaemonClient()
+        let provider = daemon.provider()
+        let (model, _, _) = window(distributions: provider)
+        defer { model.shutDown() }
+        func connects() async -> Int {
+            await provider.pending?.value
+            return daemon.record.withLock { $0.connects }
+        }
+        #expect(await connects() == 0)
+        model.perform(.commandPalette)
+        #expect(await connects() == 1)
+        model.perform(.commandPalette)
+        model.perform(.newTab(profile: Profile.localShellID))
+        model.perform(.splitRight)
+        #expect(await connects() == 1)
+        model.perform(.openDistributions)
+        #expect(await connects() == 2)
+        #expect(daemon.record.withLock { $0.closes } == 2)
+    }
+
+    /// The first tab and ⌘T open the setting's distribution from its name, before any list
+    /// has arrived, and ask the daemon for no list.
+    @Test func aNamedDistributionOpensBeforeTheListHasArrived() throws {
+        let daemon = FakeDaemonClient()
+        let (model, _, asked) = window(
+            settings: { $0.defaultProfile = "distribution:Debian-13" },
+            distributions: daemon.provider())
+        defer { model.shutDown() }
+        #expect(asked() == [.distribution("Debian-13")])
+        let command = try #require(model.registry.newTabCommand)
+        model.perform(command)
+        #expect(asked() == [.distribution("Debian-13"), .distribution("Debian-13")])
+        #expect(model.registry[command]?.title == "new tab")
+        #expect(daemon.record.withLock { $0.connects } == 0)
+    }
+
+    /// ⌘T with a distribution that the list does not contain reaches the session layer, which
+    /// opens the default and says so; a split then opens the distribution that opened.
+    @Test func commandTWithADistributionThatIsNotListedSaysWhatItOpened() async throws {
+        let daemon = FakeDaemonClient()
+        daemon.install(["Ubuntu-24.04"])
+        let provider = daemon.provider()
+        await provider.refreshed()
+        let cores = FakeCores()
+        cores.installed = ["Ubuntu-24.04"]
+        cores.defaultName = "Ubuntu-24.04"
+        let (model, _, asked) = window(
+            settings: { $0.defaultProfile = "distribution:Debian-13" }, distributions: provider,
+            make: { $0.makeSession(localShell: .localShell("/bin/sh"), cores: cores.cores) })
+        defer { model.shutDown() }
+        let notice =
+            "Debian-13 is not installed. This tab opened Ubuntu-24.04, the default distribution."
+        model.focusedPane?.startIfNeeded()
+        model.perform(try #require(model.registry.newTabCommand))
+        let pane = try #require(model.focusedPane)
+        pane.startIfNeeded()
+        #expect(asked() == [.distribution("Debian-13"), .distribution("Debian-13")])
+        #expect(await waitUntil(seconds: 5) { pane.displayName == "Ubuntu-24.04" })
+        #expect(await waitUntil(seconds: 5) { text(of: pane).contains("prompt$") })
+        #expect(text(of: pane).contains(notice), "\(text(of: pane))")
+        #expect(pane.session is LinuxSession)
+        #expect(pane.profile == .distribution("Debian-13"))
+
+        model.perform(.splitRight)
+        #expect(asked().last == .distribution("Ubuntu-24.04"))
+        model.focusedPane?.startIfNeeded()
+        #expect(await waitUntil(seconds: 5) { model.focusedPane?.displayName == "Ubuntu-24.04" })
+        #expect(!text(of: model.focusedPane).contains("not installed"))
+        // The first tab's fallback may open before or after ⌘T's tab is made.
+        #expect(
+            cores.opened.map { $0 ?? "default" }.sorted()
+                == ["Debian-13", "Debian-13", "Ubuntu-24.04", "default", "default"])
+    }
+
+    /// The daemon looks names up without regard to case: the listed distribution gets ⌘T and
+    /// the form shows it.
+    @Test func aSettingInAnotherCaseIsTheListedDistribution() async throws {
+        let daemon = FakeDaemonClient()
+        daemon.install(["Ubuntu-24.04"])
+        let provider = daemon.provider()
+        await provider.refreshed()
+        let (model, _, asked) = window(
+            settings: { $0.defaultProfile = "distribution:ubuntu-24.04" }, distributions: provider)
+        defer { model.shutDown() }
+        let command = try #require(model.registry.newTabCommand)
+        #expect(command == .newTab(profile: "distribution:Ubuntu-24.04"))
+        model.perform(command)
+        #expect(asked() == [.distribution("ubuntu-24.04"), .distribution("Ubuntu-24.04")])
+        let form = SettingsForm(settings: model.settings, profiles: model.profiles)
+        #expect(form.fields(on: .general).first?.value == "Ubuntu-24.04")
+    }
+
+    /// A pane of the default distribution splits into the distribution it opened, by its
+    /// stored name, even after the default changes; one that never opened splits its profile.
+    @Test func aSplitOpensTheDistributionThePaneOpenedByItsStoredName() async throws {
+        let cores = FakeCores()
+        cores.installed = ["Ubuntu-24.04", "Debian-13"]
+        cores.defaultName = "Ubuntu-24.04"
+        let (model, _, asked) = window(make: {
+            $0.makeSession(localShell: .localShell("/bin/sh"), cores: cores.cores)
+        })
+        defer { model.shutDown() }
+        let pane = try #require(model.focusedPane)
+        pane.startIfNeeded()
+        #expect(await waitUntil(seconds: 5) { pane.displayName == "Ubuntu-24.04" })
+        cores.defaultName = "Debian-13"
+        model.perform(.splitDown)
+        #expect(asked() == [.defaultDistribution, .distribution("Ubuntu-24.04")])
+
+        cores.failure = .daemonUnreachable(reason: "gone")
+        model.perform(.newTab(profile: Profile.defaultDistributionID))
+        let failed = try #require(model.focusedPane)
+        failed.startIfNeeded()
+        #expect(await waitUntil(seconds: 5) { failed.offersNewSession })
+        model.perform(.splitRight)
+        #expect(asked().last == .defaultDistribution)
     }
 
     // MARK: ⌘T

@@ -2,11 +2,10 @@ import SwiftUI
 
 /// The distributions screen (⌘⇧L), a tab of its own, as in `Distributions.dc.html`.
 ///
-/// With no distributions it shows the table header and a note that the list arrives in a later
-/// version: the app does not ask the daemon for it yet, and must not claim that nothing is
-/// installed while Linux tabs work. The table rows, the details box, and the memory chart are
-/// built and covered by previews with sample data; the running app shows them once a provider
-/// returns distributions.
+/// It lists the distributions that the daemon reported, and asks for them again when it opens.
+/// With none, it shows a note in place of the empty state, which a later part of phase 11b
+/// replaces together with the unreachable state and the actions. The details box and the
+/// memory chart are covered by previews with sample data.
 struct DistributionsScreen: View {
     let model: WindowModel
     @State private var selection = 0

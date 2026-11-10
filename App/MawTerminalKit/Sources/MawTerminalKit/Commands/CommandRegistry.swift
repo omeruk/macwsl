@@ -9,16 +9,26 @@ public struct CommandRegistry: Hashable, Sendable {
     public let commands: [CommandDefinition]
     private let index: [CommandID: Int]
 
-    /// The registry for the given profiles. ⌘T opens a tab with `defaultProfile`; every profile
-    /// gets a `new tab: <profile>` command in the palette.
-    public init(profiles: [Profile], defaultProfile: String) {
+    /// The registry for the given profiles. Every profile gets a `new tab: <profile>` command
+    /// in the palette and the menu bar.
+    ///
+    /// ⌘T opens `newTabProfile`. When `profiles` does not list it, for example a distribution
+    /// before the daemon's list has arrived, or one that is no longer installed, ⌘T gets a
+    /// `new tab` command of its own: it opens that profile, and the session layer says what the
+    /// tab opened, while the menus list only the profiles given.
+    public init(profiles: [Profile], newTabProfile: Profile) {
         var commands: [CommandDefinition] = []
-        let defaultID =
-            profiles.contains { $0.id == defaultProfile } ? defaultProfile : profiles.first?.id
+        let listed = profiles.first { $0.isNamed(by: newTabProfile.id) }
 
         // Tabs.
+        if listed == nil {
+            commands.append(
+                CommandDefinition(
+                    .newTab(profile: newTabProfile.id), title: "new tab", menuTitle: "New Tab",
+                    group: .tab, shortcut: .command("t"), hint: "tab"))
+        }
         for profile in profiles {
-            let isDefault = profile.id == defaultID
+            let isDefault = profile.id == listed?.id
             commands.append(
                 CommandDefinition(
                     .newTab(profile: profile.id), title: "new tab: \(profile.paletteName)",
@@ -220,12 +230,8 @@ public struct CommandRegistry: Hashable, Sendable {
         let ids: [CommandID]
         switch context.selection {
         case .none, .terminal:
-            let defaultTab = commands.first { definition in
-                if case .newTab = definition.id { return definition.shortcut != nil }
-                return false
-            }
             ids =
-                [defaultTab?.id].compactMap { $0 } + [
+                [newTabCommand].compactMap { $0 } + [
                     .splitRight, .openDistributions, .commandPalette, .openSettings,
                 ]
         case .screen(.distributions):
@@ -241,6 +247,14 @@ public struct CommandRegistry: Hashable, Sendable {
                 note: id == .installDistribution ? "arrives in a later version" : nil,
                 placement: definition.scope == .anyScreen ? .trailing : .leading)
         }
+    }
+
+    /// The command of ⌘T, which opens the new-tab profile.
+    public var newTabCommand: CommandID? {
+        commands.first { definition in
+            if case .newTab = definition.id { return definition.shortcut != nil }
+            return false
+        }?.id
     }
 
     /// The commands the palette lists in `context`: those marked for the palette and enabled.

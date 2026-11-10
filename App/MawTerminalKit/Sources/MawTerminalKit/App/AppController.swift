@@ -8,7 +8,9 @@ import os
 /// life cycle rather than SwiftUI's `App`, because the menu bar is built from the command
 /// registry and the windows need AppKit's title bar configuration; SwiftUI draws the content.
 @MainActor
-public final class AppController: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+public final class AppController: NSObject, NSApplicationDelegate, NSMenuItemValidation,
+    NSMenuDelegate
+{
     let settingsStore: SettingsStore
     let distributions: any DistributionProvider
     private var windows: [TerminalWindowController] = []
@@ -18,12 +20,17 @@ public final class AppController: NSObject, NSApplicationDelegate, NSMenuItemVal
     private var isAskingToQuit = false
 
     /// - Parameter fontsDirectory: The bundled fonts, registered at launch.
-    public init(fontsDirectory: URL?) {
+    public convenience init(fontsDirectory: URL?) {
         if let fontsDirectory {
             MawFonts.registerFonts(in: fontsDirectory)
         }
-        settingsStore = SettingsStore()
-        distributions = NoDistributions()
+        self.init(settingsStore: SettingsStore(), distributions: DaemonDistributions())
+    }
+
+    /// One provider for every window, so that the profiles and the screens share the list.
+    init(settingsStore: SettingsStore, distributions: any DistributionProvider) {
+        self.settingsStore = settingsStore
+        self.distributions = distributions
         super.init()
     }
 
@@ -119,27 +126,28 @@ public final class AppController: NSObject, NSApplicationDelegate, NSMenuItemVal
             ?? windows.first { $0.window?.isMainWindow == true }
     }
 
-    private var currentRegistry: CommandRegistry {
+    var currentRegistry: CommandRegistry {
         let settings = settingsStore.settings
-        return CommandRegistry(profiles: settings.profiles, defaultProfile: settings.defaultProfile)
+        return CommandRegistry(
+            profiles: settings.profiles(distributions: distributions.distributions.map(\.name)),
+            newTabProfile: settings.newTabProfile)
     }
 
     // MARK: Settings
 
-    /// Applies settings changes to every window, and rebuilds the menus when the commands
-    /// change, for example when the default profile does.
+    /// Applies settings changes to every window, and updates the menus' new-tab items when
+    /// the commands change: when the default profile does, or the daemon's list.
     private func observeSettings() {
         withObservationTracking {
             _ = settingsStore.settings
+            _ = distributions.distributions
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
                 for window in self.windows {
                     window.model.applyAppearance()
                 }
-                if self.currentRegistry != self.lastMenuRegistry {
-                    self.rebuildMenus()
-                }
+                self.updateNewTabItems()
                 self.observeSettings()
             }
         }
@@ -147,10 +155,34 @@ public final class AppController: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     // MARK: Menus
 
+    /// The menu that lists the new-tab items.
+    private(set) var newTabMenu: NSMenu?
+
     private func rebuildMenus() {
         let registry = currentRegistry
         lastMenuRegistry = registry
-        NSApp.mainMenu = MenuBuilder(registry: registry, target: self).build()
+        let bar = MenuBuilder(registry: registry, target: self).build()
+        newTabMenu = bar.items.compactMap(\.submenu).first { $0.delegate === self }
+        NSApp.mainMenu = bar
+    }
+
+    /// Replaces the new-tab items in place if the commands changed, so that a menu that is
+    /// open shows the list that has just arrived. The rest of the menu bar does not depend on
+    /// the profiles.
+    func updateNewTabItems() {
+        let registry = currentRegistry
+        guard registry != lastMenuRegistry, let newTabMenu else { return }
+        lastMenuRegistry = registry
+        MenuBuilder(registry: registry, target: self).replaceNewTabItems(in: newTabMenu)
+    }
+
+    /// The new-tab menu opens: the profiles follow the installed distributions. Not
+    /// `menuNeedsUpdate(_:)`, which AppKit may also call while it looks for a key equivalent,
+    /// so that a shortcut never sends a request.
+    public func menuWillOpen(_ menu: NSMenu) {
+        // The menu builder makes this controller the delegate of the new-tab menu only.
+        guard menu.delegate === self else { return }
+        distributions.refresh()
     }
 
     /// Menu items send their command here. Window commands go to the key window; with no

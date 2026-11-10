@@ -1,10 +1,15 @@
 import Foundation
+import MawClient
+import MawCore
+import MawXPC
 import Observation
+import os
 
 /// One installed Linux distribution, as the distributions screen shows it.
 public struct DistributionInfo: Hashable, Sendable, Identifiable {
+    /// The state of the distribution's machine, as the daemon reports it.
     public enum State: String, Hashable, Sendable {
-        case running, stopped
+        case starting, running, stopping, stopped
     }
 
     /// A `key value` row in the details box. `role` picks the color, as in
@@ -59,21 +64,112 @@ public struct DistributionInfo: Hashable, Sendable, Identifiable {
     }
 }
 
-/// Where the distributions screen reads distributions from. The daemon provides them in a
-/// later phase; until then `NoDistributions` is the only implementation in the running app.
+/// Where the profiles and the distributions screen read the installed distributions from.
 @MainActor
 public protocol DistributionProvider: AnyObject, Observable {
+    /// The distributions of the last answer, empty while there is none.
     var distributions: [DistributionInfo] { get }
+    /// Why the last refresh failed, or `nil`.
+    var failure: MawError? { get }
+    /// Asks for the list again. Returns at once; the properties change when the answer
+    /// arrives.
+    func refresh()
 }
 
-/// The provider for this phase: no distributions, so the screen shows its empty state. The app
-/// never shows invented distributions; sample data exists only in previews and tests.
+/// The requests that the app sends the daemon outside a session, so that tests can answer
+/// them.
+public protocol DaemonRequests: AnyObject, Sendable {
+    func listDistributions() async throws(MawError) -> DistributionList
+    func close()
+}
+
+extension DaemonClient: DaemonRequests {}
+
+/// The installed distributions as the daemon reports them, shared by every window's profiles
+/// and distributions screen.
+///
+/// Each refresh connects, sends `listDistributions`, and closes again, because a connection
+/// held open would keep the daemon from its idle exit. It refreshes only when asked to (when
+/// the new-tab menu, the command palette, or the distributions screen opens) and never polls.
+/// It never invents data: while the daemon cannot be reached, the list is empty and `failure`
+/// says why.
 @MainActor
 @Observable
-public final class NoDistributions: DistributionProvider {
-    public let distributions: [DistributionInfo] = []
+public final class DaemonDistributions: DistributionProvider {
+    public typealias Connector = @Sendable () async throws(MawError) -> any DaemonRequests
 
-    public init() {}
+    public private(set) var distributions: [DistributionInfo] = []
+    public private(set) var failure: MawError?
+
+    @ObservationIgnored private let connect: Connector
+    /// The refresh under way. Tests await it.
+    @ObservationIgnored private(set) var pending: Task<Void, Never>?
+    /// Set when a refresh is asked for while one is under way, so that another follows it.
+    @ObservationIgnored private var refreshesAgain = false
+
+    public init(
+        connect: @escaping Connector = { () async throws(MawError) -> any DaemonRequests in
+            try await DaemonClient.connect()
+        }
+    ) {
+        self.connect = connect
+    }
+
+    public func refresh() {
+        guard pending == nil else {
+            refreshesAgain = true
+            return
+        }
+        pending = Task {
+            repeat {
+                refreshesAgain = false
+                apply(await Self.list(connect))
+            } while refreshesAgain
+            pending = nil
+        }
+    }
+
+    /// Connects, asks for the list, and closes again. Never on the main actor, because the
+    /// connection runs `launchctl print` synchronously.
+    @concurrent
+    nonisolated static func list(_ connect: Connector) async -> Result<DistributionList, MawError> {
+        do {
+            let client = try await connect()
+            defer { client.close() }
+            return .success(try await client.listDistributions())
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    private func apply(_ result: Result<DistributionList, MawError>) {
+        switch result {
+        case .success(let list):
+            let made = list.distributions.map { entry in
+                Self.make(entry: entry, isDefault: entry.name == list.defaultDistribution)
+            }
+            if made != distributions { distributions = made }
+            if failure != nil { failure = nil }
+        case .failure(let error):
+            Logger.app.info(
+                "The distributions could not be listed: \(error.description, privacy: .public)")
+            if !distributions.isEmpty { distributions = [] }
+            if failure != error { failure = error }
+        }
+    }
+
+    /// A row of the screen from the daemon's entry: its name, state, and default marker. The
+    /// figures stay empty until phase 11c.
+    static func make(entry: DistributionEntry, isDefault: Bool) -> DistributionInfo {
+        let state: DistributionInfo.State =
+            switch entry.state {
+            case .starting: .starting
+            case .running: .running
+            case .stopping: .stopping
+            case .stopped: .stopped
+            }
+        return DistributionInfo(name: entry.name.rawValue, state: state, isDefault: isDefault)
+    }
 }
 
 /// The host summary on the right of the distributions table's border: memory, CPU cores, and

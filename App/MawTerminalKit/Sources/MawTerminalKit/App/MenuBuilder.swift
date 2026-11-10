@@ -11,6 +11,10 @@ struct MenuBuilder {
         let bar = NSMenu()
         for layout in MenuLayout.standard.menus {
             let menu = NSMenu(title: layout.title)
+            if layout.items.contains(.newTabCommands) {
+                // The target refreshes the profiles when the menu opens.
+                menu.delegate = target as? NSMenuDelegate
+            }
             for item in layout.items {
                 for menuItem in items(for: item) {
                     menu.addItem(menuItem)
@@ -33,16 +37,38 @@ struct MenuBuilder {
         case .command(let id):
             return registry[id].map { [menuItem(for: $0)] } ?? []
         case .newTabCommands:
-            let newTabs = registry.commands.filter { definition in
-                if case .newTab = definition.id { return true }
-                return false
-            }
-            // The default profile, which has ⌘T, comes first.
-            return newTabs.sorted { ($0.shortcut != nil) && ($1.shortcut == nil) }
-                .map(menuItem(for:))
+            return newTabItems()
         case .system(let system):
             return [systemItem(system)]
         }
+    }
+
+    /// The new-tab items, the default profile's, which has ⌘T, first.
+    private func newTabItems() -> [NSMenuItem] {
+        let newTabs = registry.commands.filter { Self.isNewTab($0.id) }
+        return newTabs.sorted { ($0.shortcut != nil) && ($1.shortcut == nil) }
+            .map(menuItem(for:))
+    }
+
+    /// Replaces the new-tab items of `menu` with the registry's, in place, so that a menu that
+    /// is open shows the profiles as soon as they change.
+    func replaceNewTabItems(in menu: NSMenu) {
+        let indices = menu.items.indices.filter { index in
+            (menu.items[index].representedObject as? CommandBox).map { Self.isNewTab($0.id) }
+                ?? false
+        }
+        guard let first = indices.first else { return }
+        for index in indices.reversed() {
+            menu.removeItem(at: index)
+        }
+        for (offset, item) in newTabItems().enumerated() {
+            menu.insertItem(item, at: first + offset)
+        }
+    }
+
+    private static func isNewTab(_ id: CommandID) -> Bool {
+        if case .newTab = id { return true }
+        return false
     }
 
     private func menuItem(for definition: CommandDefinition) -> NSMenuItem {
