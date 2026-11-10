@@ -185,22 +185,12 @@ public final class LinuxSession: TerminalSession {
             rows: UInt16(clamping: size.rows), columns: UInt16(clamping: size.columns))
     }
 
-    /// The status with the signal renumbered from Linux to this Mac, through its name.
+    /// The status with the signal renumbered from Linux to this Mac.
     static func terminationStatus(_ status: ExitStatus) -> TerminationStatus {
         switch status {
-        case .exited(let code):
-            return .exited(code)
+        case .exited(let code): .exited(code)
         case .signaled(let number):
-            guard let name = Signal(linuxNumber: number)?.rawValue.lowercased() else {
-                return .unknown
-            }
-            var names = sys_signame
-            let host = withUnsafeBytes(of: &names) { table in
-                table.bindMemory(to: UnsafePointer<CChar>?.self).firstIndex { entry in
-                    entry.map { String(cString: $0) } == name
-                }
-            }
-            return host.map { .signaled(Int32($0)) } ?? .unknown
+            Signal(linuxNumber: number).map { .signaled($0.localNumber) } ?? .unknown
         }
     }
 
