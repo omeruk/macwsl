@@ -115,6 +115,33 @@ import Testing
         #expect(hints.map(\.placement) == [.leading, .trailing])
     }
 
+    /// With a distribution selected, its actions come first, in the order of
+    /// `Distributions.dc.html`, and each key performs the command whose hint shows it.
+    @Test func distributionsHintsOfferTheSelectedDistributionsActions() {
+        let selected = DistributionInfo(name: "Ubuntu-24.04", state: .running, isDefault: true)
+        let context = CommandContext(
+            selection: .screen(.distributions), tabCount: 2, selectedDistribution: selected)
+        let hints = registry.hints(in: context)
+        #expect(hints.map(\.keys) == ["↩", "s", "d", "i", "esc"])
+        #expect(hints.map(\.label) == ["shell", "stop", "set default", "install…", "back"])
+        // It is the default already, and installing arrives later.
+        #expect(hints.map(\.isEnabled) == [true, true, false, false, true])
+        #expect(hints.map(\.note) == [nil, nil, nil, "arrives in a later version", nil])
+        #expect(hints.map(\.placement) == [.leading, .leading, .leading, .leading, .trailing])
+        let keys: [KeyShortcut.Key] = [.return, .character("s"), .character("d"), .character("i")]
+        #expect(
+            keys.map { registry.command(forKey: $0, on: .distributions) }
+                == hints.dropLast().map(\.command))
+        #expect(registry.command(forKey: .character("x"), on: .distributions) == nil)
+        // The settings screen's keys are its own views', not actions.
+        #expect(registry.command(forKey: .return, on: .settings) == nil)
+        // On a terminal tab, the keys belong to the shell.
+        let terminal = CommandContext(
+            selection: .terminal(paneCount: 1), tabCount: 2, selectedDistribution: selected)
+        #expect(!registry.isEnabled(.stopDistribution, in: terminal))
+        #expect(!registry.isEnabled(.shellInDistribution, in: terminal))
+    }
+
     @Test func settingsHintsListTheNavigationKeys() {
         let context = CommandContext(selection: .screen(.settings), tabCount: 2)
         let hints = registry.hints(in: context)

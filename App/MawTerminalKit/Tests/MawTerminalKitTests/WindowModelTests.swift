@@ -61,6 +61,8 @@ import Testing
     /// Answers every question with `answer`, after `delay`, and records them.
     final class FakeHost: WindowHost {
         var questions: [MawTerminalKit.Confirmation] = []
+        /// The failures reported, each as its message and detail.
+        var failures: [[String]] = []
         var answer = false
         var delay = Duration.zero
         var closed = 0
@@ -71,6 +73,7 @@ import Testing
             return answer
         }
 
+        func report(failure message: String, detail: String) { failures.append([message, detail]) }
         func closeWindow() { closed += 1 }
         func focusTerminal(_ view: NSView) {}
         func openNewWindow() {}

@@ -86,6 +86,18 @@ public struct CommandRegistry: Hashable, Sendable {
                 .openDistributions, title: "open distributions", menuTitle: "Distributions",
                 group: .distro, shortcut: .command("l", .shift), hint: "distros"),
             CommandDefinition(
+                .shellInDistribution, title: "open a shell in the selected distribution",
+                group: .distro, shortcut: KeyShortcut(.return), hint: "shell",
+                scope: .screen(.distributions)),
+            CommandDefinition(
+                .stopDistribution, title: "stop the selected distribution", group: .distro,
+                shortcut: KeyShortcut(.character("s")), hint: "stop",
+                scope: .screen(.distributions)),
+            CommandDefinition(
+                .setDefaultDistribution, title: "make the selected distribution the default",
+                group: .distro, shortcut: KeyShortcut(.character("d")), hint: "set default",
+                scope: .screen(.distributions)),
+            CommandDefinition(
                 .installDistribution, title: "install a distribution…",
                 menuTitle: "Install a Distribution…", group: .distro,
                 shortcut: KeyShortcut(.character("i")), hint: "install…",
@@ -200,6 +212,14 @@ public struct CommandRegistry: Hashable, Sendable {
         case .installDistribution:
             // Installation arrives in phase 05.
             return false
+        case .shellInDistribution:
+            return context.selectedDistribution != nil
+        case .stopDistribution:
+            // A machine that is stopping or has stopped needs no stop.
+            let state = context.selectedDistribution?.state
+            return state == .starting || state == .running
+        case .setDefaultDistribution:
+            return context.selectedDistribution?.isDefault == false
         case .settingsMove, .settingsChange, .settingsOpenList, .settingsSwitchBox:
             return false
         default:
@@ -225,7 +245,9 @@ public struct CommandRegistry: Hashable, Sendable {
     }
 
     /// The hints for the selected tab. Terminal tabs show the main shortcuts, as in
-    /// `Main.dc.html`. Screens replace them with their own actions and `esc back`.
+    /// `Main.dc.html`. Screens replace them with their own actions and `esc back`. The
+    /// distributions screen shows the actions on a distribution, in the order of
+    /// `Distributions.dc.html`, only while one is selected.
     public func hints(in context: CommandContext) -> [Hint] {
         let ids: [CommandID]
         switch context.selection {
@@ -235,7 +257,13 @@ public struct CommandRegistry: Hashable, Sendable {
                     .splitRight, .openDistributions, .commandPalette, .openSettings,
                 ]
         case .screen(.distributions):
-            ids = [.installDistribution, .back]
+            let actions: [CommandID] = [
+                .shellInDistribution, .stopDistribution, .setDefaultDistribution,
+            ]
+            ids =
+                (context.selectedDistribution == nil ? [] : actions) + [
+                    .installDistribution, .back,
+                ]
         case .screen(.settings):
             ids = [.settingsMove, .settingsChange, .settingsOpenList, .settingsSwitchBox, .back]
         }
@@ -247,6 +275,16 @@ public struct CommandRegistry: Hashable, Sendable {
                 note: id == .installDistribution ? "arrives in a later version" : nil,
                 placement: definition.scope == .anyScreen ? .trailing : .leading)
         }
+    }
+
+    /// The action of `screen` that `key` performs when typed there without a modifier, such as
+    /// `s` on the distributions screen. The screen's view asks, so that a key and its hint
+    /// cannot differ.
+    public func command(forKey key: KeyShortcut.Key, on screen: ScreenKind) -> CommandID? {
+        commands.first { definition in
+            definition.kind == .action && definition.scope == .screen(screen)
+                && definition.shortcut == KeyShortcut(key)
+        }?.id
     }
 
     /// The command of ⌘T, which opens the new-tab profile.

@@ -1,4 +1,6 @@
 import AppKit
+import MawClient
+import MawCore
 import Observation
 import os
 
@@ -13,6 +15,8 @@ struct Confirmation {
 @MainActor
 protocol WindowHost: AnyObject {
     func confirm(_ confirmation: Confirmation) async -> Bool
+    /// Says that something the user asked for failed. Returns at once.
+    func report(failure message: String, detail: String)
     func closeWindow()
     func focusTerminal(_ view: NSView)
     func openNewWindow()
@@ -33,6 +37,17 @@ struct PaletteState: Equatable {
     var mode = Mode.commands
     var query = ""
     var selection = 0
+}
+
+/// What the distributions screen shows. The three must not be confused: an empty list says that
+/// nothing is installed, which is false while the daemon has not answered or cannot be asked.
+enum DistributionListing: Equatable {
+    /// The daemon has not answered yet.
+    case waiting
+    /// The daemon could not be asked: maw's message and suggestion, as `maw` prints them.
+    case failed(String)
+    /// The daemon's list, which is empty when nothing is installed.
+    case listed([DistributionInfo])
 }
 
 /// The state and behavior of one window: its tabs, the panes in them, and every command.
@@ -62,6 +77,13 @@ final class WindowModel {
     /// second ⌘W or close is ignored meanwhile.
     @ObservationIgnored private(set) var isAskingToClose = false
     @ObservationIgnored private var isShutDown = false
+    /// The name of the distribution selected on the distributions screen. Kept by name, not
+    /// by row, so that a refresh never moves the selection to another distribution.
+    private var distributionSelection: String?
+    /// The distributions whose stop is under way, so that a second `s` does not ask again.
+    @ObservationIgnored private var stopsUnderWay: Set<String> = []
+    /// The screen's action under way. Tests await it.
+    @ObservationIgnored private(set) var distributionAction: Task<Void, Never>?
 
     /// - Parameter makeSession: Makes a pane's session for a profile. Tests pass fake
     ///   sessions; the app asks the session layer (`Profile.makeSession(localShell:)`).
@@ -146,7 +168,8 @@ final class WindowModel {
         return CommandContext(
             selection: selection, tabCount: tabs.count,
             hasTextSelection: focusedPane?.terminalView.selection.active ?? false,
-            fontSizeIsDefault: fontSizeAdjustment == 0)
+            fontSizeIsDefault: fontSizeAdjustment == 0,
+            selectedDistribution: selectedDistribution)
     }
 
     func isEnabled(_ id: CommandID) -> Bool {
@@ -192,6 +215,21 @@ final class WindowModel {
         case .openDistributions:
             distributions.refresh()
             tabs.openScreen(.distributions)
+        case .shellInDistribution:
+            // By its stored name, so that the tab opens this distribution whatever the default.
+            if let name = selectedDistribution?.name {
+                newTab(profile: .distribution(name))
+                distributions.refresh()
+            }
+        case .stopDistribution:
+            if let name = selectedDistribution?.name { stopDistribution(name) }
+        case .setDefaultDistribution:
+            if let name = selectedDistribution?.name {
+                act(failure: "\(name) could not be made the default distribution.") {
+                    [distributions] () async throws(MawError) in
+                    try await distributions.setDefault(name)
+                }
+            }
         case .installDistribution, .settingsMove, .settingsChange, .settingsOpenList,
             .settingsSwitchBox:
             break
@@ -402,6 +440,74 @@ final class WindowModel {
             title = "maw"
         }
         host?.setWindowTitle(title)
+    }
+
+    // MARK: Distributions
+
+    /// What the distributions screen shows: nothing yet, the reason the daemon could not be
+    /// asked, or its list.
+    var distributionListing: DistributionListing {
+        if let failure = distributions.failure { return .failed(runtimeErrorText(failure)) }
+        return distributions.hasAnswer ? .listed(distributions.distributions) : .waiting
+    }
+
+    /// The selected distribution as the daemon last reported it: the one selected by name,
+    /// or the first one while none is selected or the selected one is no longer listed.
+    var selectedDistribution: DistributionInfo? {
+        let listed = distributions.distributions
+        return listed.first { $0.name == distributionSelection } ?? listed.first
+    }
+
+    func selectDistribution(_ name: String) {
+        distributionSelection = name
+    }
+
+    /// Moves the selection up or down the list, stopping at its ends.
+    func moveDistributionSelection(by offset: Int) {
+        let listed = distributions.distributions
+        guard let current = listed.firstIndex(where: { $0.name == selectedDistribution?.name })
+        else { return }
+        distributionSelection = listed[min(max(current + offset, 0), listed.count - 1)].name
+    }
+
+    /// Stops a distribution. Asks first when sessions are open in it, counting every
+    /// client's as the daemon's status reports them, not only this app's tabs.
+    private func stopDistribution(_ name: String) {
+        guard stopsUnderWay.insert(name).inserted else { return }
+        act(failure: "\(name) could not be stopped.") {
+            [weak self, distributions] () async throws(MawError) in
+            defer { self?.stopsUnderWay.remove(name) }
+            let count = try await distributions.openSessions(in: name)
+            if count > 0 {
+                let sessions = count == 1 ? "1 session is" : "\(count) sessions are"
+                let question = Confirmation(
+                    message: "Stop \(name)?",
+                    detail: "\(sessions) open in it and will be ended.", confirmTitle: "Stop")
+                guard await self?.host?.confirm(question) ?? false else { return }
+            }
+            try await distributions.stop(name)
+        }
+    }
+
+    /// Carries out an action of the distributions screen without holding the window: the
+    /// provider sends its requests off the main actor, and the screen stays in use until the
+    /// answer arrives. Afterwards the list is asked for again, and a failure is reported with
+    /// maw's message and suggestion.
+    private func act(
+        failure message: String, _ action: @escaping @MainActor () async throws(MawError) -> Void
+    ) {
+        distributionAction = Task {
+            do throws(MawError) {
+                try await action()
+            } catch {
+                Logger.app.info(
+                    "\(message, privacy: .public) \(error.description, privacy: .public)")
+                host?.report(
+                    failure: message,
+                    detail: runtimeErrorText(error).trimmingCharacters(in: .newlines))
+            }
+            distributions.refresh()
+        }
     }
 
     // MARK: Confirmations
