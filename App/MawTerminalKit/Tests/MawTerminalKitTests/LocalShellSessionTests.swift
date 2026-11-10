@@ -301,6 +301,31 @@ import Testing
         #expect(await waitUntil(seconds: 5) { !exists(pid) })
     }
 
+    /// A paste that the program does not read fills the terminal's input, and the input thread
+    /// waits for room. Closing ends that wait and closes the input's descriptor too, so that the
+    /// terminal hangs up and the program's next write fails, although it ignores SIGHUP.
+    @Test func closingHangsUpTheTerminalWhileAPasteWaitsForRoom() async throws {
+        let recorder = Recorder()
+        let result = FileManager.default.temporaryDirectory
+            .appending(path: "maw-hang-up-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: result) }
+        let program =
+            #"open(my $f, ">", $ARGV[0]); sleep 2; "#
+            + #"print $f (defined(syswrite(STDOUT, "x")) ? "wrote" : "failed"); close($f)"#
+        let (session, _) = try await startIgnoringSIGHUP(
+            .sh, recorder, then: "exec /usr/bin/perl -e '\(program)' \(result.path)")
+        // Lines that the program never reads, more than the terminal's input holds.
+        session.send(ArraySlice(String(repeating: "echo unread\n", count: 10_000).utf8))
+        try await Task.sleep(for: .milliseconds(300))
+        session.terminate()
+        var written = ""
+        let finished = await waitUntil(seconds: 10) {
+            written = (try? String(contentsOf: result, encoding: .utf8)) ?? ""
+            return !written.isEmpty
+        }
+        #expect(finished && written == "failed", "\(written)")
+    }
+
     @Test func theExitStatusReachesThePane() async throws {
         let pane = PaneController(
             profile: .localShell("/bin/sh"),

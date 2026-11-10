@@ -37,8 +37,11 @@ final class PseudoTerminalProcess: Sendable {
             grantpt(primary) == 0 && unlockpt(primary) == 0
                 && ptsname_r(primary, &name, name.count) == 0
             ? open(name, O_RDWR | O_NOCTTY | O_CLOEXEC) : -1
+        // Non-blocking, so that the input thread can stop while the program reads no input;
+        // the flag belongs to the open file, which the writer's duplicate shares.
         let writer =
             secondary >= 0 && ioctl(secondary, TIOCSWINSZ, &size) == 0
+                && fcntl(primary, F_SETFL, O_NONBLOCK) == 0
             ? fcntl(primary, F_DUPFD_CLOEXEC, 0) : -1
         defer { if secondary >= 0 { close(secondary) } }
         guard writer >= 0 else {
@@ -170,7 +173,7 @@ final class PseudoTerminalProcess: Sendable {
         var buffer = [UInt8](repeating: 0, count: 128 << 10)
         func forward() -> Bool {
             let count = read(primary, &buffer, buffer.count)
-            guard count > 0 else { return count < 0 && errno == EINTR }
+            guard count > 0 else { return count < 0 && (errno == EINTR || errno == EAGAIN) }
             return buffer.withUnsafeBytes { output.write(.init(rebasing: $0.prefix(count))) }
         }
         func closePrimary() {
@@ -207,7 +210,6 @@ final class PseudoTerminalProcess: Sendable {
         }
         // What the program wrote before it exited is still in the terminal.
         if isOpen {
-            _ = fcntl(primary, F_SETFL, O_NONBLOCK)
             for _ in 0..<8 where forward() {}
         }
         closeDescriptors(queueToo: true)
@@ -216,7 +218,8 @@ final class PseudoTerminalProcess: Sendable {
 }
 
 /// Typed keys and pasted text on their way to the terminal. `append` never blocks; a thread of
-/// its own writes them to a duplicate of the primary side, and closes it at the end.
+/// its own writes them to a non-blocking duplicate of the primary side, and closes it at the
+/// end, also while the program reads no input, so that the terminal then hangs up.
 private final class TerminalInput: @unchecked Sendable {
     private let condition = NSCondition()
     private var pending: [UInt8] = []
@@ -254,6 +257,13 @@ private final class TerminalInput: @unchecked Sendable {
             while !bytes.isEmpty {
                 let written = bytes.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
                 if written < 0 && errno == EINTR { continue }
+                if written < 0 && errno == EAGAIN {
+                    // The terminal's input is full: waits for room, and for `finish()`.
+                    var room = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+                    _ = poll(&room, 1, 100)
+                    if condition.withLock({ isFinished }) { return }
+                    continue
+                }
                 guard written > 0 else { return }
                 bytes.removeFirst(written)
             }
