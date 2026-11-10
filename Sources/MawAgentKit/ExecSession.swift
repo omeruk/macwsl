@@ -42,6 +42,9 @@ final class ExecSession {
     private let connection: FrameConnection
     private let child: ChildProcess
     private let logger: Logger
+    /// How `probe` recognizes the session's shell, for `foregroundQuery`.
+    private let shell: ShellIdentity
+    private let probe: ForegroundProbe
 
     /// Input for the process: the host's bytes, then, after `stdinEOF` in terminal mode, the
     /// terminal's end-of-file character.
@@ -56,10 +59,15 @@ final class ExecSession {
     private var killedAfterHangup = false
     private var readBuffer = [UInt8](repeating: 0, count: AgentProtocol.maximumDataChunkSize)
 
-    init(connection: FrameConnection, child: ChildProcess, logger: Logger) {
+    init(
+        connection: FrameConnection, child: ChildProcess, logger: Logger,
+        shell: ShellIdentity = .child, probe: ForegroundProbe = ForegroundProbe()
+    ) {
         self.connection = connection
         self.child = child
         self.logger = logger
+        self.shell = shell
+        self.probe = probe
     }
 
     private var pendingInputCount: Int { pendingInput.count }
@@ -283,9 +291,18 @@ final class ExecSession {
             child.send(signal.localNumber)
         case .resize(let size):
             child.resize(size)
+        case .foregroundQuery(let id):
+            connection.enqueue(.control(.foregroundProgram(id: id, program: foregroundProgram())))
         default:
             throw .unexpectedMessage("\(message.name) is not valid during an exec session")
         }
+    }
+
+    /// The program in the foreground of the session's terminal: none in pipe mode and once
+    /// the process has exited.
+    private func foregroundProgram() -> ForegroundProcess? {
+        guard let terminal = child.terminal, child.exitStatus == nil else { return nil }
+        return probe.foregroundProgram(terminal: terminal.rawValue, child: child.pid, shell: shell)
     }
 
     // MARK: Process streams

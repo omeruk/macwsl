@@ -153,7 +153,7 @@
             guard case .sessionOpened(let info) = reply else {
                 throw .daemonProtocolError(reason: "the reply to openSession is not sessionOpened")
             }
-            guard let descriptor = InterfaceCoding.descriptor(in: object) else {
+            guard let descriptor = try InterfaceCoding.descriptor(in: object) else {
                 throw .daemonProtocolError(reason: "sessionOpened carries no descriptor")
             }
             return DaemonSession(info: info, agentConnection: descriptor)

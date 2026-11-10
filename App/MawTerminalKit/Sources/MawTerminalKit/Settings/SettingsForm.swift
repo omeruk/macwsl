@@ -8,11 +8,10 @@ public enum SettingsPage: String, Hashable, Sendable, CaseIterable {
     public var placeholder: String? {
         switch self {
         case .profiles:
-            "Profiles beyond the local shell arrive in a later version, together with Linux "
-                + "distribution support (roadmap phase 11)."
+            "One profile per installed distribution arrives in a later version (roadmap "
+                + "phase 11b)."
         case .distributions:
-            "Distribution settings arrive in a later version, together with Linux distribution "
-                + "support (roadmap phase 11)."
+            "Distribution settings arrive in a later version (roadmap phase 11)."
         case .appearance, .general, .keyboard:
             nil
         }
@@ -77,8 +76,9 @@ public struct SettingsForm: Sendable {
                     value: "\(Int((settings.backgroundOpacity * 100).rounded()))%", kind: .number),
             ]
         case .general:
-            let names = profiles.map(\.name)
-            let selected = profiles.first { $0.id == settings.defaultProfile }?.name ?? names.first
+            let names = profiles.map(\.paletteName)
+            let selected =
+                profiles.first { $0.id == settings.defaultProfile }?.paletteName ?? names.first
             let shell = settings.localShell ?? ""
             return [
                 choice(.defaultProfile, "default profile", names, selected: selected ?? ""),
@@ -150,7 +150,7 @@ public struct SettingsForm: Sendable {
         case .cursorShape: settings.cursorShape = CursorShape(rawValue: option) ?? .block
         case .defaultProfile:
             settings.defaultProfile =
-                profiles.first { $0.name == option }?.id ?? settings.defaultProfile
+                profiles.first { $0.paletteName == option }?.id ?? settings.defaultProfile
         case .confirmClose: settings.confirmCloseWithRunningProcess = index == 0
         case .confirmQuit: settings.confirmQuitWithRunningProcess = index == 0
         default: break

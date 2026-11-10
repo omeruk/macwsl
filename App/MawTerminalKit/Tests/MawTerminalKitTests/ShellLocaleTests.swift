@@ -77,4 +77,19 @@ import Testing
         #expect(!ShellLocale.isValidCharacterType("en_TR.UTF-8"))
         #expect(!ShellLocale.isValidCharacterType("nonsense"))
     }
+
+    @Test func theInheritedLocaleIsTheFirstValidVariableInPOSIXOrder() {
+        let isValid = available.contains
+        #expect(ShellLocale.inherited([:], isValid: isValid) == nil)
+        #expect(ShellLocale.inherited(["LANG": "de_DE.UTF-8"], isValid: isValid) == "de_DE.UTF-8")
+        #expect(
+            ShellLocale.inherited(
+                ["LC_ALL": "C", "LC_CTYPE": "tr_TR.UTF-8", "LANG": "de_DE.UTF-8"],
+                isValid: isValid) == "C")
+        #expect(
+            ShellLocale.inherited(
+                ["LC_ALL": "en_TR.UTF-8", "LC_CTYPE": "", "LANG": "de_DE.UTF-8"],
+                isValid: isValid) == "de_DE.UTF-8")
+        #expect(ShellLocale.inherited(["LANG": "en_TR.UTF-8"], isValid: isValid) == nil)
+    }
 }

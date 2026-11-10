@@ -478,7 +478,8 @@ extension MawError: LocalizedError {
         case .guestAgentVersionMismatch:
             "The guest files come from another build of maw. Install guest files built from "
                 + "the same commit: fetch them with scripts/fetch-guest.sh, or rebuild them as "
-                + "Guest/README.md describes."
+                + "Guest/README.md describes. The script fetches main's files; for a build of "
+                + "another branch, pass the branch's name: scripts/fetch-guest.sh <branch>."
         case .guestAgentFailed:
             "The console log may contain details."
         case .sessionConnectionEnded(let name):

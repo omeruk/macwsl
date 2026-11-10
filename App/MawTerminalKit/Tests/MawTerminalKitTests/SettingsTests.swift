@@ -100,9 +100,33 @@ import Testing
 
 @Suite struct SettingsMigrationTests {
     @Test func aFileWithoutAVersionIsVersionOne() throws {
-        var json = JSONValue.object(["theme": .string("Dracula")])
+        var json = JSONValue.object(["defaultProfile": .string("local")])
         try SettingsMigration.standard.migrate(&json)
-        #expect(json["version"] == .number(1))
+        #expect(json["version"] == .number(2))
+        #expect(json["defaultProfile"] == .string("default-distribution"))
+    }
+
+    /// Version 1 offered only the local shell, so its new-tab profile moves to the default
+    /// distribution (Q1). Version 2 keeps a deliberate choice of the local shell.
+    @Test func versionOnesLocalShellMovesToTheDefaultDistribution() throws {
+        let one = try SettingsCoding.decode(
+            Data(#"{"version": 1, "defaultProfile": "local", "theme": "Dracula"}"#.utf8))
+        #expect(one.defaultProfile == "default-distribution")
+        #expect(one.theme == "Dracula")
+        let two = try SettingsCoding.decode(
+            Data(#"{"version": 2, "defaultProfile": "local"}"#.utf8))
+        #expect(two.defaultProfile == "local")
+        let unknown = try SettingsCoding.decode(
+            Data(#"{"version": 1, "defaultProfile": "distribution:Debian-13"}"#.utf8))
+        #expect(unknown.defaultProfile == "distribution:Debian-13")
+    }
+
+    @Test func newFilesStartAtTheDefaultDistribution() throws {
+        #expect(Settings().defaultProfile == "default-distribution")
+        let data = try SettingsCoding.encode(Settings())
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        #expect(object?["version"] as? Int == 2)
+        #expect(object?["defaultProfile"] as? String == "default-distribution")
     }
 
     @Test func newerVersionsAreRejected() {

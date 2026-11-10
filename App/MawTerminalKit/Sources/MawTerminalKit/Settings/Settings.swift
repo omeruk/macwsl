@@ -12,7 +12,7 @@ public enum CursorShape: String, Hashable, Sendable, Codable, CaseIterable {
 /// build as far as it can.
 public struct Settings: Hashable, Sendable {
     /// The format version this build writes. `SettingsMigration` upgrades older files.
-    public static let currentVersion = 1
+    public static let currentVersion = 2
 
     public static let fontSizeRange: ClosedRange<Double> = 8...36
     public static let backgroundOpacityRange: ClosedRange<Double> = 0.3...1
@@ -32,7 +32,8 @@ public struct Settings: Hashable, Sendable {
             backgroundOpacity = Self.clamp(backgroundOpacity, to: Self.backgroundOpacityRange)
         }
     }
-    public var defaultProfile = Profile.localShellID
+    /// The profile of a new tab (⌘T): `default-distribution` or `local`.
+    public var defaultProfile = Profile.defaultDistributionID
     /// The local profile's shell. `nil` uses the login shell from the user database.
     public var localShell: String?
     public var showKeyHints = true
@@ -56,6 +57,11 @@ public struct Settings: Hashable, Sendable {
     /// The selected theme, or maw Default if the settings name a theme that does not exist.
     public var selectedTheme: Theme {
         availableThemes.first { $0.name == theme } ?? .mawDefault
+    }
+
+    /// The profiles that new tabs and the settings offer, in the order the menus list them.
+    public var profiles: [Profile] {
+        [.defaultDistribution, localShellProfile]
     }
 
     /// The local shell profile, with the configured shell or the user's login shell.

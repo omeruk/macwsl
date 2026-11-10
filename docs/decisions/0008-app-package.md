@@ -36,9 +36,9 @@ Option 2. `App/MawTerminalKit/Package.swift` defines the `MawTerminalKit` librar
 `MawTerminalKitTests` test target. It pins SwiftTerm to exactly `1.20.0`. The 1.99.x line is
 a preview of SwiftTerm 2.0, with API changes.
 
-- **Dependencies point from the app to the root package, never back.** When a `LinuxSession`
-  needs MacWSL's modules, `MawTerminalKit` will depend on the root package through
-  `.package(path: "../..")`. The root package never depends on anything under `App/`.
+- **Dependencies point from the app to the root package, never back.** The root package never
+  depends on anything under `App/`. Since phase 11b, `MawTerminalKit` depends on the root
+  package for its Linux sessions; see "Amendment: the dependency on the root package".
 - **The package follows the root package's conventions:** Swift 6 language mode, macOS 14,
   swift-testing, `swift format` with the repository's `.swift-format`, and `os.Logger`.
 - **It is macOS only.** Unlike the root package's macOS modules, its sources are not wrapped
@@ -51,3 +51,24 @@ a preview of SwiftTerm 2.0, with API changes.
 - The CI app job installs the Metal Toolchain, and the main job does not.
 - `swift test` at the repository root does not run the app's tests. The README and the CI
   configuration name both commands.
+
+## Amendment: the dependency on the root package (phase 11b)
+
+- Date: 2026-11-09
+
+`App/MawTerminalKit/Package.swift` declares `.package(name: "maw", path: "../..")`, and the
+`MawTerminalKit` target uses the root package's library products `MawClient`, `MawXPC`,
+`MawCore`, and `MawProtocol`, which phase 11b exported for it. The app links no other root
+module.
+
+- **The name.** SwiftPM derives a path dependency's identity from the directory's name, not from
+  the manifest's `name`. With `.package(path: "../..")`, the products would have to be named with
+  `package: "macwsl"`, and a clone into a directory of another name fails with `unknown package
+  'macwsl'`, which was measured. The `name:` form refers to the root package as `maw` wherever
+  it is cloned; a copy in a directory named `other-name` builds.
+- **Resolution.** `App/MawTerminalKit/Package.resolved` also pins swift-argument-parser and
+  swift-log, the root package's dependencies, at the root's versions. The app resolves them but
+  does not link them.
+- **Unchanged:** the root package, its resolved file, and the guest agent's Linux build do not
+  resolve SwiftTerm and do not need the Metal Toolchain. Building or testing `MawTerminalKit`
+  now also builds the root package's client modules, in both `swift build` and `xcodebuild`.

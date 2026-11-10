@@ -17,6 +17,10 @@ let package = Package(
         .executable(name: "maw-agent", targets: ["maw-agent"]),
         .library(name: "MawCore", targets: ["MawCore"]),
         .library(name: "MawProtocol", targets: ["MawProtocol"]),
+        // For the terminal app (App/MawTerminalKit), which opens sessions through the daemon.
+        // MawXPC holds the interface's types, such as DistributionList and SessionEnded.
+        .library(name: "MawXPC", targets: ["MawXPC"]),
+        .library(name: "MawClient", targets: ["MawClient"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.8.2"),
@@ -93,6 +97,13 @@ let package = Package(
 
         // Helpers for the test targets that run processes. Not part of any product.
         .target(name: "MawTestSupport", path: "Tests/MawTestSupport"),
+        // The integration tests' client of the test daemon, which accepts only maw's signing
+        // identifiers; scripts/integration-test.sh signs it. Not part of any product.
+        .executableTarget(
+            name: "maw-integration-probe",
+            dependencies: ["MawClient", "MawCore", "MawProtocol", "MawXPC"],
+            path: "Tests/maw-integration-probe"
+        ),
         .testTarget(name: "MawCoreTests", dependencies: ["MawCore"]),
         .testTarget(
             name: "MawProtocolTests",
@@ -122,6 +133,8 @@ let package = Package(
         ),
         .testTarget(
             name: "MawXPCTests", dependencies: ["MawXPC", "MawCore", "MawProtocol", "CMawSystem"]),
+        .testTarget(
+            name: "MawClientTests", dependencies: ["MawClient", "MawCore", "MawProtocol", "MawXPC"]),
         .testTarget(
             name: "mawTests",
             dependencies: [

@@ -17,6 +17,8 @@ import Testing
         .stdinEOF,
         .signal(.int),
         .resize(TerminalSize(rows: 50, columns: 132)),
+        .foregroundQuery(id: 7),
+        .foregroundQuery(id: UInt32.max),
         .started(pid: 42),
         .exited(.exited(code: 3)),
         .exited(.signaled(signal: 9)),
@@ -26,6 +28,11 @@ import Testing
                 uptimeMilliseconds: 1_234)),
         .shutdownAcknowledged,
         .dialedBack,
+        .foregroundProgram(id: 7, program: nil),
+        .foregroundProgram(id: 7, program: ForegroundProcess(processGroup: 812, name: "sleep")),
+        .foregroundProgram(id: 8, program: ForegroundProcess(processGroup: 812, name: nil)),
+        .foregroundProgram(
+            id: 9, program: ForegroundProcess(processGroup: 1, name: "a (b) c\u{1B}")),
         .error(AgentError(.dialBackFailed, "no source port below 1024 is free")),
         .error(AgentError(.versionMismatch, "mismatch", hostVersion: 1, guestVersion: 2)),
         .error(AgentError(.commandNotFound, "nope: not found")),
@@ -44,6 +51,7 @@ import Testing
             names == [
                 "exec", "info", "shutdown", "stdinEOF", "signal", "resize", "started", "exited",
                 "agentInfo", "shutdownAcknowledged", "error", "dialBack", "dialedBack",
+                "foregroundQuery", "foregroundProgram",
             ])
     }
 
@@ -73,6 +81,17 @@ import Testing
                 == #"{"dialBack":{"nonce":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}"#
         )
         #expect(json(.dialedBack) == #"{"dialedBack":{}}"#)
+        #expect(json(.foregroundQuery(id: 7)) == #"{"foregroundQuery":{"id":7}}"#)
+        #expect(json(.foregroundProgram(id: 7, program: nil)) == #"{"foregroundProgram":{"id":7}}"#)
+        #expect(
+            json(
+                .foregroundProgram(
+                    id: 7, program: ForegroundProcess(processGroup: 812, name: "sleep")))
+                == #"{"foregroundProgram":{"id":7,"name":"sleep","processGroup":812}}"#)
+        #expect(
+            json(
+                .foregroundProgram(id: 7, program: ForegroundProcess(processGroup: 812, name: nil)))
+                == #"{"foregroundProgram":{"id":7,"processGroup":812}}"#)
         #expect(json(.exited(.exited(code: 3))) == #"{"exited":{"code":3}}"#)
         #expect(json(.exited(.signaled(signal: 2))) == #"{"exited":{"signal":2}}"#)
         #expect(
@@ -95,8 +114,9 @@ import Testing
         #expect(request.user == nil && request.locale == nil && request.workingDirectory == nil)
     }
 
-    @Test func speaksVersion3() {
-        #expect(ProtocolVersion.current == 3)
+    /// Version 4 adds `foregroundQuery` and `foregroundProgram`.
+    @Test func speaksVersion4() {
+        #expect(ProtocolVersion.current == 4)
     }
 
     @Test(arguments: [
@@ -126,6 +146,14 @@ import Testing
         #"{"dialBack":{"nonce":"000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"}}"#,
         #"{"dialBack":{"nonce":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1g"}}"#,
         #"{"dialBack":{"nonce":5}}"#,
+        #"{"foregroundQuery":{}}"#,
+        #"{"foregroundQuery":{"id":-1}}"#,
+        #"{"foregroundQuery":{"id":4294967296}}"#,
+        #"{"foregroundProgram":{}}"#,
+        #"{"foregroundProgram":{"name":"sleep"}}"#,
+        #"{"foregroundProgram":{"id":7,"name":"sleep"}}"#,
+        #"{"foregroundProgram":{"id":7,"processGroup":"812"}}"#,
+        #"{"foregroundProgram":{"id":7,"processGroup":812,"name":5}}"#,
         "{\"info\":",
     ])
     func rejectsMalformedJSON(_ text: String) {

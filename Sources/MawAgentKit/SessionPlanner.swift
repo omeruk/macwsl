@@ -48,6 +48,40 @@ struct TerminalOwner: Equatable, Sendable {
     var gid: UInt32
 }
 
+/// How `ForegroundProbe` recognizes a session's shell among the processes on its terminal.
+struct ShellIdentity: Equatable, Sendable {
+    enum Position: Equatable, Sendable {
+        /// The process the agent starts is the shell, or the session's program.
+        case child
+        /// The process the agent starts is `runuser -l`, and the shell is its child, which
+        /// makes a process group of its own.
+        case childOfChild
+    }
+
+    /// The length of a Linux command name, `TASK_COMM_LEN` less its terminating zero.
+    static let commandNameLimit = 15
+
+    var position: Position
+    /// For a login shell, the command name its process has (`/proc/<pid>/comm`): the basename
+    /// of the account's shell, truncated to `commandNameLimit` bytes. A shell process with
+    /// another name has run `exec`, and the probe reports that program. `nil` for sessions
+    /// that are not login shells, which skip the check.
+    var commandName: String?
+
+    static let child = ShellIdentity(position: .child, commandName: nil)
+
+    /// The identity of a login shell whose executable is `shellPath`.
+    static func loginShell(_ shellPath: String, position: Position) -> ShellIdentity {
+        let basename = shellPath.split(separator: "/").last.map(String.init) ?? shellPath
+        return ShellIdentity(position: position, commandName: commandName(basename))
+    }
+
+    /// `name` as the kernel keeps it: at most `commandNameLimit` bytes.
+    static func commandName(_ name: String) -> String {
+        String(decoding: name.utf8.prefix(commandNameLimit), as: UTF8.self)
+    }
+}
+
 /// Exactly what the agent starts for a request.
 struct SpawnPlan: Equatable, Sendable {
     /// The executable, or `nil` to search PATH for `argv[0]`.
@@ -62,6 +96,8 @@ struct SpawnPlan: Equatable, Sendable {
     var waitsForSystemBus: Bool
     /// The pseudo-terminal's owner, when the session runs as another user than the agent's.
     var terminalOwner: TerminalOwner? = nil
+    /// How the foreground probe recognizes the session's shell.
+    var shell: ShellIdentity = .child
 }
 
 /// Turns an exec request into a `SpawnPlan` for the account it runs as.
@@ -140,13 +176,15 @@ enum SessionPlanner {
                 return SpawnPlan(
                     path: runuser, argv: argv, environment: environment,
                     workingDirectory: "/", credentials: nil, waitsForSystemBus: true,
-                    terminalOwner: terminalOwner)
+                    terminalOwner: terminalOwner,
+                    shell: .loginShell(account.shell, position: .childOfChild))
             }
             let shellName = account.shell.split(separator: "/").last.map(String.init) ?? "sh"
             return SpawnPlan(
                 path: account.shell, argv: ["-" + shellName], environment: environment,
                 workingDirectory: workingDirectory, credentials: credentials,
-                waitsForSystemBus: false, terminalOwner: terminalOwner)
+                waitsForSystemBus: false, terminalOwner: terminalOwner,
+                shell: .loginShell(account.shell, position: .child))
         }
     }
 

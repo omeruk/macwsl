@@ -110,10 +110,22 @@
         }
 
         /// A duplicate of the descriptor the message carries, which the caller owns, or `nil`.
-        public static func descriptor(in message: XPCObject) -> OwnedDescriptor? {
+        ///
+        /// The duplicate is closed on exec (`F_DUPFD_CLOEXEC`), so that no program that this
+        /// process starts inherits a session. libxpc's own duplicate had the flag set on macOS
+        /// 27.0.1, but its documentation does not promise that, so it is not relied on.
+        public static func descriptor(in message: XPCObject) throws(MawError) -> OwnedDescriptor? {
             guard message.isDictionary else { return nil }
-            let descriptor = xpc_dictionary_dup_fd(message.raw, descriptorKey)
-            return descriptor >= 0 ? OwnedDescriptor(descriptor) : nil
+            let received = xpc_dictionary_dup_fd(message.raw, descriptorKey)
+            guard received >= 0 else { return nil }
+            let descriptor = duplicateClosingOnExec(received)
+            let code = errno
+            close(received)
+            guard descriptor >= 0 else {
+                throw .guestAgentFailed(
+                    reason: SystemError("fcntl(F_DUPFD_CLOEXEC)", code: code).description)
+            }
+            return OwnedDescriptor(descriptor)
         }
     }
 #endif

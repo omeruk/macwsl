@@ -17,9 +17,11 @@ final class TestAgent: Sendable {
     let powerOffRequests = Counter()
 
     /// `dialBack` opens the connection that a `dialBack` request asks for; by default the
-    /// dial fails, as it does without a host.
+    /// dial fails, as it does without a host. `processDirectory` stands in for `/proc`, which
+    /// macOS does not have.
     init(
         maximumConnections: Int = 64, system: GuestSystem = .testing(),
+        processDirectory: String = "/nonexistent/proc",
         dialBack: @escaping @Sendable () throws(DialBackError) -> OwnedDescriptor = {
             () throws(DialBackError) -> OwnedDescriptor in
             throw .connectFailed(SystemError("connect", code: ECONNREFUSED))
@@ -28,7 +30,8 @@ final class TestAgent: Sendable {
         let requests = powerOffRequests
         server = AgentServer(
             configuration: AgentConfiguration(
-                maximumConnections: maximumConnections, system: system, dialBack: dialBack
+                maximumConnections: maximumConnections, system: system, dialBack: dialBack,
+                processDirectory: processDirectory
             ) {
                 requests.increment()
             })

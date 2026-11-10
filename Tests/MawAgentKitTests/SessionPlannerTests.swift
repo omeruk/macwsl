@@ -135,6 +135,8 @@ import Testing
         #expect(plan.credentials == nil)
         #expect(plan.environment["LANG"] == "tr_TR.UTF-8")
         #expect(plan.waitsForSystemBus)
+        // The shell is runuser's child, and the foreground probe checks its name.
+        #expect(plan.shell == ShellIdentity(position: .childOfChild, commandName: "bash"))
     }
 
     @Test func startsLoginShellsItselfWithoutSystemd() throws {
@@ -145,6 +147,15 @@ import Testing
         #expect(plan.credentials?.uid == 1000)
         #expect(plan.workingDirectory == "/home/ayse")
         #expect(!plan.waitsForSystemBus)
+        #expect(plan.shell == ShellIdentity(position: .child, commandName: "bash"))
+    }
+
+    /// A command's program is the process the agent starts, and its name is not checked.
+    @Test func identifiesTheProgramOfACommandAsTheSessionsOwn() throws {
+        for program in [ExecProgram.argv(["vim"]), .shellCommand("vim")] {
+            let plan = try SessionPlanner.plan(ExecRequest(program: program), system: Self.ubuntu())
+            #expect(plan.shell == .child)
+        }
     }
 
     @Test func startsALoginShellInARequestedDirectoryItself() throws {

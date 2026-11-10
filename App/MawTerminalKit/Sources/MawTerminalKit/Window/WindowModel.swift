@@ -57,10 +57,24 @@ final class WindowModel {
     var trafficLightsWidth: CGFloat = 78
 
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private let makeSession: @MainActor (Profile) -> any TerminalSession
+    /// Set while a close question waits for the sessions' answers or for the user, so that a
+    /// second ⌘W or close is ignored meanwhile.
+    @ObservationIgnored private(set) var isAskingToClose = false
+    @ObservationIgnored private var isShutDown = false
 
-    init(settingsStore: SettingsStore, distributions: any DistributionProvider) {
+    /// - Parameter makeSession: Makes a pane's session for a profile. Tests pass fake
+    ///   sessions; the app asks the session layer (`Profile.makeSession(localShell:)`).
+    init(
+        settingsStore: SettingsStore, distributions: any DistributionProvider,
+        makeSession: (@MainActor (Profile) -> any TerminalSession)? = nil
+    ) {
         self.settingsStore = settingsStore
         self.distributions = distributions
+        self.makeSession =
+            makeSession ?? { [settingsStore] profile in
+                profile.makeSession(localShell: settingsStore.settings.localShellProfile)
+            }
     }
 
     var settings: Settings { settingsStore.settings }
@@ -76,7 +90,7 @@ final class WindowModel {
 
     var chrome: ChromePalette { effectiveSettings.selectedTheme.chromePalette }
 
-    var profiles: [Profile] { [settings.localShellProfile] }
+    var profiles: [Profile] { settings.profiles }
 
     var registry: CommandRegistry {
         CommandRegistry(profiles: profiles, defaultProfile: settings.defaultProfile)
@@ -98,20 +112,15 @@ final class WindowModel {
         }
     }
 
-    /// Ends every session. Called when the window closes.
+    /// Ends every session, which hangs up Linux sessions and ends their leases. Called when
+    /// the window closes.
     func shutDown() {
+        isShutDown = true
         refreshTask?.cancel()
         for pane in panes.values {
             pane.terminate()
         }
         panes.removeAll()
-    }
-
-    /// Programs running in this window other than idle shells, for close and quit
-    /// confirmations.
-    var runningProcessNames: [String] {
-        panes.values.filter { $0.session.hasForegroundProcess }
-            .map { $0.session.foregroundProcessName ?? $0.displayName }
     }
 
     // MARK: Selection
@@ -227,13 +236,27 @@ final class WindowModel {
         tabs.move(id, to: index)
     }
 
-    /// Closes a tab, asking first if a program is running in one of its panes.
+    /// Closes a tab, asking first if a program is running in one of its panes. A pane opened
+    /// in the tab while the question was open makes it ask again, about every pane.
     func closeTab(_ id: TabID) {
         guard let tab = tabs[id] else { return }
         let panesInTab = tab.splitTree?.panes.compactMap { panes[$0] } ?? []
         Task {
-            guard await confirmClosing(panesInTab) else { return }
+            guard await confirmClosing(panesInTab, message: "Close this tab?") else { return }
+            let current = tabs[id]?.splitTree?.panes ?? []
+            guard Set(current).isSubset(of: panesInTab.map(\.id)) else { return closeTab(id) }
             removeTab(id)
+        }
+    }
+
+    /// Closes the window, asking first if a program is running in one of its panes. A pane
+    /// opened while the question was open makes it ask again, about every pane.
+    func requestCloseWindow() {
+        Task {
+            let all = Array(panes.values)
+            guard await confirmClosing(all, message: "Close this window?") else { return }
+            guard Set(panes.keys).isSubset(of: all.map(\.id)) else { return requestCloseWindow() }
+            host?.closeWindow()
         }
     }
 
@@ -253,11 +276,8 @@ final class WindowModel {
     // MARK: Panes
 
     private func makePane(profile: Profile) -> PaneController {
-        let session: any TerminalSession =
-            switch profile.kind {
-            case .localShell(let shell): LocalShellSession(shell: shell)
-            }
-        let pane = PaneController(session: session)
+        let pane = PaneController(profile: profile, session: newSession(of: profile))
+        pane.makeSession = { [weak self] profile in self?.newSession(of: profile) }
         pane.onCleanExit = { [weak self] id in self?.closePane(id, confirm: false) }
         pane.onFocus = { [weak self] id in self?.paneReceivedFocus(id) }
         pane.confirmPaste = { [weak self] text in self?.confirmPaste(text) ?? true }
@@ -267,20 +287,18 @@ final class WindowModel {
         return pane
     }
 
+    /// A session of `profile` as the settings configure it now, so that a new session of the
+    /// local shell's profile follows a change of the shell.
+    private func newSession(of profile: Profile) -> any TerminalSession {
+        makeSession(profiles.first { $0.id == profile.id } ?? profile)
+    }
+
+    /// Splits the focused pane. The new pane opens the profile the focused one was opened with.
     private func split(_ axis: SplitAxis) {
         guard let tab = selectedTab, var tree = tab.splitTree,
             let current = panes[tree.focusedPane]
         else { return }
-        let profile =
-            profiles.first { profile in
-                if case .localShell(let shell) = profile.kind,
-                    let local = current.session as? LocalShellSession
-                {
-                    return shell == local.shell
-                }
-                return false
-            } ?? defaultProfile
-        let pane = makePane(profile: profile)
+        let pane = makePane(profile: current.profile)
         tree.split(tree.focusedPane, axis: axis, newPane: pane.id)
         tabs.update(tab.id, content: .terminal(tree))
         focusSelectedTab()
@@ -298,19 +316,21 @@ final class WindowModel {
     }
 
     func closePane(_ id: PaneID, confirm: Bool) {
-        guard let tab = tabs.tabs.first(where: { $0.splitTree?.contains(id) == true }),
-            var tree = tab.splitTree
-        else { return }
+        guard let pane = panes[id] else { return }
         Task {
-            if confirm, let pane = panes[id] {
-                guard await confirmClosing([pane]) else { return }
+            if confirm {
+                let isLast = tabs.tabs.contains { $0.splitTree?.panes == [id] }
+                let message = isLast ? "Close this tab?" : "Close this pane?"
+                guard await confirmClosing([pane], message: message) else { return }
             }
+            // The tree may have changed while the question was open.
+            guard let tab = tabs.tabs.first(where: { $0.splitTree?.contains(id) == true }),
+                var tree = tab.splitTree
+            else { return }
             if tree.paneCount == 1 {
                 removeTab(tab.id)
                 return
             }
-            // The tree may have changed while the confirmation was open.
-            tree = tabs[tab.id]?.splitTree ?? tree
             tree.close(id)
             panes.removeValue(forKey: id)?.terminate()
             tabs.update(tab.id, content: .terminal(tree))
@@ -378,18 +398,93 @@ final class WindowModel {
 
     // MARK: Confirmations
 
-    private func confirmClosing(_ panes: [PaneController]) async -> Bool {
+    /// How long a session may take to say what runs in its foreground.
+    static let foregroundTimeout = Duration.milliseconds(500)
+
+    /// Asks before closing `panes` if a program runs in one of them. Returns false when the
+    /// user cancels, while another close question is pending, and when the window closed while
+    /// the sessions answered.
+    private func confirmClosing(_ panes: [PaneController], message: String) async -> Bool {
         guard settings.confirmCloseWithRunningProcess else { return true }
-        let running = panes.filter { $0.session.hasForegroundProcess }
-        guard !running.isEmpty else { return true }
-        let names = running.map { $0.session.foregroundProcessName ?? $0.displayName }
-        let many = panes.count > 1
-        return await host?.confirm(
-            Confirmation(
-                message: many ? "Close this tab?" : "Close this pane?",
-                detail: "\(Self.list(names)) \(names.count == 1 ? "is" : "are") still running "
-                    + "and will be ended.",
-                confirmTitle: "Close")) ?? true
+        guard !isAskingToClose else { return false }
+        isAskingToClose = true
+        defer { isAskingToClose = false }
+        let detail = await Self.runningDetail(of: panes)
+        guard !isShutDown else { return false }
+        guard let detail else { return true }
+        let question = Confirmation(message: message, detail: detail, confirmTitle: "Close")
+        return await host?.confirm(question) ?? false
+    }
+
+    /// Whether to quit: asks the sessions of `panes()` at once, then `ask` if a program runs.
+    /// A pane opened while the question was open makes it ask again, about every pane.
+    static func confirmQuitting(
+        _ panes: () -> [PaneController], ask: (Confirmation) async -> Bool
+    ) async -> Bool {
+        var asked: Set<PaneID> = []
+        while case let current = panes(), !Set(current.map(\.id)).isSubset(of: asked) {
+            asked = Set(current.map(\.id))
+            guard let detail = await runningDetail(of: current) else { continue }
+            let question = Confirmation(message: "Quit maw?", detail: detail, confirmTitle: "Quit")
+            guard await ask(question) else { return false }
+        }
+        return true
+    }
+
+    /// What a close or quit question says about `panes`, or `nil` when every shell waits at
+    /// its prompt. Names the programs, and the panes whose session did not answer in time.
+    static func runningDetail(
+        of panes: [PaneController], within timeout: Duration = foregroundTimeout
+    ) async -> String? {
+        let reports = await foregroundReports(of: panes.map(\.session), within: timeout)
+        var programs: [String] = []
+        var silent: [String] = []
+        for (pane, report) in zip(panes, reports) {
+            switch report {
+            case .none: break
+            case .program(let name): programs.append(name ?? "a program in \(pane.displayName)")
+            case .noAnswer: silent.append(pane.displayName)
+            }
+        }
+        var sentences: [String] = []
+        if !programs.isEmpty {
+            let verb = programs.count == 1 ? "is" : "are"
+            sentences.append("\(list(programs)) \(verb) still running and will be ended.")
+        }
+        if !silent.isEmpty {
+            let milliseconds = Int(timeout / .milliseconds(1))
+            sentences.append(
+                "A program may be running in \(list(silent)), which did not answer within "
+                    + "\(milliseconds) ms.")
+        }
+        return sentences.isEmpty ? nil : sentences.joined(separator: " ")
+    }
+
+    /// Asks every session at once what runs in its foreground, with one deadline. A session
+    /// that has not answered by then counts as `noAnswer`. The main actor only awaits.
+    static func foregroundReports(of sessions: [any TerminalSession], within timeout: Duration)
+        async -> [ForegroundReport]
+    {
+        var reports = [ForegroundReport](repeating: .noAnswer, count: sessions.count)
+        guard !sessions.isEmpty else { return reports }
+        let (answers, answer) = AsyncStream<(Int, ForegroundReport)?>.makeStream()
+        for (index, session) in sessions.enumerated() {
+            Task { answer.yield((index, await session.foregroundProgram(within: timeout))) }
+        }
+        let deadline = Task {
+            try? await Task.sleep(for: timeout)
+            answer.yield(nil)
+        }
+        var pending = sessions.count
+        for await next in answers {
+            guard let (index, report) = next else { break }
+            reports[index] = report
+            pending -= 1
+            if pending == 0 { break }
+        }
+        deadline.cancel()
+        answer.finish()
+        return reports
     }
 
     private func confirmPaste(_ text: String) -> Bool {

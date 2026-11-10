@@ -196,8 +196,9 @@ import XPC
         let message = try InterfaceCoding.encode(
             DaemonReply.sessionOpened(SessionInfo(sessionID: 1, machine: .initramfs)),
             descriptor: fds[1])
-        let received = try #require(InterfaceCoding.descriptor(in: message))
+        let received = try #require(try InterfaceCoding.descriptor(in: message))
         #expect(received.rawValue != fds[1], "The message must hold a duplicate.")
+        #expect(fcntl(received.rawValue, F_GETFD) & FD_CLOEXEC != 0)
 
         var byte: UInt8 = 42
         #expect(write(received.rawValue, &byte, 1) == 1)
@@ -208,7 +209,7 @@ import XPC
 
     @Test func hasNoDescriptorUnlessOneWasAdded() throws {
         let message = try InterfaceCoding.encode(DaemonRequest.status)
-        #expect(InterfaceCoding.descriptor(in: message) == nil)
+        #expect(try InterfaceCoding.descriptor(in: message) == nil)
     }
 
     @Test func readsTheLabelFromTheEnvironment() {
@@ -221,10 +222,47 @@ import XPC
 }
 
 @Suite struct PeerRequirementTests {
-    @Test func namesMawsExecutables() {
+    @Test func namesMawsExecutablesAndTheApp() {
         #expect(
             PeerRequirement.codeSigningRequirement
-                == #"identifier "dev.maw.maw" or identifier "dev.maw.mawd""#)
+                == #"identifier "dev.maw.maw" or identifier "dev.maw.mawd" or identifier "dev.maw.app""#
+        )
+    }
+
+    /// The requirement, evaluated as libxpc evaluates it, against copies of a program signed ad
+    /// hoc, as `scripts/sign-dev.sh` and Xcode sign maw's executables and the app.
+    @Test(arguments: [
+        ("dev.maw.maw", true), ("dev.maw.mawd", true), ("dev.maw.app", true),
+        ("dev.maw.app.helper", false), ("dev.maw", false), ("maw-5555", false),
+        ("com.example.app", false),
+    ])
+    func acceptsOnlyMawsIdentifiers(identifier: String, isAccepted: Bool) throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "maw-peer-requirement-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let program = directory.appending(path: "program")
+        try FileManager.default.copyItem(at: URL(filePath: "/usr/bin/true"), to: program)
+        let codesign = Process()
+        codesign.executableURL = URL(filePath: "/usr/bin/codesign")
+        codesign.arguments = [
+            "--force", "--sign", "-", "--identifier", identifier,
+            program.path(percentEncoded: false),
+        ]
+        codesign.standardError = FileHandle.nullDevice
+        try codesign.run()
+        codesign.waitUntilExit()
+        try #require(codesign.terminationStatus == 0)
+
+        var code: SecStaticCode?
+        try #require(SecStaticCodeCreateWithPath(program as CFURL, [], &code) == errSecSuccess)
+        var requirement: SecRequirement?
+        try #require(
+            SecRequirementCreateWithString(
+                PeerRequirement.codeSigningRequirement as CFString, [], &requirement)
+                == errSecSuccess)
+        let status = SecStaticCodeCheckValidity(try #require(code), [], requirement)
+        #expect(status == (isAccepted ? errSecSuccess : errSecCSReqFailed), "\(status)")
     }
 
     @Test func rejectsATestRunnerThatIsNotSignedAsMaw() {

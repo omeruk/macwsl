@@ -101,18 +101,21 @@ import Testing
         #expect(error.recoverySuggestion?.contains("mawd install") == true)
     }
 
-    /// A host and guest files from different builds fail at the handshake with the fix named.
+    /// A host and guest files from different builds fail at the handshake with the fix named:
+    /// the command that installs matching guest files, with the branch for a branch's build.
     @Test func namesTheGuestFilesFixOnAProtocolMismatch() {
-        let error = MawError.guestAgentVersionMismatch(host: 3, guest: 2)
+        let error = MawError.guestAgentVersionMismatch(host: 4, guest: 3)
         #expect(
             error.errorDescription
-                == "The guest agent speaks protocol version 2, but this build of maw speaks "
-                + "version 3.")
+                == "The guest agent speaks protocol version 3, but this build of maw speaks "
+                + "version 4.")
         #expect(
             error.recoverySuggestion
                 == "The guest files come from another build of maw. Install guest files built "
                 + "from the same commit: fetch them with scripts/fetch-guest.sh, or rebuild them "
-                + "as Guest/README.md describes.")
+                + "as Guest/README.md describes. The script fetches main's files; for a build of "
+                + "another branch, pass the branch's name: scripts/fetch-guest.sh <branch>.")
+        #expect(error.recoverySuggestion?.contains("scripts/fetch-guest.sh") == true)
     }
 
     @Test func namesTheCauseAndAFixOfAFailedDialBack() {

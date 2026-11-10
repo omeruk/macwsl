@@ -11,6 +11,7 @@ import Testing
 /// | Variable | Content |
 /// |----------|---------|
 /// | `MAW_PATH` | the signed `maw` |
+/// | `MAW_INTEGRATION_PROBE_PATH` | the signed integration probe (`Tests/maw-integration-probe`) |
 /// | `MAW_DAEMON_LABEL` | the test daemon's label, never `dev.maw.mawd` |
 /// | `MAW_TEST_LOG_DIRECTORY` | the test daemon's logs |
 /// | `MAW_TEST_MACHINE_IDLE_TIMEOUT` | its machine idle timeout, in seconds |

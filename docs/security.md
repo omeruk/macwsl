@@ -24,12 +24,20 @@ reviews it as a whole.
 
 `mawd` serves the Mach service `dev.maw.mawd` ([docs/daemon.md](daemon.md)). It accepts a
 connection only if the peer runs as the same user (`xpc_connection_get_euid`) and satisfies the
-code signing requirement `identifier "dev.maw.maw" or identifier "dev.maw.mawd"`.
+code signing requirement
+`identifier "dev.maw.maw" or identifier "dev.maw.mawd" or identifier "dev.maw.app"`.
 
 - With ad-hoc signing, any local program can claim those identifiers, so the requirement guards
   against stale or unrelated builds, not against malicious programs. Until phase 13 signs with a
   Developer ID, **the same-user check is the boundary**: only processes of the user who already
   controls maw can use it.
+- Since phase 11b, the terminal app (`dev.maw.app`) is a client as well. It sends the requests
+  that `maw` sends and receives a session's descriptor in the same way, so accepting it gives
+  that user nothing that `maw` does not already give them. Each of its Linux sessions holds a
+  connection of its own, and with it a lease, only while the session is open. The descriptor
+  is duplicated with close-on-exec set (`InterfaceCoding.descriptor(in:)`), so that no program
+  that the client starts afterwards inherits the session; the app also starts its local shells
+  so that they inherit no descriptor (see "Descriptors in the terminal app").
 - Since interface version 3, a client can also change the default distribution
   (`setDefault`) and stop one distribution (`terminate`). Any process of the same user could
   already do both: `shutdown` stops every distribution, and `state.json`, which records the
@@ -42,6 +50,36 @@ code signing requirement `identifier "dev.maw.maw" or identifier "dev.maw.mawd"`
   Bodies are JSON decoded into fixed types; a malformed body fails the request.
 - Phase 13 adds the team identifier to the requirement, which only Apple's certificate chain
   can satisfy.
+
+### Descriptors in the terminal app
+
+The terminal app holds a descriptor for each Linux session (the guest connection that the
+daemon hands over) and starts local shells, which run any program the user types. A descriptor
+that a local shell inherited would let any of those programs read and write a Linux session's
+terminal, so the app keeps them apart in two layers:
+
+- **Local shells start through a fork that closes every other descriptor**
+  (`maw_terminal_spawn` in `App/MawTerminalKit/Sources/CMawTerminal/terminal.c`). The child,
+  which makes only async-signal-safe calls, resets every signal to its default, starts a
+  session, makes the pseudo-terminal its controlling terminal and its standard input, output,
+  and error, closes every other descriptor below the soft `RLIMIT_NOFILE` (capped at
+  `kern.maxfilesperproc`, above which the kernel hands out none), clears its signal mask, and
+  executes the shell. The shell therefore receives no descriptor of the app, whether or not it
+  is marked close-on-exec, including those that frameworks create, and no window remains between
+  a descriptor's creation and its flag. The terminal's own primary side is opened with
+  `O_CLOEXEC` as well. Phase 11a started local shells with `forkpty`, which closed nothing.
+  - `posix_spawn` with `POSIX_SPAWN_CLOEXEC_DEFAULT` would close the descriptors as well, but it
+    cannot give the shell a controlling terminal on macOS: it runs its file actions before
+    `POSIX_SPAWN_SETSID`, so the child opens the terminal before it leads a session, and it
+    cannot call `TIOCSCTTY`. Without a controlling terminal, zsh has no job control, and Ctrl-C
+    and Ctrl-Z reach no program. This was measured during phase 11b.
+- **A received descriptor is duplicated with close-on-exec set**
+  (`InterfaceCoding.descriptor(in:)`, `F_DUPFD_CLOEXEC`), as a second defence. libxpc set
+  `FD_CLOEXEC` on the descriptors it returned on macOS 27.0.1, but does not document it.
+
+A unit test opens a pipe without close-on-exec in the test process, starts a local shell
+(`/bin/sh` and `/bin/zsh`), and checks through `/dev/fd` that the shell does not have it; with
+`forkpty`, the same test fails.
 
 ### The guest agent over vsock
 
@@ -68,6 +106,11 @@ as root without a password. An integration test now checks that a guest process 
 - The host treats the guest as untrusted input: frames are length-checked before they are
   read, payloads are limited to 1 MiB, buffers are bounded in both directions, and a malformed
   frame closes only its connection. The fuzz test sends 10,000 random frames.
+- The foreground program's name (protocol version 4), which the terminal app shows when it asks
+  before closing a Linux tab, is guest input as well. The host keeps at most 64 bytes of whole
+  Unicode scalars and replaces control, format, and separator characters with U+FFFD
+  (`ForegroundAnswer.displayableName`), so that a name cannot move the cursor, change colors,
+  or reorder the text of a dialog.
 
 ### The dial-back listener
 
