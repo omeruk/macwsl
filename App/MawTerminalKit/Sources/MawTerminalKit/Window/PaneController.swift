@@ -166,10 +166,16 @@ extension PaneController: TerminalSessionDelegate {
 
     func session(
         _ session: any TerminalSession, didFallBackTo replacement: any TerminalSession,
-        notice: String
+        notice: String?
     ) {
-        write(notice, style: "2")
+        if let notice {
+            write(notice, style: "2")
+        }
         replaceSession(with: replacement)
+    }
+
+    func session(_ session: any TerminalSession, didNotice notice: String) {
+        write(notice, style: "2")
     }
 
     func session(_ session: any TerminalSession, didTerminateWith status: TerminationStatus) {

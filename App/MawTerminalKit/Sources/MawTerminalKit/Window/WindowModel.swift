@@ -293,12 +293,14 @@ final class WindowModel {
         makeSession(profiles.first { $0.id == profile.id } ?? profile)
     }
 
-    /// Splits the focused pane. The new pane opens the profile the focused one was opened with.
+    /// Splits the focused pane. The new pane opens what its session names, such as the
+    /// distribution that a Linux session opened, or else the profile the focused pane was
+    /// opened with.
     private func split(_ axis: SplitAxis) {
         guard let tab = selectedTab, var tree = tab.splitTree,
             let current = panes[tree.focusedPane]
         else { return }
-        let pane = makePane(profile: current.profile)
+        let pane = makePane(profile: current.session.splitProfile ?? current.profile)
         tree.split(tree.focusedPane, axis: axis, newPane: pane.id)
         tabs.update(tab.id, content: .terminal(tree))
         focusSelectedTab()

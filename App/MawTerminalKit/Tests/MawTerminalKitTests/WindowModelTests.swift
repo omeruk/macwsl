@@ -361,7 +361,12 @@ import Testing
     func linuxWindow(ending: DistributionSession.Ending?) -> (WindowModel, FakeHost) {
         let (model, host, _) = window(make: { profile in
             guard profile.kind == .defaultDistribution else { return FakeSession("zsh") }
-            return LinuxSession(name: nil, fallback: { FakeSession("zsh") }) { terminal, output in
+            let fallback: LinuxSession.FallBack = { error in
+                LinuxSession.fallbackNotice(for: error).map {
+                    LinuxSession.Fallback(replacement: FakeSession("zsh"), notice: $0)
+                }
+            }
+            return LinuxSession(name: nil, fallback: fallback) { terminal, output in
                 let core = LinuxSessionTests.FakeCore(
                     terminal: terminal, output: output,
                     name: ending == nil ? "Ubuntu-24.04" : nil, foreground: .none)

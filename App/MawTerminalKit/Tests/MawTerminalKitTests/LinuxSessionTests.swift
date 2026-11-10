@@ -85,12 +85,16 @@ import os
         var directories: [String] = []
         var status: TerminationStatus?
         var failure: TerminalSessionError?
-        var fallback: (replacement: any TerminalSession, notice: String)?
+        var fallback: (replacement: any TerminalSession, notice: String?)?
+        var notices: [String] = []
+        /// What arrived, in order: `notice` or `output`.
+        var events: [String] = []
         /// Called with the bytes received so far, before each slice is added.
         var onSlice: ((Int) -> Void)?
 
         func session(_ session: any TerminalSession, didReceive bytes: ArraySlice<UInt8>) {
             onSlice?(output.count)
+            if events.last != "output" { events.append("output") }
             largestSlice = max(largestSlice, bytes.count)
             output += bytes
         }
@@ -113,9 +117,14 @@ import os
 
         func session(
             _ session: any TerminalSession, didFallBackTo replacement: any TerminalSession,
-            notice: String
+            notice: String?
         ) {
             fallback = (replacement, notice)
+        }
+
+        func session(_ session: any TerminalSession, didNotice notice: String) {
+            notices.append(notice)
+            events.append("notice")
         }
     }
 
@@ -123,7 +132,7 @@ import os
     func start(
         _ recorder: Recorder, name: String? = "Ubuntu-24.04", opens: String? = "Ubuntu-24.04",
         foreground: ForegroundAnswer = .none, size: MawTerminalKit.TerminalSize = .default,
-        fallback: (@MainActor () -> any TerminalSession)? = nil
+        fallback: LinuxSession.FallBack? = nil
     ) throws -> (LinuxSession, FakeCore) {
         var core: FakeCore?
         let session = LinuxSession(name: name, fallback: fallback) { terminal, output in
@@ -267,8 +276,10 @@ import os
     /// with `error` before it opens.
     func failBeforeOpening(with error: MawError) async throws -> (LinuxSession, Recorder) {
         let recorder = Recorder()
-        let (session, core) = try start(recorder, name: nil, opens: nil) {
-            LocalShellSession(shell: "/bin/sh")
+        let (session, core) = try start(recorder, name: nil, opens: nil) { error in
+            LinuxSession.fallbackNotice(for: error).map {
+                LinuxSession.Fallback(replacement: LocalShellSession(shell: "/bin/sh"), notice: $0)
+            }
         }
         core.end(.failed(error))
         #expect(await waitUntil(seconds: 5) { recorder.failure != nil || recorder.fallback != nil })
@@ -383,6 +394,175 @@ import os
         #expect(LinuxSession.terminationStatus(.signaled(signal: 9)) == .signaled(SIGKILL))
         #expect(LinuxSession.terminationStatus(.signaled(signal: 64)) == .unknown)
         #expect(LinuxSession.terminationStatus(.exited(code: 2)) == .exited(2))
+    }
+}
+
+/// The cores of the session layer's Linux sessions on a fake daemon: the default distribution
+/// opens `defaultName`, a named one the installed spelling of its name, and every opening fails
+/// with `failure` if it is set. A core that opens writes `output` at once.
+@MainActor
+final class FakeCores {
+    var installed: [String] = []
+    var defaultName: String?
+    var failure: MawError?
+    var output = Array("prompt$ ".utf8)
+    /// The distributions asked for, `nil` for the default one.
+    private(set) var opened: [String?] = []
+
+    var cores: Profile.LinuxCores {
+        { [self] distribution in
+            opened.append(distribution?.rawValue)
+            let result: Result<String, MawError>
+            if let failure {
+                result = .failure(failure)
+            } else if let distribution {
+                let stored = installed.first {
+                    $0.lowercased() == distribution.rawValue.lowercased()
+                }
+                result =
+                    stored.map { .success($0) } ?? .failure(.distributionNotInstalled(distribution))
+            } else {
+                result = defaultName.map { .success($0) } ?? .failure(.noDistributionInstalled)
+            }
+            let output = self.output
+            return { terminal, handler in
+                let core = LinuxSessionTests.FakeCore(
+                    terminal: terminal, output: handler, name: try? result.get(), foreground: .none)
+                switch result {
+                case .success: core.emit([output])
+                case .failure(let error): core.end(.failed(error))
+                }
+                return core
+            }
+        }
+    }
+}
+
+extension LinuxSessionTests {
+    // MARK: Profiles through the session layer
+
+    /// Starts a session of `profile` from the session layer on `cores`.
+    func open(_ profile: Profile, on cores: FakeCores) throws -> (any TerminalSession, Recorder) {
+        let recorder = Recorder()
+        let session = profile.makeSession(localShell: .localShell("/bin/sh"), cores: cores.cores)
+        session.delegate = recorder
+        try session.start(size: .default)
+        return (session, recorder)
+    }
+
+    /// Waits for `recorder`'s fallback and starts it, as the pane does.
+    func startFallback(of recorder: Recorder) async throws -> (any TerminalSession, Recorder) {
+        #expect(await waitUntil(seconds: 5) { recorder.fallback != nil })
+        let replacement = try #require(recorder.fallback?.replacement)
+        let next = Recorder()
+        replacement.delegate = next
+        try replacement.start(size: .default)
+        return (replacement, next)
+    }
+
+    @Test(arguments: ["Debian-13", "debian-13"])
+    func aNamedDistributionOpensByItsStoredName(name: String) async throws {
+        let cores = FakeCores()
+        cores.installed = ["Debian-13", "Ubuntu-24.04"]
+        cores.defaultName = "Ubuntu-24.04"
+        let (session, recorder) = try open(.distribution(name), on: cores)
+        #expect(session.displayName == name)
+        #expect(await waitUntil(seconds: 5) { recorder.text == "prompt$ " })
+        #expect(session.displayName == "Debian-13")
+        #expect(session.splitProfile == .distribution("Debian-13"))
+        #expect(recorder.notices.isEmpty && recorder.fallback == nil)
+        #expect(cores.opened == [name])
+        session.terminate()
+    }
+
+    /// Q2: the default distribution opens instead, and says so before its output.
+    @Test func aDistributionThatIsNotInstalledOpensTheDefaultAndSaysSo() async throws {
+        let cores = FakeCores()
+        cores.installed = ["Ubuntu-24.04"]
+        cores.defaultName = "Ubuntu-24.04"
+        let (session, recorder) = try open(.distribution("Debian-13"), on: cores)
+        let (replacement, next) = try await startFallback(of: recorder)
+        #expect(recorder.fallback?.notice == nil && recorder.failure == nil)
+        #expect(!session.isRunning)
+        #expect(replacement is LinuxSession)
+        #expect(await waitUntil(seconds: 5) { next.text == "prompt$ " })
+        #expect(
+            next.notices == [
+                "Debian-13 is not installed. This tab opened Ubuntu-24.04, the default "
+                    + "distribution.\n"
+            ])
+        #expect(next.events == ["notice", "output"])
+        #expect(replacement.displayName == "Ubuntu-24.04")
+        #expect(replacement.splitProfile == .distribution("Ubuntu-24.04"))
+        #expect(cores.opened == ["Debian-13", nil])
+        replacement.terminate()
+    }
+
+    /// Then as for the default distribution: with nothing installed, the local shell.
+    @Test func withNothingInstalledANamedTabEndsInTheLocalShell() async throws {
+        let cores = FakeCores()
+        // The sessions' tasks hold them weakly, as a pane does not.
+        let (session, recorder) = try open(.distribution("Debian-13"), on: cores)
+        let (replacement, next) = try await startFallback(of: recorder)
+        #expect(await waitUntil(seconds: 5) { next.fallback != nil })
+        withExtendedLifetime((session, replacement)) {}
+        #expect(next.fallback?.replacement is LocalShellSession)
+        #expect(
+            next.fallback?.notice
+                == "No Linux distribution is installed, so this tab opened the local shell.\n")
+        #expect(next.notices.isEmpty)
+        #expect(cores.opened == ["Debian-13", nil])
+    }
+
+    @Test func withoutTheDaemonANamedTabOpensTheLocalShellWithMawsMessage() async throws {
+        let cores = FakeCores()
+        cores.failure = .daemonNotInstalled(label: "dev.maw.mawd")
+        let (session, recorder) = try open(.distribution("Debian-13"), on: cores)
+        #expect(await waitUntil(seconds: 5) { recorder.fallback != nil })
+        withExtendedLifetime(session) {}
+        #expect(recorder.fallback?.replacement is LocalShellSession)
+        #expect(
+            recorder.fallback?.notice?.hasPrefix("maw: The maw daemon is not installed") == true)
+        #expect(cores.opened == ["Debian-13"])
+    }
+
+    /// Every other failure shows the error in a pane named for the distribution, never the
+    /// local shell and never the default distribution.
+    @Test(arguments: [
+        MawError.daemonUnreachable(reason: "the connection was invalidated"),
+        .daemonConnectionLost(during: "openSession"),
+        .clientSignatureRejected(identifier: "dev.maw.app"),
+        .vmStartFailed(reason: "the configuration is invalid"),
+    ])
+    func everyOtherFailureOfANamedTabShowsTheError(error: MawError) async throws {
+        let cores = FakeCores()
+        cores.failure = error
+        let (session, recorder) = try open(.distribution("Debian-13"), on: cores)
+        #expect(await waitUntil(seconds: 5) { recorder.failure != nil })
+        #expect(recorder.fallback == nil)
+        #expect(session.displayName == "Debian-13")
+        #expect(session.splitProfile == nil)
+        #expect(
+            recorder.failure
+                == .failed(
+                    message: error.description, suggestion: LinuxSession.suggestion(for: error)))
+        #expect(cores.opened == ["Debian-13"])
+    }
+
+    /// A name that is not valid cannot be installed, so it opens the default distribution with
+    /// the same notice rather than falling back without a word.
+    @Test func anInvalidNameOpensTheDefaultAndSaysSo() async throws {
+        let cores = FakeCores()
+        cores.defaultName = "Ubuntu-24.04"
+        let (session, recorder) = try open(.distribution("Debian 13"), on: cores)
+        #expect(await waitUntil(seconds: 5) { recorder.text == "prompt$ " })
+        #expect(
+            recorder.notices == [
+                "Debian 13 is not installed. This tab opened Ubuntu-24.04, the default "
+                    + "distribution.\n"
+            ])
+        #expect(cores.opened == [nil])
+        session.terminate()
     }
 }
 
