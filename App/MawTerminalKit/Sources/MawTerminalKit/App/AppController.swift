@@ -74,14 +74,16 @@ public final class AppController: NSObject, NSApplicationDelegate, NSMenuItemVal
         guard !isAskingToQuit else { return .terminateCancel }
         isAskingToQuit = true
         Task {
-            let quit = await WindowModel.confirmQuitting(panes) { question in
-                let alert = NSAlert()
-                alert.messageText = question.message
-                alert.informativeText = question.detail
-                alert.addButton(withTitle: question.confirmTitle)
-                alert.addButton(withTitle: "Cancel")
-                return alert.runModal() == .alertFirstButtonReturn
-            }
+            let quit = await WindowModel.confirmQuitting(
+                { windows.flatMap(\.model.panes.values) },
+                ask: { question in
+                    let alert = NSAlert()
+                    alert.messageText = question.message
+                    alert.informativeText = question.detail
+                    alert.addButton(withTitle: question.confirmTitle)
+                    alert.addButton(withTitle: "Cancel")
+                    return alert.runModal() == .alertFirstButtonReturn
+                })
             isAskingToQuit = false
             NSApp.reply(toApplicationShouldTerminate: quit)
         }

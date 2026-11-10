@@ -229,6 +229,43 @@ import Testing
         #expect(host.questions.count == 1)
     }
 
+    /// The question covers the panes that existed when it was asked; a pane opened meanwhile
+    /// makes the window ask again, about every pane, before it closes.
+    @Test func aPaneOpenedWhileTheWindowAsksIsAskedAboutBeforeClosing() async {
+        let (model, host, _) = window()
+        defer { model.shutDown() }
+        focused(model)?.answer = .now(.program(name: "top"))
+        host.delay = .milliseconds(300)
+        host.answer = true
+        model.requestCloseWindow()
+        #expect(await waitUntil(seconds: 5) { host.questions.count == 1 })
+        model.perform(.newTab(profile: Profile.localShellID))
+        focused(model)?.answer = .now(.program(name: "vim"))
+        #expect(await waitUntil(seconds: 5) { host.closed == 1 })
+        #expect(host.questions.count == 2)
+        #expect(host.questions.last?.detail.contains("vim") == true)
+    }
+
+    @Test func aPaneSplitWhileTheTabAsksIsAskedAboutBeforeClosing() async {
+        let (model, host, _) = window()
+        defer { model.shutDown() }
+        model.perform(.newTab(profile: Profile.localShellID))
+        guard let tab = model.tabs.selectedID else {
+            Issue.record("no tab is selected")
+            return
+        }
+        focused(model)?.answer = .now(.program(name: "top"))
+        host.delay = .milliseconds(300)
+        host.answer = true
+        model.closeTab(tab)
+        #expect(await waitUntil(seconds: 5) { host.questions.count == 1 })
+        model.perform(.splitRight)
+        focused(model)?.answer = .now(.program(name: "vim"))
+        #expect(await waitUntil(seconds: 5) { model.tabs.count == 1 })
+        #expect(host.questions.count == 2)
+        #expect(host.questions.last?.detail.contains("vim") == true)
+    }
+
     @Test func withTheQuestionTurnedOffNothingIsAsked() async {
         let (model, host, _) = window { $0.confirmCloseWithRunningProcess = false }
         defer { model.shutDown() }
@@ -251,15 +288,41 @@ import Testing
                             name: "sleep")))),
         ]
         var questions: [MawTerminalKit.Confirmation] = []
-        let quit = await WindowModel.confirmQuitting(panes) { question in
-            questions.append(question)
-            return false
-        }
+        let quit = await WindowModel.confirmQuitting(
+            { panes },
+            ask: { question in
+                questions.append(question)
+                return false
+            })
         #expect(!quit)
         #expect(questions.map(\.message) == ["Quit maw?"])
         #expect(questions.first?.detail == "sleep is still running and will be ended.")
         let idle = [PaneController(profile: .localShell("/bin/sh"), session: FakeSession("zsh"))]
-        #expect(await WindowModel.confirmQuitting(idle) { _ in false })
+        #expect(await WindowModel.confirmQuitting({ idle }, ask: { _ in false }))
+    }
+
+    @Test func aPaneOpenedWhileQuittingAsksIsAskedAboutBeforeQuitting() async {
+        var panes = [
+            PaneController(
+                profile: .localShell("/bin/sh"),
+                session: FakeSession("zsh", answer: .now(.program(name: "top"))))
+        ]
+        var questions: [MawTerminalKit.Confirmation] = []
+        let quit = await WindowModel.confirmQuitting(
+            { panes },
+            ask: { question in
+                questions.append(question)
+                if questions.count == 1 {
+                    panes.append(
+                        PaneController(
+                            profile: .localShell("/bin/sh"),
+                            session: FakeSession("zsh", answer: .now(.program(name: "vim")))))
+                }
+                return true
+            })
+        #expect(quit)
+        #expect(questions.count == 2)
+        #expect(questions.last?.detail == "top and vim are still running and will be ended.")
     }
 
     // MARK: Profiles

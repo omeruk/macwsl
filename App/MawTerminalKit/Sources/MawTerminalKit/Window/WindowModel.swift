@@ -236,21 +236,26 @@ final class WindowModel {
         tabs.move(id, to: index)
     }
 
-    /// Closes a tab, asking first if a program is running in one of its panes.
+    /// Closes a tab, asking first if a program is running in one of its panes. A pane opened
+    /// in the tab while the question was open makes it ask again, about every pane.
     func closeTab(_ id: TabID) {
         guard let tab = tabs[id] else { return }
         let panesInTab = tab.splitTree?.panes.compactMap { panes[$0] } ?? []
         Task {
             guard await confirmClosing(panesInTab, message: "Close this tab?") else { return }
+            let current = tabs[id]?.splitTree?.panes ?? []
+            guard Set(current).isSubset(of: panesInTab.map(\.id)) else { return closeTab(id) }
             removeTab(id)
         }
     }
 
-    /// Closes the window, asking first if a program is running in one of its panes.
+    /// Closes the window, asking first if a program is running in one of its panes. A pane
+    /// opened while the question was open makes it ask again, about every pane.
     func requestCloseWindow() {
         Task {
             let all = Array(panes.values)
             guard await confirmClosing(all, message: "Close this window?") else { return }
+            guard Set(panes.keys).isSubset(of: all.map(\.id)) else { return requestCloseWindow() }
             host?.closeWindow()
         }
     }
@@ -411,12 +416,19 @@ final class WindowModel {
         return await host?.confirm(question) ?? false
     }
 
-    /// Whether to quit: asks the sessions of `panes` at once, then `ask` if a program runs.
+    /// Whether to quit: asks the sessions of `panes()` at once, then `ask` if a program runs.
+    /// A pane opened while the question was open makes it ask again, about every pane.
     static func confirmQuitting(
-        _ panes: [PaneController], ask: (Confirmation) async -> Bool
+        _ panes: () -> [PaneController], ask: (Confirmation) async -> Bool
     ) async -> Bool {
-        guard let detail = await runningDetail(of: panes) else { return true }
-        return await ask(Confirmation(message: "Quit maw?", detail: detail, confirmTitle: "Quit"))
+        var asked: Set<PaneID> = []
+        while case let current = panes(), !Set(current.map(\.id)).isSubset(of: asked) {
+            asked = Set(current.map(\.id))
+            guard let detail = await runningDetail(of: current) else { continue }
+            let question = Confirmation(message: "Quit maw?", detail: detail, confirmTitle: "Quit")
+            guard await ask(question) else { return false }
+        }
+        return true
     }
 
     /// What a close or quit question says about `panes`, or `nil` when every shell waits at
