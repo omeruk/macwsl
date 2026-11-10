@@ -299,6 +299,20 @@ items are the second half, which a second pull request delivers
     `App/MawTerminalKit/Sources/MawTerminalKit/Session/PseudoTerminalProcess.swift`; pull
     request #25, code review.
   - **Phase:** 12b, a shared type in `MawClient` that takes the write as a closure.
+- **The terminal view draws output at about 25 MB/s.**
+  - **Seen:** `head -c 1000000000 /dev/zero | base64`, 1.35 GB of output, takes about 53 s in
+    a tab of the optimized app, and about 7 minutes by the rate of an unoptimized build such as
+    Xcode's Debug configuration. The app stays responsive and its memory bounded throughout,
+    because output is read only as fast as the view consumes it.
+  - **Evidence:** Pull request #25, "Speed targets" (2026-11-10, a restarted, idle Mac on AC
+    power): medians of 5 runs of 53.0 s in a Linux tab and 53.7 s in a local tab, about 25.5
+    and 25.2 MB/s; in an unoptimized build, 100 MB of input (135 MB of output) took 41.8 s and
+    41.5 s, about 3.2 MB/s. The Linux path itself carries 1.3 GB into `cat > /dev/null` at
+    262 MB/s in the same integration run, and local and Linux tabs run at the same rate, so the
+    limit is in the terminal view's parsing and drawing, not in the Linux path. Where the time
+    goes inside the view has not been profiled.
+  - **Phase:** 12b. Profile the terminal view's parsing and drawing with Instruments during a
+    flood, and reduce the work per byte where the profile shows it.
 
 ## Phase 13: Packaging and release
 
