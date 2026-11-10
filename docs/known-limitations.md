@@ -78,42 +78,15 @@ Pull request #25 delivers the first half of phase 11b, Linux tabs in the termina
 items are the second half, which a second pull request delivers
 (`prompts/11b-linux-sessions.md`).
 
-- **The new-tab menu and the command palette offer no profile per installed distribution.**
-  - **Seen:** They offer the default distribution and the local shell only. A tab in another
-    distribution needs `maw --set-default` first, or `maw -d <name>` in a terminal.
-  - **Evidence:** `App/MawTerminalKit/Sources/MawTerminalKit/Model/Profile.swift`, which has
-    the two profiles; pull request #25, "Summary".
-  - **Phase:** 11b, second pull request: one profile per installed distribution, from
-    `listDistributions`, refreshed when the menu, the palette, or the screen opens.
-- **The new-tab setting cannot name a distribution.**
-  - **Seen:** The settings form offers "default distribution" and the local shell, and says
-    that one profile per installed distribution arrives in a later version. A setting that
-    names a distribution that is no longer installed, and the one-line notice of its fallback,
-    therefore cannot arise yet.
-  - **Evidence:** `App/MawTerminalKit/Sources/MawTerminalKit/Settings/SettingsForm.swift:11`;
-    settings version 2 (`Settings.currentVersion`) accepts `default-distribution` and `local`.
-  - **Phase:** 11b, second pull request: `distribution:<name>` values in settings version 2,
-    with the fallback to the default distribution and its notice.
-- **The distributions screen lists no distribution.**
-  - **Seen:** The screen asks the daemon for nothing. It shows no distribution, state, or
-    default marker; it has no action to open a tab, set the default, or stop a distribution;
-    and it does not report an unreachable daemon. Its empty state says that the list arrives
-    in a later version.
-  - **Evidence:** `App/MawTerminalKit/Sources/MawTerminalKit/Views/DistributionsScreen.swift:65`;
-    `NoDistributions` is still the screen's provider (`AppController.init`).
-  - **Phase:** 11b, second pull request: a provider backed by the daemon, the four states,
-    the actions, and the stop confirmation from `status`.
-- **A split of a Linux pane opens the default distribution, not the pane's distribution.**
-  - **Seen:** A split opens the profile its pane was opened with. For a pane of the default
-    distribution, the daemon resolves that profile again when the split opens, so after
-    `maw --set-default` the split opens the new default rather than the distribution that the
-    pane runs.
-  - **Evidence:** `WindowModel.split` in
-    `App/MawTerminalKit/Sources/MawTerminalKit/Window/WindowModel.swift`;
-    `Session/Profile+Session.swift`.
-  - **Phase:** 11b, second pull request: a split opens the distribution that the pane's
-    session opened, by its stored name (`SessionInfo.machine`), once named distribution
-    profiles exist.
+- **The distributions screen has no actions and no unreachable state.**
+  - **Seen:** The screen lists the distributions that the daemon reports, with their state
+    and the default marker, and asks again when it opens. It has no action to open a tab, set
+    the default, or stop a distribution; it does not report an unreachable daemon; and with no
+    distribution installed its empty state still says that the list arrives in a later version.
+  - **Evidence:** `App/MawTerminalKit/Sources/MawTerminalKit/Views/DistributionsScreen.swift`;
+    `DaemonDistributions.failure` is kept but not shown.
+  - **Phase:** 11b, second pull request, part B-b: the empty and unreachable states, the
+    actions, and the stop confirmation from `status`.
 - **`README.md` does not describe Linux tabs.**
   - **Seen:** "Running the terminal app" describes building and running the app, but not
     that ⌘T opens the default distribution, the fallback to the local shell, the errors in the
