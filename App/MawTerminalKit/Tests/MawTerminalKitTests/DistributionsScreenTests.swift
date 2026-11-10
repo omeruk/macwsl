@@ -206,7 +206,6 @@ import Testing
         daemon.install(["Debian-13", "Ubuntu-24.04"])
         let (model, _, provider, asked) = await screen(daemon)
         model.selectDistribution("Ubuntu-24.04")
-        let lists = daemon.record.withLock { $0.lists }
         #expect(model.registry.command(forKey: .return, on: .distributions) == shell)
         await perform(shell, in: model, provider)
         // Not the default distribution's profile, which would follow a change of the default.
@@ -214,11 +213,85 @@ import Testing
         #expect(model.focusedPane?.profile == .distribution("Ubuntu-24.04"))
         #expect(model.selectedTab?.screen == nil)
         #expect(model.focusedPane?.displayName == "Ubuntu-24.04")
-        #expect(daemon.record.withLock { $0.lists } == lists + 1)
         #expect(daemon.record.withLock { $0.requests }.isEmpty)
         // Back on the screen, the same distribution is selected.
         model.perform(.openDistributions)
         #expect(model.selectedDistribution?.name == "Ubuntu-24.04")
+    }
+
+    /// The machine starts with the tab's session, after ↩ has returned, so a list read at once
+    /// would still say stopped. The list is read when the session's first output shows that
+    /// it runs, and not for later output.
+    @Test func aTabOpenedFromTheScreenRefreshesOnceItsSessionHasStarted() async throws {
+        let daemon = FakeDaemonClient()
+        daemon.install(["Ubuntu-24.04"])
+        let (model, _, provider, _) = await screen(daemon)
+        let lists = daemon.record.withLock { $0.lists }
+        await perform(shell, in: model, provider)
+        #expect(daemon.record.withLock { $0.lists } == lists)
+        #expect(model.selectedDistribution?.state == .stopped)
+
+        // The session opens, which starts the machine, and the shell prints its prompt.
+        daemon.install(["Ubuntu-24.04"], states: [.running])
+        let session = try #require(model.focusedPane?.session)
+        session.delegate?.session(session, didReceive: ArraySlice("$ ".utf8))
+        await provider.pending?.value
+        #expect(daemon.record.withLock { $0.lists } == lists + 1)
+        #expect(model.selectedDistribution?.state == .running)
+        session.delegate?.session(session, didReceive: ArraySlice("ls\r\n".utf8))
+        await provider.pending?.value
+        #expect(daemon.record.withLock { $0.lists } == lists + 1)
+    }
+
+    /// Every way to the screen reads the list, not only its first opening: ⌘⇧L, a click on
+    /// its tab, its number, the next and the previous tab, and the closing of the tab in
+    /// front of it. Nothing is read while the screen stays selected or another tab is.
+    @Test func theListIsReadWheneverTheScreenBecomesTheSelectedTab() async throws {
+        let daemon = FakeDaemonClient()
+        daemon.install(["Ubuntu-24.04"])
+        let (model, _, provider, _) = await screen(daemon)
+        let terminal = try #require(model.tabs.tabs.first { $0.screen == nil }?.id)
+        let screenTab = try #require(model.tabs.tabs.first { $0.screen == .distributions }?.id)
+        #expect(model.tabs.tabs.map(\.id) == [terminal, screenTab])
+
+        let ways: [(String, @MainActor (WindowModel) -> Void)] = [
+            ("⌘⇧L", { $0.perform(.openDistributions) }),
+            ("a click on its tab", { $0.select(screenTab) }),
+            ("⌘2", { $0.perform(.selectTab(2)) }),
+            ("the next tab", { $0.perform(.nextTab) }),
+            ("the previous tab", { $0.perform(.previousTab) }),
+        ]
+        var running = false
+        for (name, way) in ways {
+            // On another tab, the machine's state changes, and nothing is read.
+            model.select(terminal)
+            running.toggle()
+            daemon.install(["Ubuntu-24.04"], states: [running ? .running : .stopped])
+            await provider.pending?.value
+            let lists = daemon.record.withLock { $0.lists }
+            try? await Task.sleep(for: .milliseconds(50))
+            #expect(daemon.record.withLock { $0.lists } == lists, "\(name)")
+
+            way(model)
+            #expect(model.selectedTab?.screen == .distributions, "\(name)")
+            await provider.pending?.value
+            #expect(daemon.record.withLock { $0.lists } == lists + 1, "\(name)")
+            #expect(
+                model.selectedDistribution?.state == (running ? .running : .stopped), "\(name)")
+        }
+
+        // A tab opened from the screen closes: the screen behind it is selected again.
+        await perform(shell, in: model, provider)
+        let opened = try #require(model.focusedPane?.id)
+        daemon.install(["Ubuntu-24.04"], states: [.stopping])
+        let lists = daemon.record.withLock { $0.lists }
+        model.select(terminal)
+        model.closePane(opened, confirm: false)
+        #expect(await waitUntil(seconds: 5) { model.tabs.count == 2 })
+        model.select(screenTab)
+        await provider.pending?.value
+        #expect(daemon.record.withLock { $0.lists } == lists + 1)
+        #expect(model.selectedDistribution?.state == .stopping)
     }
 
     @Test func dMakesTheSelectedDistributionTheDefaultAndRefreshes() async {

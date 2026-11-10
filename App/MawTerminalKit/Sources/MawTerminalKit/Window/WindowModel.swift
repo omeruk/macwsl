@@ -58,7 +58,15 @@ final class WindowModel {
     let distributions: any DistributionProvider
     @ObservationIgnored weak var host: (any WindowHost)?
 
-    private(set) var tabs = TabList()
+    private(set) var tabs = TabList() {
+        didSet {
+            // The distributions screen has become the selected tab, by whatever way: its
+            // list may be as old as the last time it was shown.
+            if tabs.selectedTab?.screen == .distributions, tabs.selectedID != oldValue.selectedID {
+                distributions.refresh()
+            }
+        }
+    }
     private(set) var panes: [PaneID: PaneController] = [:]
     var palette: PaletteState?
     /// ⌘+ and ⌘- change the font size of this window only, as in Terminal and Windows Terminal.
@@ -213,13 +221,17 @@ final class WindowModel {
         case .equalizePanes:
             updateSelectedTree { $0.equalize() }
         case .openDistributions:
-            distributions.refresh()
+            // Selecting the screen asks for the list; on the screen, ⌘⇧L asks again.
+            if selectedTab?.screen == .distributions { distributions.refresh() }
             tabs.openScreen(.distributions)
         case .shellInDistribution:
             // By its stored name, so that the tab opens this distribution whatever the default.
             if let name = selectedDistribution?.name {
-                newTab(profile: .distribution(name))
-                distributions.refresh()
+                // The machine starts with the session, after this returns: the list is asked
+                // for once the session's first output shows that it runs.
+                newTab(profile: .distribution(name)).onSessionStarted = { [distributions] in
+                    distributions.refresh()
+                }
             }
         case .stopDistribution:
             if let name = selectedDistribution?.name { stopDistribution(name) }
@@ -264,10 +276,12 @@ final class WindowModel {
 
     // MARK: Tabs
 
-    func newTab(profile: Profile) {
+    @discardableResult
+    func newTab(profile: Profile) -> PaneController {
         let pane = makePane(profile: profile)
         tabs.append(Tab(content: .terminal(SplitTree(pane: pane.id))))
         focusSelectedTab()
+        return pane
     }
 
     func select(_ id: TabID) {
