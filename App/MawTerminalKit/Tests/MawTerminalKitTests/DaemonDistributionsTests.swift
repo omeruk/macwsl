@@ -8,7 +8,8 @@ import os
 
 @testable import MawTerminalKit
 
-/// A daemon that answers `listDistributions` as the test sets it, and records each connection.
+/// A daemon that answers `listDistributions` as the test sets it, carries out the screen's
+/// requests on that list, and records each connection and request.
 final class FakeDaemonClient: DaemonRequests, @unchecked Sendable {
     struct Record {
         var connects = 0
@@ -16,6 +17,8 @@ final class FakeDaemonClient: DaemonRequests, @unchecked Sendable {
         var closes = 0
         /// Connections made on the main thread, which must not happen.
         var connectsOnMain = 0
+        /// Every request other than a list, in order, such as `terminate Ubuntu-24.04`.
+        var requests: [String] = []
     }
 
     let record = OSAllocatedUnfairLock(initialState: Record())
@@ -25,17 +28,28 @@ final class FakeDaemonClient: DaemonRequests, @unchecked Sendable {
         initialState: .success(DistributionList(distributions: [], defaultDistribution: nil)))
     /// How long each answer takes.
     let delay = OSAllocatedUnfairLock(initialState: Duration.zero)
+    /// The sessions open in each distribution's machine, as `status` reports them.
+    let sessions = OSAllocatedUnfairLock<[String: Int]>(initialState: [:])
+    /// What a request throws instead of being carried out, by its name: `status`,
+    /// `setDefault`, or `terminate`.
+    let requestFailures = OSAllocatedUnfairLock<[String: MawError]>(initialState: [:])
+    /// While set, a machine that is asked to stop stays stopping.
+    let holdsStops = OSAllocatedUnfairLock(initialState: false)
 
-    /// Installed distributions, all stopped, with the first as the default.
-    func install(_ names: [String], states: [DistributionState] = []) {
+    /// Installed distributions, stopped unless `states` says otherwise, with `defaultName` or
+    /// else the first as the default.
+    func install(
+        _ names: [String], states: [DistributionState] = [], default defaultName: String? = nil
+    ) {
         let entries = names.enumerated().map { index, name in
             DistributionEntry(
                 name: try! DistroName(name),
                 state: states.indices.contains(index) ? states[index] : .stopped)
         }
+        let defaultDistribution = defaultName.map { try! DistroName($0) } ?? entries.first?.name
         answer.withLock {
             $0 = .success(
-                DistributionList(distributions: entries, defaultDistribution: entries.first?.name))
+                DistributionList(distributions: entries, defaultDistribution: defaultDistribution))
         }
     }
 
@@ -44,6 +58,59 @@ final class FakeDaemonClient: DaemonRequests, @unchecked Sendable {
         let delay = self.delay.withLock { $0 }
         if delay > .zero { try? await Task.sleep(for: delay) }
         return try answer.withLock { $0 }.get()
+    }
+
+    func status() async throws(MawError) -> DaemonStatus {
+        try received("status", "")
+        let machines = sessions.withLock { $0 }.sorted { $0.key < $1.key }.map { name, count in
+            MachineStatus(
+                machine: .distribution(try! DistroName(name)), state: .running,
+                uptimeMilliseconds: 1000, cpuCount: 2, memoryBytes: 1 << 30, sessionCount: count)
+        }
+        return DaemonStatus(
+            daemon: DaemonInfo(version: "test", processID: 1, interfaceVersion: 1),
+            uptimeMilliseconds: 1000, canRunVirtualMachines: true, machines: machines)
+    }
+
+    func setDefault(_ name: DistroName) async throws(MawError) -> DistroName {
+        try received("setDefault", name.rawValue)
+        answer.withLock {
+            guard case .success(var list) = $0 else { return }
+            list.defaultDistribution = name
+            $0 = .success(list)
+        }
+        return name
+    }
+
+    /// The machine is stopping from the request on, and stopped once `holdsStops` is clear.
+    func terminate(_ name: DistroName) async throws(MawError) -> TerminateSummary {
+        try received("terminate", name.rawValue)
+        let wasRunning = setState(of: name, to: .stopping) != .stopped
+        while holdsStops.withLock({ $0 }) {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        setState(of: name, to: .stopped)
+        let ended = sessions.withLock { $0.removeValue(forKey: name.rawValue) ?? 0 }
+        return TerminateSummary(wasRunning: wasRunning, endedSessions: ended)
+    }
+
+    private func received(_ request: String, _ name: String) throws(MawError) {
+        record.withLock { $0.requests.append(name.isEmpty ? request : "\(request) \(name)") }
+        if let failure = requestFailures.withLock({ $0[request] }) { throw failure }
+    }
+
+    /// Sets a listed distribution's state, and returns the one it had. A stopped one stays so.
+    @discardableResult
+    private func setState(of name: DistroName, to state: DistributionState) -> DistributionState {
+        answer.withLock {
+            guard case .success(var list) = $0,
+                let index = list.distributions.firstIndex(where: { $0.name == name })
+            else { return .stopped }
+            let previous = list.distributions[index].state
+            if previous != .stopped { list.distributions[index].state = state }
+            $0 = .success(list)
+            return previous
+        }
     }
 
     func close() {
