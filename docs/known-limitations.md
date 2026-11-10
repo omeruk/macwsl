@@ -78,21 +78,24 @@ Pull request #25 delivers the first half of phase 11b, Linux tabs in the termina
 items are the second half, which a second pull request delivers
 (`prompts/11b-linux-sessions.md`).
 
-- **The distributions screen has no actions and no unreachable state.**
-  - **Seen:** The screen lists the distributions that the daemon reports, with their state
-    and the default marker, and asks again when it opens. It has no action to open a tab, set
-    the default, or stop a distribution; it does not report an unreachable daemon; and with no
-    distribution installed its empty state still says that the list arrives in a later version.
-  - **Evidence:** `App/MawTerminalKit/Sources/MawTerminalKit/Views/DistributionsScreen.swift`;
-    `DaemonDistributions.failure` is kept but not shown.
-  - **Phase:** 11b, second pull request, part B-b: the empty and unreachable states, the
-    actions, and the stop confirmation from `status`.
 - **`README.md` does not describe Linux tabs.**
   - **Seen:** "Running the terminal app" describes building and running the app, but not
     that ⌘T opens the default distribution, the fallback to the local shell, the errors in the
     pane, the new-session offer, or the close confirmations.
   - **Evidence:** `README.md`, "Running the terminal app".
   - **Phase:** 11b, second pull request, together with the profiles and the screen.
+
+## Phase 11c: Live figures on the distributions screen
+
+- **The distributions screen shows no figures, details box, or memory chart.**
+  - **Seen:** The MEMORY, CPU, DISK, UPTIME, and KERNEL cells of every distribution are empty,
+    and the details box and the memory chart do not appear. The screen shows the name, the
+    state, and the default marker, which is all that `listDistributions` reports.
+  - **Evidence:** `DaemonDistributions.make(entry:isDefault:)` in
+    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift` sets only
+    those three; `DistributionsContent` shows the two boxes once a distribution has details or
+    a memory history.
+  - **Phase:** 11c, which fills the fields of `DistributionInfo` from the daemon.
 
 ## Phase 12: Configuration and lifecycle
 
@@ -223,6 +226,14 @@ items are the second half, which a second pull request delivers
     `MawIntegration.remove` in `Tests/mawdTests/MawIntegration.swift` uses `maw --terminate`.
     Pull request #22, "Known limitations and follow-up work".
   - **Phase:** 12b. Stop only the installed test distribution, with `maw --terminate <name>`.
+- **A tab ended by the distributions screen's stop names `maw --terminate` as the reason.**
+  - **Seen:** After `s` on the distributions screen stops a distribution, each of its tabs
+    shows "The virtual machine 'Ubuntu-24.04' stopped:" followed by "maw --terminate was
+    run.", although the user ran no command.
+  - **Evidence:** `DaemonService.terminateReason` in
+    `Sources/MawDaemonKit/DaemonService.swift`; the `terminate` request carries no reason of
+    its client.
+  - **Phase:** 12b: the reason names what stopped the machine, such as the terminal app.
 - **`HandshakeTests.exchangesMatchingVersions()` times out in CI.**
   - **Seen:** The test fails with "timed out waiting for the protocol version" when it exceeds
     its 5-second deadline. Each failure passed on a single re-run of the job, without a change,
@@ -333,6 +344,12 @@ items are the second half, which a second pull request delivers
     `MawCore` names a step of `maw` (`LinuxSession.suggestion(for:)`), so each such error has
     two suggestions to keep in step. The same `fix/` branch can give `MawError`'s suggestions
     the context in which they are shown, `maw` or the app, so that `MawCore` holds both.
+  - **Related:** The distributions screen shows maw's own suggestion for every error, as
+    `maw` prints it (`runtimeErrorText`), in its table when the daemon cannot be asked and in
+    the alert of an action that failed. For `clientSignatureRejected` and
+    `daemonVersionMismatch` it therefore names `scripts/sign-dev.sh` and `mawd install` rather
+    than the app's build, and for `launchctlTimedOut` "Run the command again", where the
+    screen's retry is ⌘⇧L or the key of the action. The same `fix/` branch can word these.
 - **Linux tabs show no working directory.**
   - **Seen:** A Linux tab's label and the key hint bar show the distribution's name without
     the working directory that a local tab shows. The app takes a Linux session's directory

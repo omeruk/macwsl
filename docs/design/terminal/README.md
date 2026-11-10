@@ -94,14 +94,25 @@ line, or a block of reverse video.
 - The table box title is `distributions (<count>)`. The right side of the border shows the
   host summary: memory, CPU cores, and the macOS version.
 - Columns: marker, NAME, STATE, MEMORY, CPU, DISK, UPTIME, KERNEL. The default distribution
-  has a `*` marker in `accent`. Running is `status.ok`, stopped is `text.muted`, numbers use
-  the theme's magenta slot, and KERNEL uses `text.muted`.
+  has a `*` marker in `accent`. Running is `status.ok`, stopped is `text.muted`, starting and
+  stopping use the theme's yellow slot, numbers use the theme's magenta slot, and KERNEL uses
+  `text.muted`. A figure that the daemon has not reported is an empty cell.
 - Below the table, a details box for the selected distribution and a memory box with a bar
-  chart of the last 60 seconds in the theme's blue slot.
+  chart of the last 60 seconds in the theme's blue slot. They appear once the distribution
+  has data for them.
+- **Actions.** With a distribution selected, the hint bar shows `↩ shell`, `s stop`,
+  `d set default`, and `i install…`, then `esc back` at the right end. An action that does
+  not apply to the selected distribution, such as `s` on a stopped one or `d` on the default,
+  is drawn in `line.strong`, as is `i install…` with its note `arrives in a later version`.
+  ↑ and ↓ move the selection, which stays on its distribution when the list changes.
 - **Empty state.** With no distributions, the table shows its header and a single line in
   `text.muted`: `no distributions installed`. The details and memory boxes are not shown.
   The hint bar shows `i install…` in `line.strong` with the note `arrives in a later
   version`, and `esc back`.
+- **Unreachable state.** When the daemon cannot be asked, the table shows its header and, in
+  place of the rows, maw's message and suggestion as `maw` prints them, in the theme's red
+  slot. The box title shows no count, and the hint bar is that of the empty state. Until the
+  daemon has answered for the first time, the table shows only its header.
 
 ### Settings
 
