@@ -15,8 +15,10 @@ import os
 /// another writes the input, so that typed keys never wait behind output.
 final class PseudoTerminalProcess: Sendable {
     let pid: pid_t
-    /// The primary side and the kqueue, or -1 once the reading thread has closed them.
-    private let descriptors: OSAllocatedUnfairLock<(primary: Int32, queue: Int32)>
+    /// The primary side and the kqueue, or -1 once the reading thread has closed them, and
+    /// whether the child has been reaped, after which its process ID may belong to another
+    /// process.
+    private let descriptors: OSAllocatedUnfairLock<(primary: Int32, queue: Int32, isReaped: Bool)>
     private let input: TerminalInput
 
     init(
@@ -69,7 +71,7 @@ final class PseudoTerminalProcess: Sendable {
             throw Self.failure(Self.describe(step, executable: executable), code: code)
         }
         self.pid = pid
-        descriptors = OSAllocatedUnfairLock(initialState: (primary, queue))
+        descriptors = OSAllocatedUnfairLock(initialState: (primary, queue, false))
         input = TerminalInput(descriptor: writer)
         let input = input
         Thread.detachNewThread { input.run() }
@@ -128,9 +130,10 @@ final class PseudoTerminalProcess: Sendable {
     /// Ends the terminal, as closing a terminal window does: SIGHUP to the program, and the
     /// terminal hung up. The process is still reaped, and the pump receives its status.
     func hangUp() {
-        kill(pid, SIGHUP)
         input.finish()
-        descriptors.withLock { descriptors in
+        descriptors.withLock { [pid] descriptors in
+            // Until it is reaped, the child keeps its process ID, even after it has exited.
+            if !descriptors.isReaped { kill(pid, SIGHUP) }
             guard descriptors.queue >= 0 else { return }
             Self.watch(descriptors.queue, 0, EVFILT_USER, fflags: UInt32(NOTE_TRIGGER))
         }
@@ -192,8 +195,16 @@ final class PseudoTerminalProcess: Sendable {
                 exited = true
             }
         }
-        var status: Int32 = 0
-        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+        // Waits for the exit without reaping, then reaps under the lock, so that `hangUp()`
+        // never signals a process ID that the system may have given to another process.
+        var info = siginfo_t()
+        while waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) < 0 && errno == EINTR {}
+        let status = descriptors.withLock { [pid] descriptors in
+            descriptors.isReaped = true
+            var status: Int32 = 0
+            while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+            return status
+        }
         // What the program wrote before it exited is still in the terminal.
         if isOpen {
             _ = fcntl(primary, F_SETFL, O_NONBLOCK)
