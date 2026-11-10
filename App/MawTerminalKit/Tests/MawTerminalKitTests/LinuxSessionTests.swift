@@ -3,6 +3,7 @@ import Foundation
 import MawClient
 import MawCore
 import MawProtocol
+import Observation
 import Testing
 import os
 
@@ -217,6 +218,24 @@ import os
         let (unopened, _) = try start(recorder, name: nil, opens: nil)
         try await Task.sleep(for: .milliseconds(100))
         #expect(unopened.displayName == "linux")
+    }
+
+    /// Views read the name through the pane, and follow it from `linux` to the stored name.
+    @Test func viewsFollowTheNameOnceTheSessionOpens() async throws {
+        let session = LinuxSession(name: nil) { terminal, output in
+            FakeCore(terminal: terminal, output: output, name: "Debian-13", foreground: .none)
+        }
+        let pane = PaneController(profile: .defaultDistribution, session: session)
+        let changed = OSAllocatedUnfairLock(initialState: false)
+        withObservationTracking {
+            _ = pane.displayName
+        } onChange: {
+            changed.withLock { $0 = true }
+        }
+        try session.start(size: .default)
+        #expect(await waitUntil(seconds: 5) { changed.withLock { $0 } })
+        #expect(pane.displayName == "Debian-13")
+        session.terminate()
     }
 
     @Test func inputAndResizesReachTheCore() throws {

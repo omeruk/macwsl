@@ -3,6 +3,7 @@ import Foundation
 import MawClient
 import MawCore
 import MawProtocol
+import Observation
 import os
 
 /// What `LinuxSession` needs from the core of a Linux session, `DistributionSession`, so that
@@ -30,7 +31,10 @@ extension DistributionSession: LinuxSessionCore {
 /// `terminate()` hangs up the guest's shell, which receives SIGHUP, and releases the lease.
 /// Output reaches the delegate through an `OutputPump`, which blocks the core's reading thread
 /// while it is full, so a flood slows the guest instead of the user interface.
-@MainActor
+///
+/// It is observable, so that views that show `displayName` follow it from `linux` to the
+/// distribution's name once the default distribution has opened.
+@MainActor @Observable
 public final class LinuxSession: TerminalSession {
     typealias Ending = DistributionSession.Ending
     typealias MakeCore =
@@ -38,17 +42,17 @@ public final class LinuxSession: TerminalSession {
         any LinuxSessionCore
 
     public let id = UUID()
-    public weak var delegate: (any TerminalSessionDelegate)?
-    public private(set) var isRunning = false
+    @ObservationIgnored public weak var delegate: (any TerminalSessionDelegate)?
+    @ObservationIgnored public private(set) var isRunning = false
     /// The distribution's stored name, or `linux` while the default one has not opened yet.
     public private(set) var displayName: String
 
-    private let makeCore: MakeCore
-    private let fallback: (@MainActor () -> any TerminalSession)?
-    private var core: (any LinuxSessionCore)?
-    private var pump: OutputPump<Ending>?
-    private var size = TerminalSize.default
-    private var tracker = WorkingDirectoryTracker()
+    @ObservationIgnored private let makeCore: MakeCore
+    @ObservationIgnored private let fallback: (@MainActor () -> any TerminalSession)?
+    @ObservationIgnored private var core: (any LinuxSessionCore)?
+    @ObservationIgnored private var pump: OutputPump<Ending>?
+    @ObservationIgnored private var size = TerminalSize.default
+    @ObservationIgnored private var tracker = WorkingDirectoryTracker()
 
     /// - Parameters:
     ///   - distribution: The distribution, or `nil` for the default one, which the daemon
