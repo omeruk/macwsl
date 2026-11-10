@@ -72,6 +72,55 @@ from `main`.
     this item; the decision record lists the measurements.
   - **Phase:** 08, together with DNS under VPNs.
 
+## Phase 11b, second pull request: Distribution profiles and the distributions screen
+
+Pull request #25 delivers the first half of phase 11b, Linux tabs in the terminal app. These
+items are the second half, which a second pull request delivers
+(`prompts/11b-linux-sessions.md`).
+
+- **The new-tab menu and the command palette offer no profile per installed distribution.**
+  - **Seen:** They offer the default distribution and the local shell only. A tab in another
+    distribution needs `maw --set-default` first, or `maw -d <name>` in a terminal.
+  - **Evidence:** `App/MawTerminalKit/Sources/MawTerminalKit/Model/Profile.swift`, which has
+    the two profiles; pull request #25, "Summary".
+  - **Phase:** 11b, second pull request: one profile per installed distribution, from
+    `listDistributions`, refreshed when the menu, the palette, or the screen opens.
+- **The new-tab setting cannot name a distribution.**
+  - **Seen:** The settings form offers "default distribution" and the local shell, and says
+    that one profile per installed distribution arrives in a later version. A setting that
+    names a distribution that is no longer installed, and the one-line notice of its fallback,
+    therefore cannot arise yet.
+  - **Evidence:** `App/MawTerminalKit/Sources/MawTerminalKit/Settings/SettingsForm.swift:11`;
+    settings version 2 (`Settings.currentVersion`) accepts `default-distribution` and `local`.
+  - **Phase:** 11b, second pull request: `distribution:<name>` values in settings version 2,
+    with the fallback to the default distribution and its notice.
+- **The distributions screen lists no distribution.**
+  - **Seen:** The screen asks the daemon for nothing. It shows no distribution, state, or
+    default marker; it has no action to open a tab, set the default, or stop a distribution;
+    and it does not report an unreachable daemon. Its empty state says that the list arrives
+    in a later version.
+  - **Evidence:** `App/MawTerminalKit/Sources/MawTerminalKit/Views/DistributionsScreen.swift:65`;
+    `NoDistributions` is still the screen's provider (`AppController.init`).
+  - **Phase:** 11b, second pull request: a provider backed by the daemon, the four states,
+    the actions, and the stop confirmation from `status`.
+- **A split of a Linux pane opens the default distribution, not the pane's distribution.**
+  - **Seen:** A split opens the profile its pane was opened with. For a pane of the default
+    distribution, the daemon resolves that profile again when the split opens, so after
+    `maw --set-default` the split opens the new default rather than the distribution that the
+    pane runs.
+  - **Evidence:** `WindowModel.split` in
+    `App/MawTerminalKit/Sources/MawTerminalKit/Window/WindowModel.swift`;
+    `Session/Profile+Session.swift`.
+  - **Phase:** 11b, second pull request: a split opens the distribution that the pane's
+    session opened, by its stored name (`SessionInfo.machine`), once named distribution
+    profiles exist.
+- **`README.md` does not describe Linux tabs.**
+  - **Seen:** "Running the terminal app" describes building and running the app, but not
+    that ⌘T opens the default distribution, the fallback to the local shell, the errors in the
+    pane, the new-session offer, or the close confirmations.
+  - **Evidence:** `README.md`, "Running the terminal app".
+  - **Phase:** 11b, second pull request, together with the profiles and the screen.
+
 ## Phase 12: Configuration and lifecycle
 
 - **No setting for `.fsync` disk synchronization.**
@@ -201,14 +250,55 @@ from `main`.
     `MawIntegration.remove` in `Tests/mawdTests/MawIntegration.swift` uses `maw --terminate`.
     Pull request #22, "Known limitations and follow-up work".
   - **Phase:** 12b. Stop only the installed test distribution, with `maw --terminate <name>`.
-- **`HandshakeTests.exchangesMatchingVersions()` timed out once in CI.**
-  - **Seen:** The test exceeded its 5-second deadline, after 10.277 s, on a commit that changed
-    only Markdown. It passed on the re-run of the job and locally. The cause is presumed to be a
-    starved CI runner, and is not established.
-  - **Evidence:** `Tests/MawProtocolTests/HandshakeTests.swift:22`; CI run 42512716425 of pull
-    request #22, first attempt.
-  - **Phase:** 12b. If it recurs, record the runner's load and the test's timings, so that the
-    cause can be established.
+- **`HandshakeTests.exchangesMatchingVersions()` times out in CI.**
+  - **Seen:** The test fails with "timed out waiting for the protocol version" when it exceeds
+    its 5-second deadline. Each failure passed on a single re-run of the job, without a change,
+    and locally the test takes about 0.014 s.
+  - **Evidence:** `Tests/MawProtocolTests/HandshakeTests.swift:22`. The failures, each in the
+    general group of "Build, test, lint" and each followed by a passing re-run:
+    - CI run 42512716425 of pull request #22, attempt 1: 10.277 s, on a commit that changed
+      only Markdown.
+    - CI run 42574910845 of pull request #25 (`cb4ebe9`), attempt 1: 5.673 s; attempt 2
+      passed. In the same process the pure test `reportsTheHostLimits()` took 5.373 s, so the
+      whole test process stalled for about 5.4 s at the start of the group.
+    - CI run 42644895862 of pull request #25 (`e3511d9`), attempt 1: 5.704 s; attempt 2
+      passed.
+    The same stall appears in a passing run of `main`, CI run 42516767842, where
+    `reportsTheHostLimits()` took 6.355 s and this test 6.625 s. The cause of the stall is not
+    established.
+  - **Phase:** 12b, through a `fix/` branch after pull request #25: establish what stalls the
+    test process at the start of the general group, or make the test's deadline independent of
+    such a stall, without loosening what it checks.
+
+- **The terminal app's local shell start waits on the main thread until the shell runs.**
+  - **Seen:** `maw_terminal_spawn` forks, and the parent reads the child's report pipe until
+    `execve` closes it. Before `execve`, the child changes to the start directory, the home
+    directory. If that `chdir` blocks, for example on a network home directory whose server
+    does not answer, the app's main thread waits with it, and every window stops responding
+    until it returns. SwiftTerm's `forkpty`, which `main` used, did not wait for the child.
+  - **Evidence:** `App/MawTerminalKit/Sources/CMawTerminal/terminal.c`, `maw_terminal_spawn`
+    and `start_child`; `PseudoTerminalProcess.init`, called from `LocalShellSession.start` on
+    the main actor. Found by reading the code; not reproduced.
+  - **Phase:** 12b. Wait for the report on another thread, and report a failure to start
+    through `session(_:didFailWith:)`.
+- **A login shell that runs `exec` with another shell asks before closing.**
+  - **Seen:** A user whose `.bashrc` runs `exec zsh`, for example, is asked "zsh is still
+    running and will be ended." when closing the tab at the prompt. The agent reports a login
+    shell whose command name differs from the account's shell as the program it has run with
+    `exec`, as the owner decided, so that `exec vim` still asks.
+  - **Evidence:** `Sources/MawAgentKit/ForegroundProbe.swift`, `execedProgram`; pull request
+    #25, code review. `MawAgentKit` is a Guest workflow path, which pull request #25 does not
+    change after its first part.
+  - **Phase:** 12b. Treat a command name listed in the guest's `/etc/shells` as a shell.
+- **Two copies of a thread that writes queued input.**
+  - **Seen:** Developers maintain the same condition-variable queue, drained by a thread of
+    its own, twice. They already differ: one drops pending input when it finishes, and one
+    waits for room on a non-blocking descriptor. There is no effect on users.
+  - **Evidence:** `InputForwarder` in `Sources/MawClient/DistributionSession.swift` and
+    `TerminalInput` in
+    `App/MawTerminalKit/Sources/MawTerminalKit/Session/PseudoTerminalProcess.swift`; pull
+    request #25, code review.
+  - **Phase:** 12b, a shared type in `MawClient` that takes the write as a closure.
 
 ## Phase 13: Packaging and release
 
@@ -223,6 +313,16 @@ from `main`.
   - **Seen:** `scripts/fetch-guest.sh` trusts whoever can get a Guest workflow run to succeed.
   - **Evidence:** [docs/security.md, "Guest files from CI"](security.md#guest-files-from-ci).
   - **Phase:** 13, signed guest releases.
+- **The terminal app's suggestions for three errors name development steps.**
+  - **Seen:** For `clientSignatureRejected` and `daemonVersionMismatch`, the app suggests
+    building the app with Xcode and the daemon from the same commit and running
+    `mawd install`; for `virtualizationEntitlementMissing`, signing the daemon with
+    `scripts/sign-dev.sh` and running `mawd install`. A user of a signed app has neither Xcode
+    nor the repository's scripts.
+  - **Evidence:** `LinuxSession.suggestion(for:)` in
+    `App/MawTerminalKit/Sources/MawTerminalKit/Session/LinuxSession.swift`.
+  - **Phase:** 13, which bundles the daemon with the app and words these suggestions for a
+    signed app, such as reinstalling the app.
 - **The daemon is registered with `launchctl bootstrap`, not `SMAppService`.**
   - **Seen:** `mawd install` writes the LaunchAgent's plist and loads it with `launchctl`.
   - **Evidence:** [Decision record 0011](decisions/0011-launchctl-registration.md);
@@ -242,6 +342,44 @@ from `main`.
     its first part.
   - **Phase:** None yet; a `fix/` branch gives the error a suggestion for `maw` that depends on
     where it arises.
+  - **Related:** The app words its own suggestion for twelve errors whose suggestion in
+    `MawCore` names a step of `maw` (`LinuxSession.suggestion(for:)`), so each such error has
+    two suggestions to keep in step. The same `fix/` branch can give `MawError`'s suggestions
+    the context in which they are shown, `maw` or the app, so that `MawCore` holds both.
+- **Linux tabs show no working directory.**
+  - **Seen:** A Linux tab's label and the key hint bar show the distribution's name without
+    the working directory that a local tab shows. The app takes a Linux session's directory
+    only from OSC 7, and never polls the guest; Ubuntu's bash does not send OSC 7.
+  - **Evidence:** `LinuxSession.terminalReportedWorkingDirectory(_:)` and
+    `refresh(isVisible:)` in
+    `App/MawTerminalKit/Sources/MawTerminalKit/Session/LinuxSession.swift`;
+    `prompts/11b-linux-sessions.md`, "Out of scope".
+  - **Phase:** None yet; phase 07, which translates working directories, is a candidate, for
+    example by having the distribution's shell send OSC 7.
+- **A Linux session does not reconnect after the daemon or the machine restarts.**
+  - **Seen:** The pane shows maw's message and suggestion, such as `machineStopped` or
+    `daemonConnectionLost`, and offers a new session, which Enter starts. The shell and its
+    programs in the guest are not recovered.
+  - **Evidence:** `DistributionSession`'s endings (`docs/daemon.md`, "The client library");
+    `prompts/11b-linux-sessions.md`, "Out of scope".
+  - **Phase:** None yet.
+- **Foreground program names are at most 15 bytes.**
+  - **Seen:** A close question names a program by its command name from
+    `/proc/<pid>/comm`, which Linux truncates to 15 bytes (`TASK_COMM_LEN`), so
+    `systemd-journald` would appear as `systemd-journal`.
+  - **Evidence:** `Sources/MawAgentKit/ForegroundProbe.swift`; `docs/protocol.md`, the
+    `foregroundProgram` message.
+  - **Phase:** None.
+- **During an output flood the foreground answer can miss its 500 ms.**
+  - **Seen:** The agent's answer travels on the session's connection behind the output that the
+    app has not read yet, and the app reads only as fast as the terminal view draws. During a
+    flood, closing a Linux tab can therefore say "A program may be running in Ubuntu-24.04,
+    which did not answer within 500 ms." rather than name the program. This follows from the
+    protocol's design and is not measured.
+  - **Evidence:** `docs/protocol.md`, the foreground messages; `OutputPump` in
+    `App/MawTerminalKit/Sources/MawTerminalKit/Session/OutputPump.swift`;
+    `WindowModel.foregroundTimeout`.
+  - **Phase:** None. The question still asks, so nothing closes without the user's consent.
 - **The root file system repair command.**
   - **Seen:** maw reports a root file system that fails its check and leaves the disk image
     unchanged except for what `e2fsck -p` repaired. A repair needs e2fsck from a Linux system,
@@ -299,9 +437,15 @@ from `main`.
     behind; pull request #19, "Known limitations and follow-up work".
   - **Phase:** None yet.
 - **A Mac locale that glibc lacks falls back to `C.UTF-8`.**
-  - **Seen:** With a Mac locale such as `en_TR`, sessions use `C.UTF-8`. Characters type and
-    count correctly, but messages and collation are not localized.
-  - **Evidence:** `Sources/MawCore/GuestLocale.swift:9`.
+  - **Seen:** With a Mac locale such as `en_TR`, sessions of `maw` and the terminal app's Linux
+    sessions use `C.UTF-8`. Characters type and count correctly, but messages and collation are
+    not localized. The app's Linux sessions first take the app's own `LC_ALL`, `LC_CTYPE`, or
+    `LANG` when macOS accepts it, as its local shell does; an app started from a terminal that
+    sets `LC_CTYPE=UTF-8`, a name that exists only on macOS, therefore also falls back to
+    `C.UTF-8`, rather than to the Mac's language and region.
+  - **Evidence:** `Sources/MawCore/GuestLocale.swift:9`; `LinuxSession.guestLocale` in
+    `App/MawTerminalKit/Sources/MawTerminalKit/Session/LinuxSession.swift`, which follows
+    `ShellLocale` as `prompts/11b-linux-sessions.md` requires.
   - **Phase:** None yet; the guest has no such locale to generate.
 - **Each boot archives about 8 MB of journal.**
   - **Seen:** The journal grows by about 8 MB per boot; the cause is not established. It is
@@ -360,7 +504,7 @@ Deliberate choices that a decision record explains and that no phase plans to ch
   [Decision record 0016](decisions/0016-input-window.md). The repeat of the measurement on an
   idle Mac is listed under "No phase yet".
 - **Guest files and the host must come from the same build.** A host and guest files from
-  different builds fail at session open with `guestAgentVersionMismatch` (protocol version 3,
+  different builds fail at session open with `guestAgentVersionMismatch` (protocol version 4,
   `Sources/MawProtocol/ProtocolVersion.swift:7`). `scripts/fetch-guest.sh` installs guest
   files built from the same commit. [Decision record 0016](decisions/0016-input-window.md),
   "Consequences".
