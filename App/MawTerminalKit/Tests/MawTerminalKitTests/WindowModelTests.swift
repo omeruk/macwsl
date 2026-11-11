@@ -522,7 +522,7 @@ import Testing
     func linuxWindow(ending: DistributionSession.Ending?) -> (WindowModel, FakeHost) {
         let (model, host, _) = window(make: { profile in
             guard profile.kind == .defaultDistribution else { return FakeSession("zsh") }
-            let fallback: LinuxSession.FallBack = { error in
+            let fallback: LinuxSession.ChooseFallback = { error in
                 LinuxSession.fallbackNotice(for: error).map {
                     LinuxSession.Fallback(replacement: FakeSession("zsh"), notice: $0)
                 }

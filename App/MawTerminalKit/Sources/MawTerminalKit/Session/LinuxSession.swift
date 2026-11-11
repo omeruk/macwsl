@@ -54,7 +54,7 @@ public final class LinuxSession: TerminalSession {
     }
 
     /// Chooses the fallback for the error that ended the opening, or `nil` to show the error.
-    public typealias FallBack = @MainActor (MawError) -> Fallback?
+    public typealias ChooseFallback = @MainActor (MawError) -> Fallback?
 
     public let id = UUID()
     @ObservationIgnored public weak var delegate: (any TerminalSessionDelegate)?
@@ -63,7 +63,7 @@ public final class LinuxSession: TerminalSession {
     public private(set) var displayName: String
 
     @ObservationIgnored private let makeCore: MakeCore
-    @ObservationIgnored private let fallback: FallBack?
+    @ObservationIgnored private let fallback: ChooseFallback?
     @ObservationIgnored private let openingNotice: (@MainActor (String) -> String)?
     /// The distribution's stored name once the session has opened.
     @ObservationIgnored private var openedName: String?
@@ -85,7 +85,7 @@ public final class LinuxSession: TerminalSession {
         distribution: DistroName?,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         locale: Locale = .current, openingNotice: (@MainActor (String) -> String)? = nil,
-        fallback: FallBack? = nil
+        fallback: ChooseFallback? = nil
     ) {
         self.init(
             name: distribution?.rawValue, openingNotice: openingNotice, fallback: fallback,
@@ -95,7 +95,7 @@ public final class LinuxSession: TerminalSession {
 
     init(
         name: String?, openingNotice: (@MainActor (String) -> String)? = nil,
-        fallback: FallBack? = nil, makeCore: @escaping MakeCore
+        fallback: ChooseFallback? = nil, makeCore: @escaping MakeCore
     ) {
         displayName = name ?? "linux"
         self.openingNotice = openingNotice

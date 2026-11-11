@@ -132,7 +132,7 @@ import os
     func start(
         _ recorder: Recorder, name: String? = "Ubuntu-24.04", opens: String? = "Ubuntu-24.04",
         foreground: ForegroundAnswer = .none, size: MawTerminalKit.TerminalSize = .default,
-        fallback: LinuxSession.FallBack? = nil
+        fallback: LinuxSession.ChooseFallback? = nil
     ) throws -> (LinuxSession, FakeCore) {
         var core: FakeCore?
         let session = LinuxSession(name: name, fallback: fallback) { terminal, output in
