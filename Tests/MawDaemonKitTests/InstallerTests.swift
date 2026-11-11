@@ -497,7 +497,12 @@ final class FakeProvisioningMachine: ProvisioningMachine, @unchecked Sendable {
         // is cancelled, `Task.sleep` returns at once, and a polling step would keep its thread
         // of the cooperative pool busy, possibly the very thread that `discard()` needs.
         if heldStep == name {
+            // `discard()` fires `released` as well, so that a held step ends when the machine
+            // stops, as a blocking step does.
             await released.wait()
+            if calls.contains("discard") {
+                throw .provisioningFailed(step: name, reason: "the machine stopped")
+            }
         }
         if failingStep == name {
             throw .provisioningFailed(step: name + "ing", reason: "the fake failed")
@@ -523,6 +528,7 @@ final class FakeProvisioningMachine: ProvisioningMachine, @unchecked Sendable {
     func discard() async {
         lock.withLock { _calls.append("discard") }
         discarded.fire()
+        released.fire()
     }
 }
 
