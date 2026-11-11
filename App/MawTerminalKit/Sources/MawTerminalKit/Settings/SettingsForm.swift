@@ -8,8 +8,7 @@ public enum SettingsPage: String, Hashable, Sendable, CaseIterable {
     public var placeholder: String? {
         switch self {
         case .profiles:
-            "One profile per installed distribution arrives in a later version (roadmap "
-                + "phase 11b)."
+            "Settings for each profile arrive in a later version (roadmap phase 11)."
         case .distributions:
             "Distribution settings arrive in a later version (roadmap phase 11)."
         case .appearance, .general, .keyboard:
@@ -76,12 +75,17 @@ public struct SettingsForm: Sendable {
                     value: "\(Int((settings.backgroundOpacity * 100).rounded()))%", kind: .number),
             ]
         case .general:
-            let names = profiles.map(\.paletteName)
-            let selected =
-                profiles.first { $0.id == settings.defaultProfile }?.paletteName ?? names.first
+            // The options are the profiles given. A setting that names a distribution the list
+            // does not contain, which ⌘T still opens, is the last option, as for a font family,
+            // so that ←→ and the list start from the value shown.
+            var names = profiles.map(\.paletteName)
+            let newTab = settings.newTabProfile
+            let listed = profiles.first { $0.isNamed(by: newTab.id) }
+            if listed == nil { names.append(newTab.paletteName) }
+            let selected = listed?.paletteName ?? newTab.paletteName
             let shell = settings.localShell ?? ""
             return [
-                choice(.defaultProfile, "default profile", names, selected: selected ?? ""),
+                choice(.defaultProfile, "default profile", names, selected: selected),
                 Field(
                     id: .localShell, label: "local shell",
                     value: shell.isEmpty ? "login shell (\(Profile.userLoginShell()))" : shell,

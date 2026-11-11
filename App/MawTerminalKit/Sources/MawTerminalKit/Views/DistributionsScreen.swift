@@ -2,20 +2,19 @@ import SwiftUI
 
 /// The distributions screen (⌘⇧L), a tab of its own, as in `Distributions.dc.html`.
 ///
-/// With no distributions it shows the table header and a note that the list arrives in a later
-/// version: the app does not ask the daemon for it yet, and must not claim that nothing is
-/// installed while Linux tabs work. The table rows, the details box, and the memory chart are
-/// built and covered by previews with sample data; the running app shows them once a provider
-/// returns distributions.
+/// It shows what the daemon reported and asks again when it opens and after each action, never
+/// on a timer. The actions on the selected distribution are commands of the registry, whose
+/// keys the hint bar shows: the screen looks each typed key up there. The details box and the
+/// memory chart appear once a distribution has data for them, which phase 11c supplies; until
+/// then previews with sample data cover them.
 struct DistributionsScreen: View {
     let model: WindowModel
-    @State private var selection = 0
     @FocusState private var focused: Bool
 
     var body: some View {
         DistributionsContent(
-            distributions: model.distributions.distributions, host: .current,
-            selection: $selection
+            listing: model.distributionListing, host: .current,
+            selection: model.selectedDistribution?.name, select: model.selectDistribution
         )
         .padding(EdgeInsets(top: 10, leading: 10, bottom: 0, trailing: 10))
         .focusable()
@@ -27,11 +26,24 @@ struct DistributionsScreen: View {
             return .handled
         }
         .onKeyPress(.upArrow) {
-            selection = max(selection - 1, 0)
+            model.moveDistributionSelection(by: -1)
             return .handled
         }
         .onKeyPress(.downArrow) {
-            selection = min(selection + 1, max(model.distributions.distributions.count - 1, 0))
+            model.moveDistributionSelection(by: 1)
+            return .handled
+        }
+        .onKeyPress(phases: .down) { press in
+            // A key held down does not repeat an action, and ⌘, ⌃, and ⌥ make another key.
+            guard press.modifiers.isDisjoint(with: [.command, .control, .option]) else {
+                return .ignored
+            }
+            let key: KeyShortcut.Key =
+                press.key == .return ? .return : .character(press.key.character)
+            guard let command = model.registry.command(forKey: key, on: .distributions) else {
+                return .ignored
+            }
+            model.perform(command)
             return .handled
         }
     }
@@ -39,9 +51,11 @@ struct DistributionsScreen: View {
 
 /// The screen's content, separate from the window model so that previews can supply data.
 struct DistributionsContent: View {
-    let distributions: [DistributionInfo]
+    let listing: DistributionListing
     let host: HostSummary
-    @Binding var selection: Int
+    /// The name of the selected distribution.
+    let selection: String?
+    let select: (String) -> Void
     @Environment(\.chrome) private var chrome
     @Environment(\.ansi) private var ansi
 
@@ -50,10 +64,17 @@ struct DistributionsContent: View {
     static let headers = ["", "NAME", "STATE", "MEMORY", "CPU", "DISK", "UPTIME", "KERNEL"]
     static let rowHeight: CGFloat = 26
 
+    /// The daemon's list, or `nil` while there is none to show.
+    private var listed: [DistributionInfo]? {
+        guard case .listed(let distributions) = listing else { return nil }
+        return distributions
+    }
+
     var body: some View {
         VStack(spacing: 10) {
+            // The count is the daemon's: none is shown until it has answered.
             Box(
-                title: "distributions", titleDetail: "(\(distributions.count))",
+                title: "distributions", titleDetail: listed.map { "(\($0.count))" },
                 trailingTitle: host.description,
                 titleColor: chrome.text, trailingTitleColor: chrome.textSecondary,
                 borderColor: chrome.lineStrong
@@ -61,20 +82,37 @@ struct DistributionsContent: View {
                 VStack(spacing: 0) {
                     row(Self.headers.map { ($0, chrome.textSecondary) }, background: nil)
                         .accessibilityAddTraits(.isHeader)
-                    if distributions.isEmpty {
-                        Text("the list arrives in a later version").chromeStyle(chrome.textMuted)
+                    switch listing {
+                    case .waiting:
+                        EmptyView()
+                    case .failed(let text):
+                        // maw's message and suggestion, each of which may take several lines.
+                        // The limit bounds the height that a narrow window needs, which
+                        // would otherwise grow the window.
+                        Text(text.trimmingCharacters(in: .newlines))
+                            .font(MawFonts.chromeFont())
+                            .foregroundStyle(chrome.problem.color)
+                            .lineLimit(6)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 3)
+                    case .listed(let distributions) where distributions.isEmpty:
+                        Text("no distributions installed").chromeStyle(chrome.textMuted)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .frame(height: Self.rowHeight)
-                    }
-                    ForEach(Array(distributions.enumerated()), id: \.element.id) { index, item in
-                        distributionRow(item, selected: index == selection)
-                            .onTapGesture { selection = index }
+                    case .listed(let distributions):
+                        ForEach(distributions) { item in
+                            distributionRow(item, selected: item.name == selection)
+                                .contentShape(Rectangle())
+                                .onTapGesture { select(item.name) }
+                        }
                     }
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
-            if distributions.indices.contains(selection) {
-                let selected = distributions[selection]
+            if let selected = listed?.first(where: { $0.name == selection }),
+                !selected.details.isEmpty || !selected.memoryHistory.isEmpty
+            {
                 HStack(spacing: 10) {
                     DistributionDetailsBox(distribution: selected)
                     MemoryChartBox(distribution: selected)
@@ -84,19 +122,28 @@ struct DistributionsContent: View {
         }
     }
 
+    /// Running is `status.ok` and stopped is `text.muted`, as in the design; a machine on its
+    /// way from one to the other takes the theme's yellow slot.
+    private func stateColor(_ state: DistributionInfo.State) -> ThemeColor {
+        switch state {
+        case .running: chrome.statusOK
+        case .starting, .stopping: ansi.yellow
+        case .stopped: chrome.textMuted
+        }
+    }
+
     private func distributionRow(_ item: DistributionInfo, selected: Bool) -> some View {
         let plain = selected ? chrome.textSelected : chrome.text
         let muted = selected ? chrome.textSelectedSecondary : chrome.textMuted
         let number = selected ? chrome.textSelected : ansi.magenta
-        let state =
-            selected
-            ? chrome.textSelected : (item.state == .running ? chrome.statusOK : chrome.textMuted)
+        let state = selected ? chrome.textSelected : stateColor(item.state)
+        // A figure that the daemon has not reported is an empty cell, never a placeholder.
         return row(
             [
                 (item.isDefault ? "*" : " ", selected ? chrome.textSelected : chrome.accent),
-                (item.name, plain), (item.state.rawValue, state), (item.memory ?? "—", number),
-                (item.cpu ?? "—", number), (item.disk ?? "—", number), (item.uptime ?? "—", plain),
-                (item.kernel ?? "—", muted),
+                (item.name, plain), (item.state.rawValue, state), (item.memory ?? "", number),
+                (item.cpu ?? "", number), (item.disk ?? "", number), (item.uptime ?? "", plain),
+                (item.kernel ?? "", muted),
             ], background: selected ? chrome.text : nil
         )
         .accessibilityElement(children: .combine)
@@ -203,11 +250,11 @@ struct MemoryChartBox: View {
 }
 
 #Preview("Distributions, sample data") {
-    @Previewable @State var selection = 0
+    @Previewable @State var selection = DistributionInfo.samples[0].name
     DistributionsContent(
-        distributions: DistributionInfo.samples,
+        listing: .listed(DistributionInfo.samples),
         host: HostSummary(physicalMemory: 16 << 30, processorCount: 10, macOSVersion: [27, 0, 0]),
-        selection: $selection
+        selection: selection, select: { selection = $0 }
     )
     .padding(10)
     .frame(width: 1280, height: 560)
@@ -215,13 +262,10 @@ struct MemoryChartBox: View {
 }
 
 #Preview("Distributions, empty") {
-    @Previewable @State var selection = 0
-    DistributionsContent(
-        distributions: [], host: .current, selection: $selection
-    )
-    .padding(10)
-    .frame(width: 1280, height: 300)
-    .background(Color.black)
+    DistributionsContent(listing: .listed([]), host: .current, selection: nil, select: { _ in })
+        .padding(10)
+        .frame(width: 1280, height: 300)
+        .background(Color.black)
 }
 
 extension DistributionInfo {

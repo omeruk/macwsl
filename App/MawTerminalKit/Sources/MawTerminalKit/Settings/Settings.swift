@@ -32,7 +32,8 @@ public struct Settings: Hashable, Sendable {
             backgroundOpacity = Self.clamp(backgroundOpacity, to: Self.backgroundOpacityRange)
         }
     }
-    /// The profile of a new tab (⌘T): `default-distribution` or `local`.
+    /// The profile of a new tab (⌘T): `default-distribution`, `local`, or
+    /// `distribution:<name>`.
     public var defaultProfile = Profile.defaultDistributionID
     /// The local profile's shell. `nil` uses the login shell from the user database.
     public var localShell: String?
@@ -59,9 +60,28 @@ public struct Settings: Hashable, Sendable {
         availableThemes.first { $0.name == theme } ?? .mawDefault
     }
 
-    /// The profiles that new tabs and the settings offer, in the order the menus list them.
-    public var profiles: [Profile] {
-        [.defaultDistribution, localShellProfile]
+    /// The profiles that new tabs and the settings offer, in the order the menus list them:
+    /// the default distribution, each installed one that the daemon reported, and the local
+    /// shell.
+    public func profiles(distributions: [String]) -> [Profile] {
+        [.defaultDistribution] + distributions.map(Profile.distribution) + [localShellProfile]
+    }
+
+    /// The profile that `id` names, built from the identifier itself, so that a distribution
+    /// opens whether or not the daemon's list has arrived or contains it. `nil` for an
+    /// identifier that names no kind of profile.
+    public func profile(id: String) -> Profile? {
+        switch id {
+        case Profile.localShellID: return localShellProfile
+        case Profile.defaultDistributionID: return .defaultDistribution
+        default: return Profile.distributionName(in: id).map(Profile.distribution)
+        }
+    }
+
+    /// The profile of a new tab (⌘T and the title bar's `+`). A value that names no kind of
+    /// profile opens the default distribution.
+    public var newTabProfile: Profile {
+        profile(id: defaultProfile) ?? .defaultDistribution
     }
 
     /// The local shell profile, with the configured shell or the user's login shell.

@@ -18,6 +18,10 @@ public enum CommandID: Hashable, Sendable {
 
     case openDistributions
     case installDistribution
+    // The distributions screen's actions on its selected distribution.
+    case shellInDistribution
+    case stopDistribution
+    case setDefaultDistribution
 
     case commandPalette
     case switchTheme
@@ -40,6 +44,12 @@ public enum CommandID: Hashable, Sendable {
     case settingsChange
     case settingsOpenList
     case settingsSwitchBox
+
+    /// Whether the command opens a new tab, of any profile.
+    public var isNewTab: Bool {
+        if case .newTab = self { return true }
+        return false
+    }
 }
 
 /// The groups shown in the palette and on the keyboard settings page.
@@ -126,15 +136,19 @@ public struct CommandContext: Hashable, Sendable {
     /// Whether the focused terminal has a selection to copy.
     public var hasTextSelection: Bool
     public var fontSizeIsDefault: Bool
+    /// The distribution selected on the distributions screen, as the daemon last reported it,
+    /// which decides the actions that the screen offers.
+    public var selectedDistribution: DistributionInfo?
 
     public init(
         selection: Selection, tabCount: Int, hasTextSelection: Bool = false,
-        fontSizeIsDefault: Bool = true
+        fontSizeIsDefault: Bool = true, selectedDistribution: DistributionInfo? = nil
     ) {
         self.selection = selection
         self.tabCount = tabCount
         self.hasTextSelection = hasTextSelection
         self.fontSizeIsDefault = fontSizeIsDefault
+        self.selectedDistribution = selectedDistribution
     }
 
     /// The context when no terminal window is open, for example after closing the last one.

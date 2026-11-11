@@ -124,6 +124,15 @@ extension TerminalWindowController: WindowHost {
         return response == .alertFirstButtonReturn
     }
 
+    func report(failure message: String, detail: String) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = message
+        alert.informativeText = detail
+        alert.beginSheetModal(for: window)
+    }
+
     func closeWindow() {
         window?.delegate = nil
         model.shutDown()

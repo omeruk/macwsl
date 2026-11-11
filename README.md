@@ -273,6 +273,65 @@ Xcode project is generated from `App/project.yml` with XcodeGen.
 Run `xcodegen` again after pulling a change to `project.yml`. The package's tests run without
 Xcode's project: `swift test --package-path App/MawTerminalKit`.
 
+### Linux tabs
+
+⌘T, the title bar's `+`, and Shell > New Tab open a tab of the new-tab profile, which is the
+default distribution unless the settings say otherwise (see "The new-tab profile" below). A
+Linux tab runs the distribution's login shell, as `maw` does, and starts its virtual machine
+first if it is stopped. The tab is named `linux` until the session opens, and then takes the
+distribution's name. Shell > New Tab and the command palette (⌘⇧P) also offer the default
+distribution, each installed distribution by name, and the local shell; the list is read from
+the daemon when the menu or the palette opens.
+
+- **Nothing installed.** When no distribution is installed, the tab opens the local shell and
+  says so in one line: "No Linux distribution is installed, so this tab opened the local
+  shell." When the daemon is not installed, it opens the local shell with maw's message and
+  the suggestion to run `mawd install`.
+- **Errors.** Any other failure to reach the daemon or to open the session is shown in the
+  pane as `maw` prints it, with its suggestion. A tab never opens the local shell in place of a
+  distribution in these cases, so that a command meant for Linux does not run on the Mac.
+- **A new session.** When a session ends or fails, for example after
+  `maw --terminate <name>`, the pane shows `[↩ new session]`. Enter starts a new session of the
+  same profile in the same pane and keeps the scrollback.
+- **Splits.** ⌘D and ⌘⇧D in a Linux pane open another session of the distribution that the pane
+  opened.
+- **Closing.** Closing a pane, a tab, or a window, or quitting the app, asks first while a
+  program runs in a Linux tab, and names it, for example "sleep is still running and will be
+  ended." At the shell's prompt it closes without asking.
+
+### The new-tab profile
+
+The settings (⌘,), page `general`, field `default profile`, choose what ⌘T opens. The app
+stores the choice as `defaultProfile` in `~/Library/Application Support/maw/settings.json`:
+
+| `defaultProfile` | ⌘T opens |
+|------------------|----------|
+| `default-distribution` | The default distribution, the one that `maw --set-default` chose. This is the initial value. |
+| `local` | The local shell. |
+| `distribution:<name>` | The distribution named `<name>`, for example `distribution:Ubuntu-24.04`. |
+
+If the distribution that `distribution:<name>` names is not installed, ⌘T opens the default
+distribution instead and says so in one line, for example "Debian-13 is not installed. This tab
+opened Ubuntu-24.04, the default distribution." If nothing is installed, the tab opens the
+local shell as described above.
+
+### The distributions screen
+
+⌘⇧L, or View > Distributions, opens the distributions screen. It lists the installed
+distributions with the state of each one (starting, running, stopping, or stopped) and marks the
+default. When the daemon cannot be reached, it shows maw's message and suggestion instead. The
+list is read when the screen opens or becomes the selected tab, and after each action; it is
+not polled. The columns for memory, CPU, disk, uptime, and the kernel stay empty until a later
+version.
+
+| Key | Action |
+|-----|--------|
+| ↩ | Open a tab in the selected distribution. |
+| `s` | Stop the selected distribution while it starts or runs. When sessions are open in it, the screen asks first and names their number. |
+| `d` | Make the selected distribution the default, as `maw --set-default` does. |
+| `i` | Install a distribution. This arrives in a later version; until then, use `maw --install`. |
+| esc | Return to the previous tab. |
+
 ## Documentation
 
 - [`CLAUDE.md`](CLAUDE.md): architecture, repository layout and conventions

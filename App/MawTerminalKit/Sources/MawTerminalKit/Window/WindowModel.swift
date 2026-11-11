@@ -1,4 +1,6 @@
 import AppKit
+import MawClient
+import MawCore
 import Observation
 import os
 
@@ -13,6 +15,8 @@ struct Confirmation {
 @MainActor
 protocol WindowHost: AnyObject {
     func confirm(_ confirmation: Confirmation) async -> Bool
+    /// Says that something the user asked for failed. Returns at once.
+    func report(failure message: String, detail: String)
     func closeWindow()
     func focusTerminal(_ view: NSView)
     func openNewWindow()
@@ -33,6 +37,33 @@ struct PaletteState: Equatable {
     var mode = Mode.commands
     var query = ""
     var selection = 0
+    /// The row that the user moved the selection to. The rows can change while the palette is
+    /// open, when the daemon's list arrives, so the selection follows its row rather than its
+    /// position, and Enter never runs another command than the one highlighted.
+    var selectedRowID: String?
+
+    /// The selected row's position among the rows with identifiers `ids`.
+    func selectedIndex(in ids: [String]) -> Int {
+        if let selectedRowID, let index = ids.firstIndex(of: selectedRowID) { return index }
+        return min(selection, max(ids.count - 1, 0))
+    }
+
+    /// Selects the row at `index` among the rows with identifiers `ids`.
+    mutating func select(_ index: Int, in ids: [String]) {
+        selection = index
+        selectedRowID = ids.indices.contains(index) ? ids[index] : nil
+    }
+}
+
+/// What the distributions screen shows. The three must not be confused: an empty list says that
+/// nothing is installed, which is false while the daemon has not answered or cannot be asked.
+enum DistributionListing: Equatable {
+    /// The daemon has not answered yet.
+    case waiting
+    /// The daemon could not be asked: maw's message and suggestion, as `maw` prints them.
+    case failed(String)
+    /// The daemon's list, which is empty when nothing is installed.
+    case listed([DistributionInfo])
 }
 
 /// The state and behavior of one window: its tabs, the panes in them, and every command.
@@ -43,7 +74,19 @@ final class WindowModel {
     let distributions: any DistributionProvider
     @ObservationIgnored weak var host: (any WindowHost)?
 
-    private(set) var tabs = TabList()
+    private(set) var tabs = TabList() {
+        didSet {
+            // A screen that shows the distributions has become the selected tab, by whatever
+            // way: the distributions screen, and the settings, whose new-tab setting offers
+            // each one. Their list may be as old as the last time it was read.
+            let screen = tabs.selectedTab?.screen
+            if screen == .distributions || screen == .settings,
+                tabs.selectedID != oldValue.selectedID
+            {
+                distributions.refresh()
+            }
+        }
+    }
     private(set) var panes: [PaneID: PaneController] = [:]
     var palette: PaletteState?
     /// ⌘+ and ⌘- change the font size of this window only, as in Terminal and Windows Terminal.
@@ -62,6 +105,13 @@ final class WindowModel {
     /// second ⌘W or close is ignored meanwhile.
     @ObservationIgnored private(set) var isAskingToClose = false
     @ObservationIgnored private var isShutDown = false
+    /// The name of the distribution selected on the distributions screen. Kept by name, not
+    /// by row, so that a refresh never moves the selection to another distribution.
+    private var distributionSelection: String?
+    /// The distributions whose stop is under way, so that a second `s` does not ask again.
+    @ObservationIgnored private var stopsUnderWay: Set<String> = []
+    /// The screen's action under way. Tests await it.
+    @ObservationIgnored private(set) var distributionAction: Task<Void, Never>?
 
     /// - Parameter makeSession: Makes a pane's session for a profile. Tests pass fake
     ///   sessions; the app asks the session layer (`Profile.makeSession(localShell:)`).
@@ -90,15 +140,19 @@ final class WindowModel {
 
     var chrome: ChromePalette { effectiveSettings.selectedTheme.chromePalette }
 
-    var profiles: [Profile] { settings.profiles }
+    /// The profiles that the menus, the palette, and the settings offer: the default
+    /// distribution, each one the daemon reported, and the local shell.
+    var profiles: [Profile] {
+        settings.profiles(distributions: distributions.distributions.map(\.name))
+    }
 
     var registry: CommandRegistry {
-        CommandRegistry(profiles: profiles, defaultProfile: settings.defaultProfile)
+        CommandRegistry(profiles: profiles, newTabProfile: defaultProfile)
     }
 
-    var defaultProfile: Profile {
-        profiles.first { $0.id == settings.defaultProfile } ?? profiles[0]
-    }
+    /// The profile of a new tab, from the setting itself rather than from the list, so that a
+    /// distribution opens whether or not the list has arrived or contains it.
+    var defaultProfile: Profile { settings.newTabProfile }
 
     // MARK: Lifecycle
 
@@ -142,7 +196,8 @@ final class WindowModel {
         return CommandContext(
             selection: selection, tabCount: tabs.count,
             hasTextSelection: focusedPane?.terminalView.selection.active ?? false,
-            fontSizeIsDefault: fontSizeAdjustment == 0)
+            fontSizeIsDefault: fontSizeAdjustment == 0,
+            selectedDistribution: selectedDistribution)
     }
 
     func isEnabled(_ id: CommandID) -> Bool {
@@ -160,7 +215,7 @@ final class WindowModel {
         }
         switch id {
         case .newTab(let profileID):
-            newTab(profile: profiles.first { $0.id == profileID } ?? defaultProfile)
+            newTab(profile: settings.profile(id: profileID) ?? defaultProfile)
         case .newWindow:
             host?.openNewWindow()
         case .closePane:
@@ -186,12 +241,33 @@ final class WindowModel {
         case .equalizePanes:
             updateSelectedTree { $0.equalize() }
         case .openDistributions:
+            // Selecting the screen asks for the list; on the screen, ⌘⇧L asks again.
+            if selectedTab?.screen == .distributions { distributions.refresh() }
             tabs.openScreen(.distributions)
+        case .shellInDistribution:
+            // By its stored name, so that the tab opens this distribution whatever the default.
+            if let name = selectedDistribution?.name {
+                // The machine starts with the session, after this returns: the list is asked
+                // for once the session's first output shows that it runs.
+                newTab(profile: .distribution(name)).onSessionStarted = { [distributions] in
+                    distributions.refresh()
+                }
+            }
+        case .stopDistribution:
+            if let name = selectedDistribution?.name { stopDistribution(name) }
+        case .setDefaultDistribution:
+            if let name = selectedDistribution?.name {
+                act(failure: "\(name) could not be made the default distribution.") {
+                    [distributions] () async throws(MawError) in
+                    try await distributions.setDefault(name)
+                }
+            }
         case .installDistribution, .settingsMove, .settingsChange, .settingsOpenList,
             .settingsSwitchBox:
             break
         case .commandPalette:
             if palette == nil {
+                distributions.refresh()
                 palette = PaletteState()
             } else {
                 closePalette(restoringTheme: palette?.mode == .themes)
@@ -220,10 +296,12 @@ final class WindowModel {
 
     // MARK: Tabs
 
-    func newTab(profile: Profile) {
+    @discardableResult
+    func newTab(profile: Profile) -> PaneController {
         let pane = makePane(profile: profile)
         tabs.append(Tab(content: .terminal(SplitTree(pane: pane.id))))
         focusSelectedTab()
+        return pane
     }
 
     func select(_ id: TabID) {
@@ -290,15 +368,17 @@ final class WindowModel {
     /// A session of `profile` as the settings configure it now, so that a new session of the
     /// local shell's profile follows a change of the shell.
     private func newSession(of profile: Profile) -> any TerminalSession {
-        makeSession(profiles.first { $0.id == profile.id } ?? profile)
+        makeSession(settings.profile(id: profile.id) ?? profile)
     }
 
-    /// Splits the focused pane. The new pane opens the profile the focused one was opened with.
+    /// Splits the focused pane. The new pane opens what its session names, such as the
+    /// distribution that a Linux session opened, or else the profile the focused pane was
+    /// opened with.
     private func split(_ axis: SplitAxis) {
         guard let tab = selectedTab, var tree = tab.splitTree,
             let current = panes[tree.focusedPane]
         else { return }
-        let pane = makePane(profile: current.profile)
+        let pane = makePane(profile: current.session.splitProfile ?? current.profile)
         tree.split(tree.focusedPane, axis: axis, newPane: pane.id)
         tabs.update(tab.id, content: .terminal(tree))
         focusSelectedTab()
@@ -372,7 +452,10 @@ final class WindowModel {
         guard let pane = focusedPane else { return }
         Task { [weak self] in
             await Task.yield()
-            self?.host?.focusTerminal(pane.terminalView)
+            // A palette that opened meanwhile keeps the keys, such as the theme list, which
+            // replaces the command list in the same turn: the terminal would receive them.
+            guard let self, self.palette == nil else { return }
+            self.host?.focusTerminal(pane.terminalView)
         }
     }
 
@@ -394,6 +477,74 @@ final class WindowModel {
             title = "maw"
         }
         host?.setWindowTitle(title)
+    }
+
+    // MARK: Distributions
+
+    /// What the distributions screen shows: nothing yet, the reason the daemon could not be
+    /// asked, or its list.
+    var distributionListing: DistributionListing {
+        if let failure = distributions.failure { return .failed(runtimeErrorText(failure)) }
+        return distributions.hasAnswer ? .listed(distributions.distributions) : .waiting
+    }
+
+    /// The selected distribution as the daemon last reported it: the one selected by name,
+    /// or the first one while none is selected or the selected one is no longer listed.
+    var selectedDistribution: DistributionInfo? {
+        let listed = distributions.distributions
+        return listed.first { $0.name == distributionSelection } ?? listed.first
+    }
+
+    func selectDistribution(_ name: String) {
+        distributionSelection = name
+    }
+
+    /// Moves the selection up or down the list, stopping at its ends.
+    func moveDistributionSelection(by offset: Int) {
+        let listed = distributions.distributions
+        guard let current = listed.firstIndex(where: { $0.name == selectedDistribution?.name })
+        else { return }
+        distributionSelection = listed[min(max(current + offset, 0), listed.count - 1)].name
+    }
+
+    /// Stops a distribution. Asks first when sessions are open in it, counting every
+    /// client's as the daemon's status reports them, not only this app's tabs.
+    private func stopDistribution(_ name: String) {
+        guard stopsUnderWay.insert(name).inserted else { return }
+        act(failure: "\(name) could not be stopped.") {
+            [weak self, distributions] () async throws(MawError) in
+            defer { self?.stopsUnderWay.remove(name) }
+            let count = try await distributions.openSessions(in: name)
+            if count > 0 {
+                let sessions = count == 1 ? "1 session is" : "\(count) sessions are"
+                let question = Confirmation(
+                    message: "Stop \(name)?",
+                    detail: "\(sessions) open in it and will be ended.", confirmTitle: "Stop")
+                guard await self?.host?.confirm(question) ?? false else { return }
+            }
+            try await distributions.stop(name)
+        }
+    }
+
+    /// Carries out an action of the distributions screen without holding the window: the
+    /// provider sends its requests off the main actor, and the screen stays in use until the
+    /// answer arrives. Afterwards the list is asked for again, and a failure is reported with
+    /// maw's message and suggestion.
+    private func act(
+        failure message: String, _ action: @escaping @MainActor () async throws(MawError) -> Void
+    ) {
+        distributionAction = Task {
+            do throws(MawError) {
+                try await action()
+            } catch {
+                Logger.app.info(
+                    "\(message, privacy: .public) \(error.description, privacy: .public)")
+                host?.report(
+                    failure: message,
+                    detail: runtimeErrorText(error).trimmingCharacters(in: .newlines))
+            }
+            distributions.refresh()
+        }
     }
 
     // MARK: Confirmations
@@ -534,6 +685,31 @@ final class WindowModel {
         let names = settings.availableThemes.map(\.name)
         palette = PaletteState(
             mode: .themes, query: "", selection: names.firstIndex(of: settings.theme) ?? 0)
+    }
+
+    /// Sets the palette's query as the user types it; a new query selects its first match.
+    /// SwiftUI also writes the unchanged text back when the field redraws, as it does when a
+    /// theme is previewed: that write must not move the selection back to the first row.
+    /// - Returns: Whether the query changed.
+    @discardableResult
+    func setPaletteQuery(_ query: String) -> Bool {
+        guard let palette, palette.query != query else { return false }
+        self.palette?.query = query
+        self.palette?.selection = 0
+        self.palette?.selectedRowID = nil
+        return true
+    }
+
+    /// Moves the palette's selection by `step` among the rows with identifiers `ids`, stopping
+    /// at the ends. In the theme list, whose rows are identified by the theme's name, it
+    /// previews the theme now selected.
+    func movePaletteSelection(by step: Int, in ids: [String]) {
+        guard !ids.isEmpty, let state = palette else { return }
+        let index = min(max(state.selectedIndex(in: ids) + step, 0), ids.count - 1)
+        palette?.select(index, in: ids)
+        if state.mode == .themes {
+            previewThemeName = ids[index]
+        }
     }
 
     func closePalette(restoringTheme: Bool) {

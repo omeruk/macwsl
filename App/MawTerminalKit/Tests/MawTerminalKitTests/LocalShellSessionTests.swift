@@ -38,8 +38,10 @@ import Testing
 
         func session(
             _ session: any TerminalSession, didFallBackTo replacement: any TerminalSession,
-            notice: String
+            notice: String?
         ) {}
+
+        func session(_ session: any TerminalSession, didNotice notice: String) {}
     }
 
     func start(_ recorder: Recorder, size: TerminalSize = .default) throws -> LocalShellSession {

@@ -56,6 +56,11 @@ final class PaneController {
     /// Makes the session that Enter starts after the offer of a new session.
     @ObservationIgnored var makeSession: ((Profile) -> (any TerminalSession)?)?
 
+    /// Called once for each session of the pane, when its first output shows that its program
+    /// runs, and with it the machine of a Linux session.
+    @ObservationIgnored var onSessionStarted: (() -> Void)?
+    @ObservationIgnored private var hasOutput = false
+
     @ObservationIgnored private var appearance: TerminalAppearance?
     @ObservationIgnored private var started = false
     /// Whether the pane shows `[↩ new session]`, so that Enter starts one.
@@ -105,6 +110,7 @@ final class PaneController {
         termination = nil
         failure = nil
         offersNewSession = false
+        hasOutput = false
         start()
     }
 
@@ -149,6 +155,10 @@ final class PaneController {
 
 extension PaneController: TerminalSessionDelegate {
     func session(_ session: any TerminalSession, didReceive bytes: ArraySlice<UInt8>) {
+        if !hasOutput {
+            hasOutput = true
+            onSessionStarted?()
+        }
         terminalView.feed(byteArray: bytes)
     }
 
@@ -166,10 +176,16 @@ extension PaneController: TerminalSessionDelegate {
 
     func session(
         _ session: any TerminalSession, didFallBackTo replacement: any TerminalSession,
-        notice: String
+        notice: String?
     ) {
-        write(notice, style: "2")
+        if let notice {
+            write(notice, style: "2")
+        }
         replaceSession(with: replacement)
+    }
+
+    func session(_ session: any TerminalSession, didNotice notice: String) {
+        write(notice, style: "2")
     }
 
     func session(_ session: any TerminalSession, didTerminateWith status: TerminationStatus) {

@@ -25,7 +25,7 @@ struct CommandPaletteView: View {
     var body: some View {
         let state = model.palette ?? PaletteState()
         let (rows, total) = rows(for: state)
-        let selection = min(state.selection, max(rows.count - 1, 0))
+        let selection = state.selectedIndex(in: rows.map(\.id))
         ZStack(alignment: .top) {
             chrome.overlay.color
                 .contentShape(Rectangle())
@@ -53,11 +53,11 @@ struct CommandPaletteView: View {
         }
         .onAppear { queryFocused = true }
         .onKeyPress(.upArrow) {
-            move(by: -1, count: rows.count)
+            move(by: -1, in: rows)
             return .handled
         }
         .onKeyPress(.downArrow) {
-            move(by: 1, count: rows.count)
+            move(by: 1, in: rows)
             return .handled
         }
         .onKeyPress(.return) {
@@ -83,9 +83,7 @@ struct CommandPaletteView: View {
                 text: Binding(
                     get: { model.palette?.query ?? "" },
                     set: { query in
-                        model.palette?.query = query
-                        model.palette?.selection = 0
-                        previewSelectedTheme()
+                        if model.setPaletteQuery(query) { previewSelectedTheme() }
                     }),
                 prompt: Text(state.mode == .commands ? "Search commands" : "Search themes")
                     .foregroundStyle(chrome.textTabNumber.color)
@@ -112,7 +110,7 @@ struct CommandPaletteView: View {
                         rowView(row, selected: index == selection)
                             .onTapGesture { row.perform() }
                             .onHover { inside in
-                                if inside { model.palette?.selection = index }
+                                if inside { model.palette?.select(index, in: rows.map(\.id)) }
                             }
                     }
                 }
@@ -232,17 +230,15 @@ struct CommandPaletteView: View {
         }
     }
 
-    private func move(by step: Int, count: Int) {
-        guard count > 0, let selection = model.palette?.selection else { return }
-        model.palette?.selection = min(max(selection + step, 0), count - 1)
-        previewSelectedTheme()
+    private func move(by step: Int, in rows: [Row]) {
+        model.movePaletteSelection(by: step, in: rows.map(\.id))
     }
 
     /// In the theme list, shows the selected theme in the whole window.
     private func previewSelectedTheme() {
         guard let state = model.palette, state.mode == .themes else { return }
         let (rows, _) = rows(for: state)
-        let index = min(state.selection, max(rows.count - 1, 0))
+        let index = state.selectedIndex(in: rows.map(\.id))
         if rows.indices.contains(index) {
             model.previewThemeName = rows[index].title
         }

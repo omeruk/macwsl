@@ -121,6 +121,52 @@ import Testing
         #expect(unknown.defaultProfile == "distribution:Debian-13")
     }
 
+    /// Version 2 accepts `distribution:<name>` without another version bump, and keeps it as
+    /// written.
+    @Test func versionTwoKeepsANamedDistribution() throws {
+        let settings = try SettingsCoding.decode(
+            Data(#"{"version": 2, "defaultProfile": "distribution:Debian-13"}"#.utf8))
+        #expect(settings.defaultProfile == "distribution:Debian-13")
+        #expect(settings.newTabProfile == .distribution("Debian-13"))
+        let object =
+            try JSONSerialization.jsonObject(with: SettingsCoding.encode(settings))
+            as? [String: Any]
+        #expect(object?["version"] as? Int == 2)
+        #expect(object?["defaultProfile"] as? String == "distribution:Debian-13")
+    }
+
+    /// Profiles are built from the identifier itself; only a value that names no kind of
+    /// profile opens the default distribution.
+    @Test func theNewTabProfileIsBuiltFromTheSetting() {
+        var settings = Settings()
+        settings.localShell = "/bin/bash"
+        #expect(settings.profile(id: "local") == .localShell("/bin/bash"))
+        #expect(settings.profile(id: "default-distribution") == .defaultDistribution)
+        #expect(settings.profile(id: "distribution:ubuntu-24.04") == .distribution("ubuntu-24.04"))
+        #expect(settings.profile(id: "distribution:") == nil)
+        #expect(settings.profile(id: "ubuntu") == nil)
+        for (value, expected) in [
+            ("distribution:Debian-13", Profile.distribution("Debian-13")),
+            ("ubuntu", .defaultDistribution), ("local", .localShell("/bin/bash")),
+        ] {
+            settings.defaultProfile = value
+            #expect(settings.newTabProfile == expected)
+        }
+    }
+
+    /// Settings and the menus read `distribution:<name>` with the same rules: a name without
+    /// regard to case, and nothing after the prefix names no distribution.
+    @Test func aDistributionIdentifierIsReadInOnePlace() {
+        #expect(Profile.distributionName(in: "distribution:Ubuntu-24.04") == "Ubuntu-24.04")
+        #expect(Profile.distributionName(in: "distribution:") == nil)
+        #expect(Profile.distributionName(in: "local") == nil)
+        let ubuntu = Profile.distribution("Ubuntu-24.04")
+        expectTrue(ubuntu.isNamed(by: "distribution:ubuntu-24.04"))
+        expectFalse(ubuntu.isNamed(by: "distribution:"))
+        expectFalse(ubuntu.isNamed(by: "Ubuntu-24.04"))
+        expectTrue(Profile.defaultDistribution.isNamed(by: Profile.defaultDistributionID))
+    }
+
     @Test func newFilesStartAtTheDefaultDistribution() throws {
         #expect(Settings().defaultProfile == "default-distribution")
         let data = try SettingsCoding.encode(Settings())

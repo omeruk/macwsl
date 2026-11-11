@@ -9,16 +9,27 @@ public struct CommandRegistry: Hashable, Sendable {
     public let commands: [CommandDefinition]
     private let index: [CommandID: Int]
 
-    /// The registry for the given profiles. ⌘T opens a tab with `defaultProfile`; every profile
-    /// gets a `new tab: <profile>` command in the palette.
-    public init(profiles: [Profile], defaultProfile: String) {
+    /// The registry for the given profiles. Every profile gets a `new tab: <profile>` command
+    /// in the palette and the menu bar.
+    ///
+    /// ⌘T opens `newTabProfile`. When `profiles` does not list it, for example a distribution
+    /// before the daemon's list has arrived, or one that is no longer installed, ⌘T gets a
+    /// `new tab` command of its own, which the menu bar shows as `New Tab` and the palette as
+    /// `new tab`, without the profile's name: it opens that profile, and the session layer says
+    /// what the tab opened. Only the profiles given get a named command.
+    public init(profiles: [Profile], newTabProfile: Profile) {
         var commands: [CommandDefinition] = []
-        let defaultID =
-            profiles.contains { $0.id == defaultProfile } ? defaultProfile : profiles.first?.id
+        let listed = profiles.first { $0.isNamed(by: newTabProfile.id) }
 
         // Tabs.
+        if listed == nil {
+            commands.append(
+                CommandDefinition(
+                    .newTab(profile: newTabProfile.id), title: "new tab", menuTitle: "New Tab",
+                    group: .tab, shortcut: .command("t"), hint: "tab"))
+        }
         for profile in profiles {
-            let isDefault = profile.id == defaultID
+            let isDefault = profile.id == listed?.id
             commands.append(
                 CommandDefinition(
                     .newTab(profile: profile.id), title: "new tab: \(profile.paletteName)",
@@ -75,6 +86,18 @@ public struct CommandRegistry: Hashable, Sendable {
             CommandDefinition(
                 .openDistributions, title: "open distributions", menuTitle: "Distributions",
                 group: .distro, shortcut: .command("l", .shift), hint: "distros"),
+            CommandDefinition(
+                .shellInDistribution, title: "open a shell in the selected distribution",
+                group: .distro, shortcut: KeyShortcut(.return), hint: "shell",
+                scope: .screen(.distributions)),
+            CommandDefinition(
+                .stopDistribution, title: "stop the selected distribution", group: .distro,
+                shortcut: KeyShortcut(.character("s")), hint: "stop",
+                scope: .screen(.distributions)),
+            CommandDefinition(
+                .setDefaultDistribution, title: "make the selected distribution the default",
+                group: .distro, shortcut: KeyShortcut(.character("d")), hint: "set default",
+                scope: .screen(.distributions)),
             CommandDefinition(
                 .installDistribution, title: "install a distribution…",
                 menuTitle: "Install a Distribution…", group: .distro,
@@ -190,6 +213,14 @@ public struct CommandRegistry: Hashable, Sendable {
         case .installDistribution:
             // Installation arrives in phase 05.
             return false
+        case .shellInDistribution:
+            return context.selectedDistribution != nil
+        case .stopDistribution:
+            // A machine that is stopping or has stopped needs no stop.
+            let state = context.selectedDistribution?.state
+            return state == .starting || state == .running
+        case .setDefaultDistribution:
+            return context.selectedDistribution?.isDefault == false
         case .settingsMove, .settingsChange, .settingsOpenList, .settingsSwitchBox:
             return false
         default:
@@ -215,21 +246,25 @@ public struct CommandRegistry: Hashable, Sendable {
     }
 
     /// The hints for the selected tab. Terminal tabs show the main shortcuts, as in
-    /// `Main.dc.html`. Screens replace them with their own actions and `esc back`.
+    /// `Main.dc.html`. Screens replace them with their own actions and `esc back`. The
+    /// distributions screen shows the actions on a distribution, in the order of
+    /// `Distributions.dc.html`, only while one is selected.
     public func hints(in context: CommandContext) -> [Hint] {
         let ids: [CommandID]
         switch context.selection {
         case .none, .terminal:
-            let defaultTab = commands.first { definition in
-                if case .newTab = definition.id { return definition.shortcut != nil }
-                return false
-            }
             ids =
-                [defaultTab?.id].compactMap { $0 } + [
+                [newTabCommand].compactMap { $0 } + [
                     .splitRight, .openDistributions, .commandPalette, .openSettings,
                 ]
         case .screen(.distributions):
-            ids = [.installDistribution, .back]
+            let actions: [CommandID] = [
+                .shellInDistribution, .stopDistribution, .setDefaultDistribution,
+            ]
+            ids =
+                (context.selectedDistribution == nil ? [] : actions) + [
+                    .installDistribution, .back,
+                ]
         case .screen(.settings):
             ids = [.settingsMove, .settingsChange, .settingsOpenList, .settingsSwitchBox, .back]
         }
@@ -241,6 +276,21 @@ public struct CommandRegistry: Hashable, Sendable {
                 note: id == .installDistribution ? "arrives in a later version" : nil,
                 placement: definition.scope == .anyScreen ? .trailing : .leading)
         }
+    }
+
+    /// The action of `screen` that `key` performs when typed there without a modifier, such as
+    /// `s` on the distributions screen. The screen's view asks, so that a key and its hint
+    /// cannot differ.
+    public func command(forKey key: KeyShortcut.Key, on screen: ScreenKind) -> CommandID? {
+        commands.first { definition in
+            definition.kind == .action && definition.scope == .screen(screen)
+                && definition.shortcut == KeyShortcut(key)
+        }?.id
+    }
+
+    /// The command of ⌘T, which opens the new-tab profile.
+    public var newTabCommand: CommandID? {
+        commands.first { $0.id.isNewTab && $0.shortcut != nil }?.id
     }
 
     /// The commands the palette lists in `context`: those marked for the palette and enabled.

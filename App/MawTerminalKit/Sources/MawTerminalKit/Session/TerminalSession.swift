@@ -113,10 +113,18 @@ public protocol TerminalSessionDelegate: AnyObject {
     func session(_ session: any TerminalSession, didFailWith error: TerminalSessionError)
     /// The session could not open and offers `replacement` in its place, not yet started, as
     /// a new tab of the default distribution opens the local shell when no distribution is
-    /// installed. `notice` says why, in lines that end in a line feed. Nothing else follows.
+    /// installed. `notice`, if any, says why, in lines that end in a line feed. Nothing else
+    /// follows.
     func session(
         _ session: any TerminalSession, didFallBackTo replacement: any TerminalSession,
-        notice: String)
+        notice: String?)
+    /// A dim notice in lines that end in a line feed, shown before the session's output, such
+    /// as which distribution a tab opened in place of one that is not installed.
+    func session(_ session: any TerminalSession, didNotice notice: String)
+}
+
+extension TerminalSession {
+    public var splitProfile: Profile? { nil }
 }
 
 /// A program running behind a terminal pane: the local shell (`LocalShellSession`) or a Linux
@@ -141,6 +149,8 @@ public protocol TerminalSession: AnyObject {
     /// Never cached, so that a program that has just ended does not count. The main actor only
     /// awaits it.
     func foregroundProgram(within timeout: Duration) async -> ForegroundReport
+    /// The profile that a split of the session's pane opens, or `nil` for the pane's own.
+    var splitProfile: Profile? { get }
 
     /// Starts the program with the terminal at `size`.
     func start(size: TerminalSize) throws(TerminalSessionError)

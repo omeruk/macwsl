@@ -377,6 +377,16 @@ except that where maw's suggestion names a step that does not apply in a pane, s
 the command again, it words its own (`LinuxSession.suggestion(for:)`); the pane then offers a
 new session. A new tab of the default distribution opens the local shell instead, with a
 one-line notice, only on `noDistributionInstalled` and `daemonNotInstalled`.
+A new tab of a named distribution (`distribution:<name>`) that the daemon reports as
+`distributionNotInstalled` opens the default distribution instead, and its pane names both
+distributions in a one-line notice; the default distribution then falls back as above.
+
+Outside sessions, the app's `DaemonDistributions`
+(`App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift`) sends
+`listDistributions`, `status`, `setDefault`, and `terminate` for its profiles and its
+distributions screen. Each request connects a `DaemonClient` of its own and closes it once the
+answer arrives, so that the app holds no connection that would keep the daemon from its idle
+exit. The app reads the list when a menu, the palette, or the screen needs it, and never polls.
 
 ## Peer validation
 

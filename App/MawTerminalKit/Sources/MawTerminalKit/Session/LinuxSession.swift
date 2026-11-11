@@ -41,6 +41,21 @@ public final class LinuxSession: TerminalSession {
         @MainActor (MawProtocol.TerminalSize, @escaping GuestAgentClient.OutputHandler) ->
         any LinuxSessionCore
 
+    /// What a tab opens instead of a session that could not open, and the dim notice that
+    /// says why, in lines that end in a line feed.
+    public struct Fallback {
+        public var replacement: any TerminalSession
+        public var notice: String?
+
+        public init(replacement: any TerminalSession, notice: String?) {
+            self.replacement = replacement
+            self.notice = notice
+        }
+    }
+
+    /// Chooses the fallback for the error that ended the opening, or `nil` to show the error.
+    public typealias ChooseFallback = @MainActor (MawError) -> Fallback?
+
     public let id = UUID()
     @ObservationIgnored public weak var delegate: (any TerminalSessionDelegate)?
     @ObservationIgnored public private(set) var isRunning = false
@@ -48,7 +63,10 @@ public final class LinuxSession: TerminalSession {
     public private(set) var displayName: String
 
     @ObservationIgnored private let makeCore: MakeCore
-    @ObservationIgnored private let fallback: (@MainActor () -> any TerminalSession)?
+    @ObservationIgnored private let fallback: ChooseFallback?
+    @ObservationIgnored private let openingNotice: (@MainActor (String) -> String)?
+    /// The distribution's stored name once the session has opened.
+    @ObservationIgnored private var openedName: String?
     @ObservationIgnored private var core: (any LinuxSessionCore)?
     @ObservationIgnored private var pump: OutputPump<Ending>?
     @ObservationIgnored private var size = TerminalSize.default
@@ -60,29 +78,44 @@ public final class LinuxSession: TerminalSession {
     ///   - environment: The app's environment, whose valid `LC_ALL`, `LC_CTYPE`, or `LANG` the
     ///     guest uses if it has it (`ShellLocale.inherited`).
     ///   - locale: The Mac's language and region, for the guest's locale otherwise.
-    ///   - fallback: The session to offer instead when no distribution or no daemon is
-    ///     installed, such as the local shell.
+    ///   - openingNotice: The notice the pane shows, given the stored name, once the session
+    ///     has opened and before its output.
+    ///   - fallback: What the tab opens instead when the session cannot open.
     public convenience init(
         distribution: DistroName?,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        locale: Locale = .current, fallback: (@MainActor () -> any TerminalSession)? = nil
+        locale: Locale = .current, openingNotice: (@MainActor (String) -> String)? = nil,
+        fallback: ChooseFallback? = nil
     ) {
-        let guestLocale = Self.guestLocale(environment: environment, locale: locale)
+        self.init(
+            name: distribution?.rawValue, openingNotice: openingNotice, fallback: fallback,
+            makeCore: Self.daemonCore(
+                distribution: distribution, environment: environment, locale: locale))
+    }
+
+    init(
+        name: String?, openingNotice: (@MainActor (String) -> String)? = nil,
+        fallback: ChooseFallback? = nil, makeCore: @escaping MakeCore
+    ) {
+        displayName = name ?? "linux"
+        self.openingNotice = openingNotice
+        self.fallback = fallback
+        self.makeCore = makeCore
+    }
+
+    /// The core that opens `distribution`, or the default one for `nil`, through the daemon.
+    static func daemonCore(
+        distribution: DistroName?,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        locale: Locale = .current
+    ) -> MakeCore {
+        let guestLocale = guestLocale(environment: environment, locale: locale)
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-        self.init(name: distribution?.rawValue, fallback: fallback) { terminal, output in
+        return { terminal, output in
             DistributionSession(
                 distribution: distribution, terminal: terminal, locale: guestLocale,
                 programVersion: version, output: output)
         }
-    }
-
-    init(
-        name: String?, fallback: (@MainActor () -> any TerminalSession)? = nil,
-        makeCore: @escaping MakeCore
-    ) {
-        displayName = name ?? "linux"
-        self.fallback = fallback
-        self.makeCore = makeCore
     }
 
     /// The locale the guest should use: the app's own if it is valid, as the local shell keeps
@@ -104,13 +137,13 @@ public final class LinuxSession: TerminalSession {
         self.core = core
         self.pump = pump
         isRunning = true
+        Task { pump.finish(await core.waitForEnding()) }
+        // Output waits until the session has opened, so that the opening notice comes first.
+        // The pump holds it meanwhile; the core delivers output only after the shell started.
         Task { [weak self] in
-            if let name = await core.openShell() {
-                self?.displayName = name
+            if let name = await core.openShell(), let self, self.core === core {
+                self.opened(name)
             }
-            pump.finish(await core.waitForEnding())
-        }
-        Task { [weak self] in
             let ending = await pump.deliver { bytes in
                 if let self { self.delegate?.session(self, didReceive: bytes) }
             }
@@ -120,6 +153,20 @@ public final class LinuxSession: TerminalSession {
         }
     }
 
+    private func opened(_ name: String) {
+        displayName = name
+        openedName = name
+        if let openingNotice {
+            delegate?.session(self, didNotice: openingNotice(name))
+        }
+    }
+
+    /// The distribution that the session opened, by its stored name, so that a split opens
+    /// the same one even after the default changes.
+    public var splitProfile: Profile? {
+        openedName.map(Profile.distribution)
+    }
+
     private func ended(_ ending: Ending) {
         isRunning = false
         switch ending {
@@ -127,8 +174,8 @@ public final class LinuxSession: TerminalSession {
             delegate?.session(self, didTerminateWith: Self.terminationStatus(status))
         case .failed(let error):
             Logger.session.info("A Linux session failed: \(error.description, privacy: .public)")
-            if let fallback, let notice = Self.fallbackNotice(for: error) {
-                delegate?.session(self, didFallBackTo: fallback(), notice: notice)
+            if let chosen = fallback?(error) {
+                delegate?.session(self, didFallBackTo: chosen.replacement, notice: chosen.notice)
             } else {
                 delegate?.session(
                     self,
@@ -200,9 +247,9 @@ public final class LinuxSession: TerminalSession {
 
     // MARK: Errors in the pane
 
-    /// Why a tab opens its fallback, the local shell, in lines that end in a line feed. Only when
-    /// no distribution or no daemon is installed: in every other case a user expects Linux, so
-    /// the pane shows the error instead, and never runs a command on the Mac by mistake.
+    /// Why a tab opens the local shell instead, in lines that end in a line feed. Only when no
+    /// distribution or no daemon is installed: in every other case a user expects Linux, so the
+    /// pane shows the error instead, and never runs a command on the Mac by mistake.
     static func fallbackNotice(for error: MawError) -> String? {
         switch error {
         case .noDistributionInstalled:
