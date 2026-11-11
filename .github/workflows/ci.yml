@@ -66,10 +66,13 @@ jobs:
     # shader, so it is installed in this job only (docs/decisions/0008-app-package.md).
     runs-on: macos-26
     steps:
+      # The SDK decides some of SwiftUI's behavior, in the app and in the tests' runner alike
+      # (docs/decisions/0019-swiftui-behavior-in-app-tests.md).
       - name: Show toolchain versions
         run: |
           swift --version
           xcodebuild -version
+          echo "macOS SDK $(xcrun --sdk macosx --show-sdk-version)"
           swift format --version
 
       - name: Check out
