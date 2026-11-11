@@ -175,8 +175,10 @@ public final class DaemonDistributions: DistributionProvider {
                     return error
                 }
             }
-            // The request is on its way, and the answer takes the seconds of the guest's
-            // shutdown: the list says meanwhile that the machine is stopping.
+            // The answer takes the seconds of the guest's shutdown, so the list is read
+            // meanwhile, to show the machine stopping. Its request opens a connection of its
+            // own first, so it usually reaches the daemon after `terminate`, but nothing
+            // orders the two (`docs/known-limitations.md`).
             await self?.refresh()
             if let error = await stopping.value { throw error }
         }.get()
