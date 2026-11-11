@@ -154,6 +154,19 @@ import Testing
         }
     }
 
+    /// Settings and the menus read `distribution:<name>` with the same rules: a name without
+    /// regard to case, and nothing after the prefix names no distribution.
+    @Test func aDistributionIdentifierIsReadInOnePlace() {
+        #expect(Profile.distributionName(in: "distribution:Ubuntu-24.04") == "Ubuntu-24.04")
+        #expect(Profile.distributionName(in: "distribution:") == nil)
+        #expect(Profile.distributionName(in: "local") == nil)
+        let ubuntu = Profile.distribution("Ubuntu-24.04")
+        expectTrue(ubuntu.isNamed(by: "distribution:ubuntu-24.04"))
+        expectFalse(ubuntu.isNamed(by: "distribution:"))
+        expectFalse(ubuntu.isNamed(by: "Ubuntu-24.04"))
+        expectTrue(Profile.defaultDistribution.isNamed(by: Profile.defaultDistributionID))
+    }
+
     @Test func newFilesStartAtTheDefaultDistribution() throws {
         #expect(Settings().defaultProfile == "default-distribution")
         let data = try SettingsCoding.encode(Settings())

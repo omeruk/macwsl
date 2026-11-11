@@ -74,10 +74,7 @@ public struct Settings: Hashable, Sendable {
         switch id {
         case Profile.localShellID: return localShellProfile
         case Profile.defaultDistributionID: return .defaultDistribution
-        default:
-            guard id.hasPrefix(Profile.distributionIDPrefix) else { return nil }
-            let name = id.dropFirst(Profile.distributionIDPrefix.count)
-            return name.isEmpty ? nil : .distribution(String(name))
+        default: return Profile.distributionName(in: id).map(Profile.distribution)
         }
     }
 

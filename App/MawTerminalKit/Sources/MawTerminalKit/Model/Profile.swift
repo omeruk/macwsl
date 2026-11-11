@@ -40,6 +40,14 @@ public struct Profile: Hashable, Sendable, Identifiable {
         Profile(id: distributionIDPrefix + name, kind: .distribution(name: name))
     }
 
+    /// The name in a `distribution:<name>` identifier, or `nil` if `id` is not one or names
+    /// nothing.
+    public static func distributionName(in id: String) -> String? {
+        guard id.hasPrefix(distributionIDPrefix) else { return nil }
+        let name = id.dropFirst(distributionIDPrefix.count)
+        return name.isEmpty ? nil : String(name)
+    }
+
     /// The local shell profile for `shell`.
     public static func localShell(_ shell: String) -> Profile {
         Profile(id: localShellID, kind: .localShell(shell: shell))
@@ -67,10 +75,10 @@ public struct Profile: Hashable, Sendable, Identifiable {
     /// Whether `id` names this profile: the same identifier, or for a distribution the same
     /// name without regard to case, as the daemon looks names up.
     public func isNamed(by id: String) -> Bool {
-        guard case .distribution(let name) = kind, id.hasPrefix(Self.distributionIDPrefix) else {
+        guard case .distribution(let name) = kind, let named = Self.distributionName(in: id) else {
             return id == self.id
         }
-        return id.dropFirst(Self.distributionIDPrefix.count).lowercased() == name.lowercased()
+        return named.lowercased() == name.lowercased()
     }
 
     /// The user's login shell from the user database, or `/bin/zsh` if it has none.
