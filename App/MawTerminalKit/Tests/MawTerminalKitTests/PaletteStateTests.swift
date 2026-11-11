@@ -29,3 +29,74 @@ import Testing
         #expect(state.selectedIndex(in: ["maw", "paper", "night"]) == 1)
     }
 }
+
+/// The command palette's lists in a window: which view has the keys, how ↑↓ move the
+/// selection, and the theme preview. That SwiftUI delivers the keys to the palette's view once
+/// it has them is not covered here, because it needs a window on screen.
+@MainActor @Suite struct CommandPaletteTests {
+    /// Long enough for the window's deferred focus to run.
+    func settle() async {
+        try? await Task.sleep(for: .milliseconds(50))
+    }
+
+    /// Enter on "theme: switch" closes the command list and opens the theme list in the same
+    /// turn. The terminal must not take the keys from it, or ↑↓ and esc would reach the shell.
+    @Test func theThemeListKeepsTheKeysWhenItReplacesTheCommandList() async {
+        let (model, host, _) = WindowModelTests().window()
+        await settle()
+        let before = host.terminalFocuses
+        model.perform(.commandPalette)
+        model.perform(.switchTheme)
+        await settle()
+        #expect(model.palette?.mode == .themes)
+        #expect(host.terminalFocuses == before)
+
+        model.closePalette(restoringTheme: true)
+        await settle()
+        #expect(model.palette == nil)
+        #expect(host.terminalFocuses == before + 1)
+    }
+
+    /// ↑↓ move through the themes, each move previews the theme it selects, the ends stop the
+    /// selection, and esc restores the theme that was selected when the list opened.
+    @Test func arrowsPreviewEachThemeAndEscRestoresTheOriginal() throws {
+        let (model, _, _) = WindowModelTests().window()
+        let original = model.settings.theme
+        let names = model.settings.availableThemes.map(\.name)
+        let start = try #require(names.firstIndex(of: original))
+        model.perform(.switchTheme)
+        #expect(model.palette?.selectedIndex(in: names) == start)
+
+        for step in [1, 1, -1] {
+            let expected = min(
+                max((model.palette?.selectedIndex(in: names) ?? 0) + step, 0), names.count - 1)
+            model.movePaletteSelection(by: step, in: names)
+            #expect(model.palette?.selectedIndex(in: names) == expected)
+            #expect(model.previewThemeName == names[expected])
+            #expect(model.effectiveSettings.theme == names[expected])
+        }
+        model.movePaletteSelection(by: -names.count, in: names)
+        #expect(model.palette?.selectedIndex(in: names) == 0)
+        #expect(model.previewThemeName == names[0])
+        model.movePaletteSelection(by: names.count, in: names)
+        #expect(model.palette?.selectedIndex(in: names) == names.count - 1)
+
+        model.closePalette(restoringTheme: true)
+        #expect(model.previewThemeName == nil)
+        #expect(model.effectiveSettings.theme == original)
+        #expect(model.settings.theme == original)
+    }
+
+    /// In the command list, ↑↓ move the selection and preview nothing.
+    @Test func arrowsMoveThroughTheCommandsWithoutAPreview() {
+        let (model, _, _) = WindowModelTests().window()
+        model.perform(.commandPalette)
+        let ids = model.registry.paletteCommands(in: model.context).map { "\($0.id)" }
+        for step in [1, 1, -1] { model.movePaletteSelection(by: step, in: ids) }
+        #expect(model.palette?.selectedIndex(in: ids) == 1)
+        #expect(model.palette?.selectedRowID == ids[1])
+        #expect(model.previewThemeName == nil)
+        model.movePaletteSelection(by: -5, in: ids)
+        #expect(model.palette?.selectedIndex(in: ids) == 0)
+    }
+}

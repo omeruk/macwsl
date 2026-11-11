@@ -66,6 +66,8 @@ import Testing
         var answer = false
         var delay = Duration.zero
         var closed = 0
+        /// How many times the window gave the keyboard focus to a terminal.
+        var terminalFocuses = 0
 
         func confirm(_ confirmation: MawTerminalKit.Confirmation) async -> Bool {
             questions.append(confirmation)
@@ -75,7 +77,7 @@ import Testing
 
         func report(failure message: String, detail: String) { failures.append([message, detail]) }
         func closeWindow() { closed += 1 }
-        func focusTerminal(_ view: NSView) {}
+        func focusTerminal(_ view: NSView) { terminalFocuses += 1 }
         func openNewWindow() {}
         func setWindowTitle(_ title: String) {}
         func chromeDidChange() {}

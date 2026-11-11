@@ -234,11 +234,7 @@ struct CommandPaletteView: View {
     }
 
     private func move(by step: Int, in rows: [Row]) {
-        guard !rows.isEmpty, let state = model.palette else { return }
-        let ids = rows.map(\.id)
-        let index = min(max(state.selectedIndex(in: ids) + step, 0), rows.count - 1)
-        model.palette?.select(index, in: ids)
-        previewSelectedTheme()
+        model.movePaletteSelection(by: step, in: rows.map(\.id))
     }
 
     /// In the theme list, shows the selected theme in the whole window.

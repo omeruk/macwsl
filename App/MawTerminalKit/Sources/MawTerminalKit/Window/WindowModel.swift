@@ -452,7 +452,10 @@ final class WindowModel {
         guard let pane = focusedPane else { return }
         Task { [weak self] in
             await Task.yield()
-            self?.host?.focusTerminal(pane.terminalView)
+            // A palette that opened meanwhile keeps the keys, such as the theme list, which
+            // replaces the command list in the same turn: the terminal would receive them.
+            guard let self, self.palette == nil else { return }
+            self.host?.focusTerminal(pane.terminalView)
         }
     }
 
@@ -682,6 +685,18 @@ final class WindowModel {
         let names = settings.availableThemes.map(\.name)
         palette = PaletteState(
             mode: .themes, query: "", selection: names.firstIndex(of: settings.theme) ?? 0)
+    }
+
+    /// Moves the palette's selection by `step` among the rows with identifiers `ids`, stopping
+    /// at the ends. In the theme list, whose rows are identified by the theme's name, it
+    /// previews the theme now selected.
+    func movePaletteSelection(by step: Int, in ids: [String]) {
+        guard !ids.isEmpty, let state = palette else { return }
+        let index = min(max(state.selectedIndex(in: ids) + step, 0), ids.count - 1)
+        palette?.select(index, in: ids)
+        if state.mode == .themes {
+            previewThemeName = ids[index]
+        }
     }
 
     func closePalette(restoringTheme: Bool) {
