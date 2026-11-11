@@ -65,5 +65,6 @@ on screen, and it waits for SwiftUI by turns of the main actor, not by time.
   once the Mac or runner that runs the tests has that SDK and that macOS.
 - `otool -l` on a test bundle built by swift-build still reports the deployment target as its
   SDK. That value does not describe what the tests exercise.
-- The terminal app job prints the SDK version, so that a log shows which SDK's behavior the run
-  exercised.
+- The terminal app job prints the macOS SDK version and the SDK that each test runner,
+  `xctest` and `swiftpm-testing-helper`, was linked with, so that a log shows which SDK's
+  behavior the run exercised.

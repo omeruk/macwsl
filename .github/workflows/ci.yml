@@ -73,6 +73,13 @@ jobs:
           swift --version
           xcodebuild -version
           echo "macOS SDK $(xcrun --sdk macosx --show-sdk-version)"
+          for runner in "$(xcode-select -p)/usr/bin/xctest" \
+            "$(dirname "$(xcrun -f swift)")/../libexec/swift/pm/swiftpm-testing-helper"; do
+            if [ -f "$runner" ]; then
+              echo "$(basename "$runner") linked with SDK" \
+                "$(xcrun vtool -show-build "$runner" | awk '$1 == "sdk" { print $2; exit }')"
+            fi
+          done
           swift format --version
 
       - name: Check out
