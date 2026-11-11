@@ -21,18 +21,32 @@ import Testing
 
     @Test func exchangesMatchingVersions() async throws {
         let (host, peer) = try Self.socketPair()
-        // Both sides send before they read, so neither waits for the other.
-        async let peerVersion = runOnDedicatedThread { () -> UInt32? in
-            let connection = try? FrameConnection(peer)
-            return try? connection?.exchangeVersions(until: .now + .seconds(5))
-        }
         let hostConnection = try FrameConnection(host)
-        // A blocking exchange on the cooperative pool could leave no thread to start the peer.
-        let hostVersion = try await runOnDedicatedThread { () throws(ConnectionError) in
-            try hostConnection.exchangeVersions(until: .now + .seconds(5))
-        }
+        // Each side runs on a thread of its own, and both threads start here, before the test
+        // waits for anything, so that both take their deadlines together. A side started from
+        // a task would wait for a thread of the cooperative pool, which other tests can hold for
+        // seconds, while the other side's deadline ran (docs/known-limitations.md).
+        let (peerResult, peerFinished) = AsyncStream.makeStream(of: UInt32?.self)
+        let (hostResult, hostFinished) = AsyncStream.makeStream(
+            of: Result<UInt32, ConnectionError>.self)
+        // Both sides send before they read, so neither waits for the other.
+        try #require(
+            startDetachedThread {
+                let connection = try? FrameConnection(peer)
+                peerFinished.yield(try? connection?.exchangeVersions(until: .now + .seconds(5)))
+                peerFinished.finish()
+            })
+        try #require(
+            startDetachedThread {
+                hostFinished.yield(
+                    Result { () throws(ConnectionError) in
+                        try hostConnection.exchangeVersions(until: .now + .seconds(5))
+                    })
+                hostFinished.finish()
+            })
+        let hostVersion = try #require(await hostResult.first { _ in true }).get()
         #expect(hostVersion == ProtocolVersion.current)
-        #expect(await peerVersion == ProtocolVersion.current)
+        #expect(await peerResult.first { _ in true } == ProtocolVersion.current)
     }
 
     /// The client's request follows its version at once, without waiting for the agent's, which
