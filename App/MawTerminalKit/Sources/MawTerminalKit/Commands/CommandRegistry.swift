@@ -14,8 +14,9 @@ public struct CommandRegistry: Hashable, Sendable {
     ///
     /// ⌘T opens `newTabProfile`. When `profiles` does not list it, for example a distribution
     /// before the daemon's list has arrived, or one that is no longer installed, ⌘T gets a
-    /// `new tab` command of its own: it opens that profile, and the session layer says what the
-    /// tab opened, while the menus list only the profiles given.
+    /// `new tab` command of its own, which the menu bar shows as `New Tab` and the palette as
+    /// `new tab`, without the profile's name: it opens that profile, and the session layer says
+    /// what the tab opened. Only the profiles given get a named command.
     public init(profiles: [Profile], newTabProfile: Profile) {
         var commands: [CommandDefinition] = []
         let listed = profiles.first { $0.isNamed(by: newTabProfile.id) }
