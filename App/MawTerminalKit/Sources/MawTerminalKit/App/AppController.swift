@@ -51,6 +51,7 @@ public final class AppController: NSObject, NSApplicationDelegate, NSMenuItemVal
         settingsStore.startWatching()
         rebuildMenus()
         observeSettings()
+        observeDistributions()
         installKeyMonitor()
         openWindow()
         NSApp.activate()
@@ -135,12 +136,11 @@ public final class AppController: NSObject, NSApplicationDelegate, NSMenuItemVal
 
     // MARK: Settings
 
-    /// Applies settings changes to every window, and updates the menus' new-tab items when
-    /// the commands change: when the default profile does, or the daemon's list.
+    /// Applies settings changes to every window, and updates the menus' new-tab items, which
+    /// follow the default profile.
     private func observeSettings() {
         withObservationTracking {
             _ = settingsStore.settings
-            _ = distributions.distributions
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -149,6 +149,20 @@ public final class AppController: NSObject, NSApplicationDelegate, NSMenuItemVal
                 }
                 self.updateNewTabItems()
                 self.observeSettings()
+            }
+        }
+    }
+
+    /// Updates the menus' new-tab items when the daemon's list changes. The appearance does not
+    /// depend on it.
+    private func observeDistributions() {
+        withObservationTracking {
+            _ = distributions.distributions
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.updateNewTabItems()
+                self.observeDistributions()
             }
         }
     }
