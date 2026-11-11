@@ -268,24 +268,33 @@ import Testing
         #expect(store.settings.fontSize == 18)
         #expect(try Data(contentsOf: fileURL) == invalid)
     }
+}
 
-    @Test func editsOnDiskAreReloadedWithinOneSecond() async throws {
-        let store = SettingsStore(fileURL: fileURL)
-        store.load()
-        store.startWatching()
-        defer { store.stopWatching() }
+extension SettingsStoreTests {
+    /// Upper bounds on how soon the store follows edits on disk (decision record 0018). CI runs
+    /// this suite after the others, one test at a time, because every test of this package
+    /// shares the main actor.
+    @MainActor
+    @Suite struct Latency {
+        @Test func editsOnDiskAreReloadedWithinOneSecond() async throws {
+            let fileURL = try SettingsStoreTests().fileURL
+            let store = SettingsStore(fileURL: fileURL)
+            store.load()
+            store.startWatching()
+            defer { store.stopWatching() }
 
-        // An in-place write, as `echo > settings.json` does.
-        try Data(#"{"theme": "Dracula"}"#.utf8).write(to: fileURL)
-        #expect(await waitUntil(seconds: 1) { store.settings.theme == "Dracula" })
+            // An in-place write, as `echo > settings.json` does.
+            try Data(#"{"theme": "Dracula"}"#.utf8).write(to: fileURL)
+            #expect(await waitUntil(seconds: 1) { store.settings.theme == "Dracula" })
 
-        // An atomic replace, as most editors save.
-        try Data(#"{"theme": "One Dark"}"#.utf8).write(to: fileURL, options: .atomic)
-        #expect(await waitUntil(seconds: 1) { store.settings.theme == "One Dark" })
+            // An atomic replace, as most editors save.
+            try Data(#"{"theme": "One Dark"}"#.utf8).write(to: fileURL, options: .atomic)
+            #expect(await waitUntil(seconds: 1) { store.settings.theme == "One Dark" })
 
-        // And again after the replace, which the watcher must have followed.
-        try Data(#"{"theme": "Gruvbox Dark"}"#.utf8).write(to: fileURL)
-        #expect(await waitUntil(seconds: 1) { store.settings.theme == "Gruvbox Dark" })
+            // And again after the replace, which the watcher must have followed.
+            try Data(#"{"theme": "Gruvbox Dark"}"#.utf8).write(to: fileURL)
+            #expect(await waitUntil(seconds: 1) { store.settings.theme == "Gruvbox Dark" })
+        }
     }
 }
 

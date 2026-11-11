@@ -31,12 +31,15 @@ import Testing
 }
 
 /// The command palette's lists in a window: which view has the keys, how ↑↓ move the
-/// selection, and the theme preview. That SwiftUI delivers the keys to the palette's view once
-/// it has them is not covered here, because it needs a window on screen.
+/// selection, and the theme preview. How SwiftUI delivers the keys to the palette's view, and
+/// what its query field writes back, is covered in `CommandPaletteWindowTests`.
 @MainActor @Suite struct CommandPaletteTests {
-    /// Long enough for the window's deferred focus to run.
+    /// Lets the window's deferred focus run. That focus waits one turn of the main actor
+    /// (`WindowModel.focusSelectedTab()`), and the main actor runs its jobs in order, so a few
+    /// turns are enough however long another test holds the main thread. A sleep was not: a
+    /// test that held the main thread longer than the sleep let the sleep end first.
     func settle() async {
-        try? await Task.sleep(for: .milliseconds(50))
+        for _ in 0..<10 { await Task.yield() }
     }
 
     /// Enter on "theme: switch" closes the command list and opens the theme list in the same
