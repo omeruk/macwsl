@@ -44,9 +44,12 @@ import Testing
                     })
                 hostFinished.finish()
             })
-        let hostVersion = try #require(await hostResult.first { _ in true }).get()
-        #expect(hostVersion == ProtocolVersion.current)
-        #expect(await peerResult.first { _ in true } == ProtocolVersion.current)
+        // Both results are collected before either is checked, so that a failure reports what
+        // each side saw. The peer's deadline bounds the wait for its result.
+        let hostOutcome = try #require(await hostResult.first { _ in true })
+        let peerVersion = await peerResult.first { _ in true }
+        #expect(peerVersion == ProtocolVersion.current)
+        #expect(try hostOutcome.get() == ProtocolVersion.current)
     }
 
     /// The client's request follows its version at once, without waiting for the agent's, which
