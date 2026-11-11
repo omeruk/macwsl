@@ -76,12 +76,14 @@ public struct SettingsForm: Sendable {
                     value: "\(Int((settings.backgroundOpacity * 100).rounded()))%", kind: .number),
             ]
         case .general:
-            // The options are the profiles given; a setting that names a distribution the list
-            // does not contain still shows that name, which ⌘T opens.
-            let names = profiles.map(\.paletteName)
+            // The options are the profiles given. A setting that names a distribution the list
+            // does not contain, which ⌘T still opens, is the last option, as for a font family,
+            // so that ←→ and the list start from the value shown.
+            var names = profiles.map(\.paletteName)
             let newTab = settings.newTabProfile
-            let selected =
-                profiles.first { $0.isNamed(by: newTab.id) }?.paletteName ?? newTab.paletteName
+            let listed = profiles.first { $0.isNamed(by: newTab.id) }
+            if listed == nil { names.append(newTab.paletteName) }
+            let selected = listed?.paletteName ?? newTab.paletteName
             let shell = settings.localShell ?? ""
             return [
                 choice(.defaultProfile, "default profile", names, selected: selected),

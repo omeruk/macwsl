@@ -73,8 +73,9 @@ import Testing
     }
 
     /// The options are the listed profiles. A setting that names a distribution the list does
-    /// not contain shows that name; one in another case shows the listed spelling.
-    @Test func theDefaultProfileShowsTheSettingAndListsOnlyTheGivenProfiles() {
+    /// not contain shows that name, as the last option; one in another case shows the listed
+    /// spelling.
+    @Test func theDefaultProfileShowsTheSettingAmongTheGivenProfiles() {
         let profiles = Settings().profiles(distributions: ["Ubuntu-24.04"])
         func field(_ value: String) -> SettingsForm.Field? {
             var settings = Settings()
@@ -84,12 +85,29 @@ import Testing
         let options = profiles.map(\.paletteName)
         #expect(options.contains("Ubuntu-24.04") && !options.contains("Debian-13"))
         #expect(field("distribution:Debian-13")?.value == "Debian-13")
-        #expect(field("distribution:Debian-13")?.kind == .choice(options: options, selected: 0))
+        #expect(
+            field("distribution:Debian-13")?.kind
+                == .choice(options: options + ["Debian-13"], selected: options.count))
         #expect(field("distribution:ubuntu-24.04")?.value == "Ubuntu-24.04")
         #expect(field("distribution:ubuntu-24.04")?.kind == .choice(options: options, selected: 1))
         let form = SettingsForm(settings: Settings(), profiles: profiles)
         #expect(
             form.choosing(.defaultProfile, index: 1).defaultProfile == "distribution:Ubuntu-24.04")
+    }
+
+    /// ←→ on a setting that names a distribution the list does not contain moves from that
+    /// value: forward wraps to the first profile, back goes to the last listed one.
+    @Test func steppingFromADistributionThatIsNotListedStartsFromIt() {
+        var settings = Settings()
+        settings.defaultProfile = "distribution:Debian-13"
+        let form = SettingsForm(
+            settings: settings, profiles: settings.profiles(distributions: ["Ubuntu-24.04"]))
+        #expect(
+            form.stepping(.defaultProfile, forward: true).defaultProfile
+                == Profile.defaultDistributionID)
+        #expect(
+            form.stepping(.defaultProfile, forward: false).defaultProfile == Profile.localShellID)
+        #expect(form.choosing(.defaultProfile, index: 3).defaultProfile == "distribution:Debian-13")
     }
 
     @Test func anEmptyLocalShellMeansTheLoginShell() {
