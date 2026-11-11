@@ -44,6 +44,12 @@ public enum CommandID: Hashable, Sendable {
     case settingsChange
     case settingsOpenList
     case settingsSwitchBox
+
+    /// Whether the command opens a new tab, of any profile.
+    public var isNewTab: Bool {
+        if case .newTab = self { return true }
+        return false
+    }
 }
 
 /// The groups shown in the palette and on the keyboard settings page.

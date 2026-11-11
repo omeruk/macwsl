@@ -290,10 +290,7 @@ public struct CommandRegistry: Hashable, Sendable {
 
     /// The command of ⌘T, which opens the new-tab profile.
     public var newTabCommand: CommandID? {
-        commands.first { definition in
-            if case .newTab = definition.id { return definition.shortcut != nil }
-            return false
-        }?.id
+        commands.first { $0.id.isNewTab && $0.shortcut != nil }?.id
     }
 
     /// The commands the palette lists in `context`: those marked for the palette and enabled.

@@ -264,4 +264,38 @@ extension DaemonDistributions {
         #expect(menu.items.map(\.title).filter { !$0.hasPrefix("New Tab") } == others)
         #expect(menu.items.first { $0.title == "New Tab" }?.keyEquivalent == "t")
     }
+
+    /// The item of ⌘T comes first, and the others keep the profiles' order: with a listed
+    /// distribution as the new-tab profile, and with one that the list does not contain.
+    @Test func theNewTabItemOfCommandTComesFirst() throws {
+        _ = NSApplication.shared
+        let profiles = Settings().profiles(distributions: ["Debian-13", "Ubuntu-24.04"])
+        let local = Settings().localShellProfile.paletteName
+        func titles(_ newTabProfile: Profile) throws -> [String] {
+            let registry = CommandRegistry(profiles: profiles, newTabProfile: newTabProfile)
+            let controller = AppController(
+                settingsStore: SettingsStore(
+                    fileURL: FileManager.default.temporaryDirectory
+                        .appending(path: "maw-menu-\(UUID().uuidString).json")),
+                distributions: FakeDaemonClient().provider())
+            let menu = try #require(
+                MenuBuilder(registry: registry, target: controller).build().items
+                    .compactMap(\.submenu).first { $0.delegate === controller })
+            return menu.items.compactMap { item in
+                guard let box = item.representedObject as? CommandBox, box.id.isNewTab
+                else { return nil }
+                return item.keyEquivalent == "t" ? "⌘T \(item.title)" : item.title
+            }
+        }
+        #expect(
+            try titles(.distribution("Ubuntu-24.04")) == [
+                "⌘T New Tab", "New Tab: default distribution", "New Tab: Debian-13",
+                "New Tab: \(local)",
+            ])
+        #expect(
+            try titles(.distribution("Fedora-42")) == [
+                "⌘T New Tab", "New Tab: default distribution", "New Tab: Debian-13",
+                "New Tab: Ubuntu-24.04", "New Tab: \(local)",
+            ])
+    }
 }

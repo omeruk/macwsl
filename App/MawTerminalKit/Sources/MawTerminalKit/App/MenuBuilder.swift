@@ -45,8 +45,9 @@ struct MenuBuilder {
 
     /// The new-tab items, the default profile's, which has ⌘T, first.
     private func newTabItems() -> [NSMenuItem] {
-        let newTabs = registry.commands.filter { Self.isNewTab($0.id) }
-        return newTabs.sorted { ($0.shortcut != nil) && ($1.shortcut == nil) }
+        let newTabs = registry.commands.filter(\.id.isNewTab)
+        let first = registry.newTabCommand
+        return (newTabs.filter { $0.id == first } + newTabs.filter { $0.id != first })
             .map(menuItem(for:))
     }
 
@@ -54,8 +55,7 @@ struct MenuBuilder {
     /// is open shows the profiles as soon as they change.
     func replaceNewTabItems(in menu: NSMenu) {
         let indices = menu.items.indices.filter { index in
-            (menu.items[index].representedObject as? CommandBox).map { Self.isNewTab($0.id) }
-                ?? false
+            (menu.items[index].representedObject as? CommandBox)?.id.isNewTab ?? false
         }
         guard let first = indices.first else { return }
         for index in indices.reversed() {
@@ -64,11 +64,6 @@ struct MenuBuilder {
         for (offset, item) in newTabItems().enumerated() {
             menu.insertItem(item, at: first + offset)
         }
-    }
-
-    private static func isNewTab(_ id: CommandID) -> Bool {
-        if case .newTab = id { return true }
-        return false
     }
 
     private func menuItem(for definition: CommandDefinition) -> NSMenuItem {
