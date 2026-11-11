@@ -21,7 +21,10 @@ import Testing
                 "confirm quit",
             ])
         #expect(form().fields(on: .keyboard).isEmpty)
-        #expect(SettingsPage.profiles.placeholder != nil)
+        // The profiles themselves arrived with phase 11b; their own settings have not.
+        #expect(
+            SettingsPage.profiles.placeholder
+                == "Settings for each profile arrive in a later version (roadmap phase 11).")
         #expect(SettingsPage.distributions.placeholder != nil)
         #expect(SettingsPage.appearance.placeholder == nil)
     }

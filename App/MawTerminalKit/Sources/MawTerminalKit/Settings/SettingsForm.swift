@@ -8,8 +8,7 @@ public enum SettingsPage: String, Hashable, Sendable, CaseIterable {
     public var placeholder: String? {
         switch self {
         case .profiles:
-            "One profile per installed distribution arrives in a later version (roadmap "
-                + "phase 11b)."
+            "Settings for each profile arrive in a later version (roadmap phase 11)."
         case .distributions:
             "Distribution settings arrive in a later version (roadmap phase 11)."
         case .appearance, .general, .keyboard:
