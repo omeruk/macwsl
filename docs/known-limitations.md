@@ -388,17 +388,20 @@ from `main`.
 - **Tests fill the cooperative pool for several seconds at the start of the general group.**
   - **Seen:** In CI, where `swift test` runs every test of the general group in one process,
     synchronous tests that are CPU-bound or that block occupy every thread of the cooperative
-    pool for about 3 to 10 seconds after the group starts. Examples are the argument parser's
-    tests in a debug build (`ValidationTests`, `DebugBootParsingTests`) and
-    `PeerRequirementTests.acceptsOnlyMawsIdentifiers`, which waits for `codesign` with
-    `waitUntilExit()`. While the pool is full, no other task in the process starts or resumes,
-    so nearly every test that started before the stall reports its length as its duration. A
-    test with a wall-clock deadline that runs on a thread of its own while its counterpart
-    needs the pool can therefore fail, as `HandshakeTests.exchangesMatchingVersions()` did
-    until its peer moved to a thread of its own (CI runs 42512716425, 42574910845,
-    42644895862, 42807002034 and 42834158953, each passing on a re-run). Any future test with
-    that pattern can fail the same way. A deadline measured by a task, such as a
-    `Task.sleep`, is delayed by the same stall and does not expire early.
+    pool for about 3 to 10 seconds after the group starts. The CPU-bound ones are mainly the
+    argument parser's tests in a debug build (`ValidationTests`, `DebugBootParsingTests`),
+    with `ImageCacheTests`, `DistributionStoreTests` and `RootCheckScriptTests`. The blocking
+    one was `PeerRequirementTests.acceptsOnlyMawsIdentifiers`, which waited for `codesign`
+    with `waitUntilExit()` in seven parallel cases; it now suspends instead, but `codesign`
+    itself still competes for the CPU. While the pool is full, no other task in the process
+    starts or resumes, so nearly every test that started before the stall reports its length
+    as its duration. A test with a wall-clock deadline that runs on a thread of its own while
+    its counterpart needs the pool can therefore fail, as
+    `HandshakeTests.exchangesMatchingVersions()` did until its peer moved to a thread of its
+    own (CI runs 42512716425, 42574910845, 42644895862, 42807002034 and 42834158953, each
+    passing on a re-run). Any future test with that pattern can fail the same way. A deadline
+    measured by a task, such as a `Task.sleep`, is delayed by the same stall and does not
+    expire early.
   - **Evidence:** In each of those runs and in the passing run 42516767842 of `main`, tests
     from unrelated modules finish with the same duration to the millisecond, for example
     `reportsTheHostLimits()` at 5.373 s with about 60 others in run 42574910845, and the test
@@ -416,7 +419,10 @@ from `main`.
   - **Phase:** None; a `fix/` branch. Run the CPU-bound and blocking synchronous tests off the
     pool or in a group of their own, and keep tests with wall-clock deadlines independent of
     the pool, as `scripts/test-groups.sh` and `docs/decisions/0018-test-groups.md` do for
-    load and latency.
+    load and latency. A helper in `Sources/MawProtocol/Threads.swift` that starts a thread at
+    once and returns its result to await later would keep that rule in one place instead of
+    a comment in each test; `Sources/MawProtocol` is a Guest workflow path, so the branch that
+    fixed the handshake test changed test code only.
 - **The app package's tests do not run under the app's SDK.**
   - **Seen:** `swift test --package-path App/MawTerminalKit` links the tests with the macOS 14
     SDK, the deployment target, while Xcode links the app with the current SDK (27.2 on the
