@@ -687,6 +687,19 @@ final class WindowModel {
             mode: .themes, query: "", selection: names.firstIndex(of: settings.theme) ?? 0)
     }
 
+    /// Sets the palette's query as the user types it; a new query selects its first match.
+    /// SwiftUI also writes the unchanged text back when the field redraws, as it does when a
+    /// theme is previewed: that write must not move the selection back to the first row.
+    /// - Returns: Whether the query changed.
+    @discardableResult
+    func setPaletteQuery(_ query: String) -> Bool {
+        guard let palette, palette.query != query else { return false }
+        self.palette?.query = query
+        self.palette?.selection = 0
+        self.palette?.selectedRowID = nil
+        return true
+    }
+
     /// Moves the palette's selection by `step` among the rows with identifiers `ids`, stopping
     /// at the ends. In the theme list, whose rows are identified by the theme's name, it
     /// previews the theme now selected.

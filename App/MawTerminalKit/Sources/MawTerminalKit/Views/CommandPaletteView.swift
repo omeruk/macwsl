@@ -83,10 +83,7 @@ struct CommandPaletteView: View {
                 text: Binding(
                     get: { model.palette?.query ?? "" },
                     set: { query in
-                        model.palette?.query = query
-                        model.palette?.selection = 0
-                        model.palette?.selectedRowID = nil
-                        previewSelectedTheme()
+                        if model.setPaletteQuery(query) { previewSelectedTheme() }
                     }),
                 prompt: Text(state.mode == .commands ? "Search commands" : "Search themes")
                     .foregroundStyle(chrome.textTabNumber.color)

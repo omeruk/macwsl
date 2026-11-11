@@ -87,6 +87,41 @@ import Testing
         #expect(model.settings.theme == original)
     }
 
+    /// A preview redraws the query field, and SwiftUI writes the unchanged text back through
+    /// its binding, as the app linked against the macOS 27 SDK does. That write must leave the
+    /// selection and the preview where ↑↓ put them; only a new query selects its first match.
+    @Test func writingTheSameQueryBackKeepsTheSelectionAndThePreview() throws {
+        let (model, _, _) = WindowModelTests().window()
+        let names = model.settings.availableThemes.map(\.name)
+        model.perform(.switchTheme)
+        model.movePaletteSelection(by: 1, in: names)
+        model.movePaletteSelection(by: 1, in: names)
+        let selected = try #require(model.palette?.selectedIndex(in: names))
+        #expect(selected == 2)
+
+        expectFalse(model.setPaletteQuery(""))
+        #expect(model.palette?.selectedIndex(in: names) == selected)
+        #expect(model.previewThemeName == names[selected])
+        model.movePaletteSelection(by: 1, in: names)
+        #expect(model.palette?.selectedIndex(in: names) == selected + 1)
+
+        expectTrue(model.setPaletteQuery("dra"))
+        #expect(model.palette?.selection == 0)
+        #expect(model.palette?.selectedRowID == nil)
+    }
+
+    /// The theme list opens on the current theme, and the field's first write of its empty
+    /// query does not move it to the first row.
+    @Test func theThemeListOpensOnTheCurrentTheme() {
+        let (model, _, _) = WindowModelTests().window { $0.theme = "Dracula" }
+        let names = model.settings.availableThemes.map(\.name)
+        model.perform(.commandPalette)
+        expectTrue(model.setPaletteQuery("theme"))
+        model.perform(.switchTheme)
+        expectFalse(model.setPaletteQuery(""))
+        #expect(model.palette.map { names[$0.selectedIndex(in: names)] } == "Dracula")
+    }
+
     /// In the command list, ↑↓ move the selection and preview nothing.
     @Test func arrowsMoveThroughTheCommandsWithoutAPreview() {
         let (model, _, _) = WindowModelTests().window()
