@@ -236,7 +236,7 @@ import XPC
         ("dev.maw.app.helper", false), ("dev.maw", false), ("maw-5555", false),
         ("com.example.app", false),
     ])
-    func acceptsOnlyMawsIdentifiers(identifier: String, isAccepted: Bool) throws {
+    func acceptsOnlyMawsIdentifiers(identifier: String, isAccepted: Bool) async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "maw-peer-requirement-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -250,8 +250,12 @@ import XPC
             program.path(percentEncoded: false),
         ]
         codesign.standardError = FileHandle.nullDevice
+        // The test suspends until `codesign` exits rather than blocking in `waitUntilExit()`,
+        // which would hold a thread of the cooperative pool (docs/known-limitations.md).
+        let (exit, exited) = AsyncStream.makeStream(of: Void.self)
+        codesign.terminationHandler = { _ in exited.finish() }
         try codesign.run()
-        codesign.waitUntilExit()
+        for await _ in exit {}
         try #require(codesign.terminationStatus == 0)
 
         var code: SecStaticCode?
