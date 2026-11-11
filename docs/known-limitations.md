@@ -385,29 +385,38 @@ from `main`.
     `App/MawTerminalKit/Sources/MawTerminalKit/Session/OutputPump.swift`;
     `WindowModel.foregroundTimeout`.
   - **Phase:** None. The question still asks, so nothing closes without the user's consent.
-- **`HandshakeTests.exchangesMatchingVersions()` times out in CI.**
-  - **Seen:** The test fails with "timed out waiting for the protocol version" when it exceeds
-    its 5-second deadline. Each failure passed on a single re-run of the job, without a change,
-    and locally the test takes about 0.014 s.
-  - **Evidence:** `Tests/MawProtocolTests/HandshakeTests.swift:22`. The failures, each in the
-    general group of "Build, test, lint" and each followed by a passing re-run:
-    - CI run 42512716425 of pull request #22, attempt 1: 10.277 s, on a commit that changed
-      only Markdown.
-    - CI run 42574910845 of pull request #25 (`cb4ebe9`), attempt 1: 5.673 s; attempt 2
-      passed. In the same process the pure test `reportsTheHostLimits()` took 5.373 s, so the
-      whole test process stalled for about 5.4 s at the start of the group.
-    - CI run 42644895862 of pull request #25 (`e3511d9`), attempt 1: 5.704 s; attempt 2
-      passed.
-    - CI run 42807002034 of pull request #25 (`a027005`), attempt 1: 5.939 s, with
-      `reportsTheHostLimits()` at 5.729 s; attempt 2 passed.
-    - CI run 42834158953 of pull request #26 (`fefacb0`), attempt 1: 6.939 s, with
-      `reportsTheHostLimits()` at 6.785 s; attempt 2 passed.
-    The same stall appears in a passing run of `main`, CI run 42516767842, where
-    `reportsTheHostLimits()` took 6.355 s and this test 6.625 s. The cause of the stall is not
-    established.
-  - **Phase:** None; a `fix/` branch after pull request #26: establish what stalls the test
-    process at the start of the general group, or make the test's deadline independent of such
-    a stall, without loosening what it checks.
+- **Tests fill the cooperative pool for several seconds at the start of the general group.**
+  - **Seen:** In CI, where `swift test` runs every test of the general group in one process,
+    synchronous tests that are CPU-bound or that block occupy every thread of the cooperative
+    pool for about 3 to 10 seconds after the group starts. Examples are the argument parser's
+    tests in a debug build (`ValidationTests`, `DebugBootParsingTests`) and
+    `PeerRequirementTests.acceptsOnlyMawsIdentifiers`, which waits for `codesign` with
+    `waitUntilExit()`. While the pool is full, no other task in the process starts or resumes,
+    so nearly every test that started before the stall reports its length as its duration. A
+    test with a wall-clock deadline that runs on a thread of its own while its counterpart
+    needs the pool can therefore fail, as `HandshakeTests.exchangesMatchingVersions()` did
+    until its peer moved to a thread of its own (CI runs 42512716425, 42574910845,
+    42644895862, 42807002034 and 42834158953, each passing on a re-run). Any future test with
+    that pattern can fail the same way. A deadline measured by a task, such as a
+    `Task.sleep`, is delayed by the same stall and does not expire early.
+  - **Evidence:** In each of those runs and in the passing run 42516767842 of `main`, tests
+    from unrelated modules finish with the same duration to the millisecond, for example
+    `reportsTheHostLimits()` at 5.373 s with about 60 others in run 42574910845, and the test
+    events stop for seconds while tests are still being started. Locally, with the toolchain
+    of CI's layout reproduced by `swift test --build-system native` (one test bundle, one
+    process), the same signature appears: the stall lasts about 1.9 s on an idle 8-core Mac,
+    2.5 s with 8 busy processes, 3.2 s with 16, and about 6 s with
+    `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`, which narrows the pool to one thread. The last
+    condition reproduced the handshake failure, and timing probes showed the host taking its
+    deadline at +0.0001 s and the peer's thread starting at +5.2 s. Samples of the local
+    process during the stall show every pool thread running the tests named above. A thread
+    sample from the CI runner itself is missing; the CI evidence is the log signature only.
+    The default local build (`swiftbuild`, one test bundle per target) runs each target in a
+    process of its own, so a plain local `swift test` shows a much shorter stall.
+  - **Phase:** None; a `fix/` branch. Run the CPU-bound and blocking synchronous tests off the
+    pool or in a group of their own, and keep tests with wall-clock deadlines independent of
+    the pool, as `scripts/test-groups.sh` and `docs/decisions/0018-test-groups.md` do for
+    load and latency.
 - **The app package's tests do not run under the app's SDK.**
   - **Seen:** `swift test --package-path App/MawTerminalKit` links the tests with the macOS 14
     SDK, the deployment target, while Xcode links the app with the current SDK (27.2 on the
