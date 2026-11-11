@@ -46,6 +46,18 @@ from `main`.
   - **Evidence:** [Decision record 0015](decisions/0015-sessions-through-pam.md), "Consequence
     for phase 07", which lists the options.
   - **Phase:** 07.
+- **A `distribution:<name>` setting is shown in the pane without a check.**
+  - **Seen:** When `defaultProfile` in `~/Library/Application Support/maw/settings.json` names
+    a distribution that is not a valid name, ⌘T opens the default distribution, and the pane's
+    notice includes the stored text unchanged. The pane passes the notice to the terminal
+    emulator, so control characters in the text take effect there. The file is the user's own,
+    so this matters only if the file share lets the guest write `~/Library`.
+  - **Evidence:** `Profile.makeSession(localShell:cores:)` in
+    `App/MawTerminalKit/Sources/MawTerminalKit/Session/Profile+Session.swift`, whose notice
+    takes the name as the setting gives it; `PaneController.write(_:style:)`. Pull request
+    #26, security review.
+  - **Phase:** 07, if its file share exposes `~/Library` to the guest: show only a valid
+    distribution name, or remove control characters before the notice is written.
 
 ## Phase 08: Networking
 
@@ -71,19 +83,6 @@ from `main`.
     `systemd-timesyncd` after `systemd-resolved`, which removes that wait without depending on
     this item; the decision record lists the measurements.
   - **Phase:** 08, together with DNS under VPNs.
-
-## Phase 11b, second pull request: Distribution profiles and the distributions screen
-
-Pull request #25 delivers the first half of phase 11b, Linux tabs in the terminal app. These
-items are the second half, which a second pull request delivers
-(`prompts/11b-linux-sessions.md`).
-
-- **`README.md` does not describe Linux tabs.**
-  - **Seen:** "Running the terminal app" describes building and running the app, but not
-    that ⌘T opens the default distribution, the fallback to the local shell, the errors in the
-    pane, the new-session offer, or the close confirmations.
-  - **Evidence:** `README.md`, "Running the terminal app".
-  - **Phase:** 11b, second pull request, together with the profiles and the screen.
 
 ## Phase 11c: Live figures on the distributions screen
 
@@ -245,26 +244,6 @@ items are the second half, which a second pull request delivers
     `Sources/MawDaemonKit/DaemonService.swift`; the `terminate` request carries no reason of
     its client.
   - **Phase:** 12b: the reason names what stopped the machine, such as the terminal app.
-- **`HandshakeTests.exchangesMatchingVersions()` times out in CI.**
-  - **Seen:** The test fails with "timed out waiting for the protocol version" when it exceeds
-    its 5-second deadline. Each failure passed on a single re-run of the job, without a change,
-    and locally the test takes about 0.014 s.
-  - **Evidence:** `Tests/MawProtocolTests/HandshakeTests.swift:22`. The failures, each in the
-    general group of "Build, test, lint" and each followed by a passing re-run:
-    - CI run 42512716425 of pull request #22, attempt 1: 10.277 s, on a commit that changed
-      only Markdown.
-    - CI run 42574910845 of pull request #25 (`cb4ebe9`), attempt 1: 5.673 s; attempt 2
-      passed. In the same process the pure test `reportsTheHostLimits()` took 5.373 s, so the
-      whole test process stalled for about 5.4 s at the start of the group.
-    - CI run 42644895862 of pull request #25 (`e3511d9`), attempt 1: 5.704 s; attempt 2
-      passed.
-    The same stall appears in a passing run of `main`, CI run 42516767842, where
-    `reportsTheHostLimits()` took 6.355 s and this test 6.625 s. The cause of the stall is not
-    established.
-  - **Phase:** 12b, through a `fix/` branch after pull request #25: establish what stalls the
-    test process at the start of the general group, or make the test's deadline independent of
-    such a stall, without loosening what it checks.
-
 - **The terminal app's local shell start waits on the main thread until the shell runs.**
   - **Seen:** `maw_terminal_spawn` forks, and the parent reads the child's report pipe until
     `execve` closes it. Before `execve`, the child changes to the start directory, the home
@@ -406,6 +385,45 @@ items are the second half, which a second pull request delivers
     `App/MawTerminalKit/Sources/MawTerminalKit/Session/OutputPump.swift`;
     `WindowModel.foregroundTimeout`.
   - **Phase:** None. The question still asks, so nothing closes without the user's consent.
+- **`HandshakeTests.exchangesMatchingVersions()` times out in CI.**
+  - **Seen:** The test fails with "timed out waiting for the protocol version" when it exceeds
+    its 5-second deadline. Each failure passed on a single re-run of the job, without a change,
+    and locally the test takes about 0.014 s.
+  - **Evidence:** `Tests/MawProtocolTests/HandshakeTests.swift:22`. The failures, each in the
+    general group of "Build, test, lint" and each followed by a passing re-run:
+    - CI run 42512716425 of pull request #22, attempt 1: 10.277 s, on a commit that changed
+      only Markdown.
+    - CI run 42574910845 of pull request #25 (`cb4ebe9`), attempt 1: 5.673 s; attempt 2
+      passed. In the same process the pure test `reportsTheHostLimits()` took 5.373 s, so the
+      whole test process stalled for about 5.4 s at the start of the group.
+    - CI run 42644895862 of pull request #25 (`e3511d9`), attempt 1: 5.704 s; attempt 2
+      passed.
+    - CI run 42807002034 of pull request #25 (`a027005`), attempt 1: 5.939 s, with
+      `reportsTheHostLimits()` at 5.729 s; attempt 2 passed.
+    - CI run 42834158953 of pull request #26 (`fefacb0`), attempt 1: 6.939 s, with
+      `reportsTheHostLimits()` at 6.785 s; attempt 2 passed.
+    The same stall appears in a passing run of `main`, CI run 42516767842, where
+    `reportsTheHostLimits()` took 6.355 s and this test 6.625 s. The cause of the stall is not
+    established.
+  - **Phase:** None; a `fix/` branch after pull request #26: establish what stalls the test
+    process at the start of the general group, or make the test's deadline independent of such
+    a stall, without loosening what it checks.
+- **The app package's tests do not run under the app's SDK.**
+  - **Seen:** `swift test --package-path App/MawTerminalKit` links the tests with the macOS 14
+    SDK, the deployment target, while Xcode links the app with the current SDK (27.2 on the
+    owner's Mac). SwiftUI chooses some behavior by the SDK that a program was linked with, so
+    the unit tests do not cover behavior that differs between the two. An example is the
+    command palette's query field, which under the current SDK writes its unchanged text back
+    through its binding when it redraws; that write undid each ↑↓ in the theme list until
+    `WindowModel.setPaletteQuery(_:)` ignored it. Its tests model the write, but cannot show
+    that SwiftUI makes it.
+  - **Evidence:** `otool -l` reports `sdk 14.0` in the `LC_BUILD_VERSION` of a `swift build`
+    executable and `sdk 27.2` in the app's. Pull request #26, "The theme list's arrow keys": on
+    `1b5fd1b`, a scratch program that showed the palette in a window moved through the themes
+    when linked with the SDK 14, and did not when linked with
+    `-Xlinker -platform_version -Xlinker macos -Xlinker 14.0 -Xlinker 27.2`.
+  - **Phase:** None; a `fix/` branch: run the app package's tests linked with the current SDK,
+    or test the palette's keys in the app built by Xcode.
 - **The root file system repair command.**
   - **Seen:** maw reports a root file system that fails its check and leaves the disk image
     unchanged except for what `e2fsck -p` repaired. A repair needs e2fsck from a Linux system,
