@@ -294,6 +294,21 @@ import Testing
         #expect(model.selectedDistribution?.state == .stopping)
     }
 
+    /// The settings offer each installed distribution as the new-tab profile, so opening them
+    /// reads the list, also when nothing else has read it since the app started.
+    @Test func openingTheSettingsReadsTheList() async {
+        let daemon = FakeDaemonClient()
+        daemon.install(["Ubuntu-24.04"])
+        let provider = daemon.provider()
+        let (model, _, _) = WindowModelTests().window(distributions: provider)
+        #expect(daemon.record.withLock { $0.lists } == 0)
+        model.perform(.openSettings)
+        #expect(model.selectedTab?.screen == .settings)
+        await provider.pending?.value
+        #expect(daemon.record.withLock { $0.lists } == 1)
+        #expect(model.profiles.contains(.distribution("Ubuntu-24.04")))
+    }
+
     @Test func dMakesTheSelectedDistributionTheDefaultAndRefreshes() async {
         let daemon = FakeDaemonClient()
         daemon.install(["Debian-13", "Ubuntu-24.04"])

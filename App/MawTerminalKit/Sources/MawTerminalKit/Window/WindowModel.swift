@@ -76,9 +76,13 @@ final class WindowModel {
 
     private(set) var tabs = TabList() {
         didSet {
-            // The distributions screen has become the selected tab, by whatever way: its
-            // list may be as old as the last time it was shown.
-            if tabs.selectedTab?.screen == .distributions, tabs.selectedID != oldValue.selectedID {
+            // A screen that shows the distributions has become the selected tab, by whatever
+            // way: the distributions screen, and the settings, whose new-tab setting offers
+            // each one. Their list may be as old as the last time it was read.
+            let screen = tabs.selectedTab?.screen
+            if screen == .distributions || screen == .settings,
+                tabs.selectedID != oldValue.selectedID
+            {
                 distributions.refresh()
             }
         }
