@@ -8,11 +8,11 @@ import Testing
 /// key, so that what SwiftUI itself does is part of the test.
 ///
 /// The query field writes its unchanged text back through its binding, and
-/// `WindowModel.setPaletteQuery(_:)` must ignore that write. On macOS 27 the field writes once
-/// when it receives the focus, whatever the SDK, which would open the theme list on its first
-/// row. It also writes whenever the view updates, as a theme preview makes it do, which would
-/// undo each arrow; SwiftUI does that only when the running program was linked with the
-/// macOS 27 SDK or later. Under `swift test` that program is the test runner of the selected
+/// `WindowModel.setPaletteQuery(_:)` must ignore that write. The field writes once when it
+/// receives the focus, whatever the SDK, as measured on macOS 26 and 27, which would open the
+/// theme list on its first row. On macOS 27 it also writes whenever the view updates, as a
+/// theme preview makes it do, which would undo each arrow; SwiftUI does that only when the
+/// running program was linked with the macOS 27 SDK or later. Under `swift test` that program is the test runner of the selected
 /// Xcode, so these tests follow that Xcode's SDK, not the SDK that the test bundle records
 /// (docs/decisions/0019-swiftui-behavior-in-app-tests.md).
 @MainActor @Suite struct CommandPaletteWindowTests {
@@ -58,8 +58,10 @@ import Testing
     /// field never receives the focus.
     func waitForTheQueryField(in window: NSWindow) async throws {
         window.contentView?.layoutSubtreeIfNeeded()
-        for _ in 0..<1000 where !(window.firstResponder is NSTextView) {
+        var turns = 0
+        while !(window.firstResponder is NSTextView), turns < 1000 {
             await Task.yield()
+            turns += 1
         }
         try #require(
             window.firstResponder is NSTextView, "The palette's query field has no focus.")
@@ -90,7 +92,10 @@ import Testing
         let start = try #require(names.firstIndex(of: "Dracula"))
         try #require(start + 2 < names.count)
         let window = show(model)
-        defer { window.close() }
+        defer {
+            window.close()
+            model.shutDown()
+        }
         func selected() -> String? { model.palette.map { names[$0.selectedIndex(in: names)] } }
 
         model.perform(.switchTheme)
