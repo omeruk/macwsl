@@ -423,22 +423,27 @@ from `main`.
     once and returns its result to await later would keep that rule in one place instead of
     a comment in each test; `Sources/MawProtocol` is a Guest workflow path, so the branch that
     fixed the handshake test changed test code only.
-- **The app package's tests do not run under the app's SDK.**
-  - **Seen:** `swift test --package-path App/MawTerminalKit` links the tests with the macOS 14
-    SDK, the deployment target, while Xcode links the app with the current SDK (27.2 on the
-    owner's Mac). SwiftUI chooses some behavior by the SDK that a program was linked with, so
-    the unit tests do not cover behavior that differs between the two. An example is the
-    command palette's query field, which under the current SDK writes its unchanged text back
-    through its binding when it redraws; that write undid each ↑↓ in the theme list until
-    `WindowModel.setPaletteQuery(_:)` ignored it. Its tests model the write, but cannot show
-    that SwiftUI makes it.
-  - **Evidence:** `otool -l` reports `sdk 14.0` in the `LC_BUILD_VERSION` of a `swift build`
-    executable and `sdk 27.2` in the app's. Pull request #26, "The theme list's arrow keys": on
-    `1b5fd1b`, a scratch program that showed the palette in a window moved through the themes
-    when linked with the SDK 14, and did not when linked with
-    `-Xlinker -platform_version -Xlinker macos -Xlinker 14.0 -Xlinker 27.2`.
-  - **Phase:** None; a `fix/` branch: run the app package's tests linked with the current SDK,
-    or test the palette's keys in the app built by Xcode.
+- **CI does not show SwiftUI behavior that begins with the macOS 27 SDK.**
+  - **Seen:** SwiftUI chooses some behavior by the SDK of the running program, which under
+    `swift test` is the test runner of the selected Xcode, not the test bundle
+    ([decision record 0019](decisions/0019-swiftui-behavior-in-app-tests.md)). The `swift build`
+    test bundle's `sdk 14.0` does not matter. The command palette's query field writes its
+    unchanged text back when it receives the focus, with any SDK, and also whenever the view
+    updates when the runner was linked with the macOS 27 SDK or later, on macOS 27.
+    `CommandPaletteWindowTests` fails on both writes without the check in
+    `WindowModel.setPaletteQuery(_:)`. CI's runner has macOS 26.7.2 and Xcode 26.6 with the
+    macOS 26.5 SDK, so CI catches only the first write: without the check, CI reports that the
+    theme list opens on its first row, but not that each arrow is undone. On the owner's Mac,
+    with Xcode 27.2, the test catches both.
+  - **Evidence:** CI run 43027801133, of a deleted branch whose only change was the reverted
+    check, on top of the branch that added the test: the "Terminal app" job printed
+    `macOS SDK 26.5`, and the window test failed with 7 issues. The list opened on
+    "maw Default" instead of "Dracula", and ↓ ↓ ↑ then moved to Catppuccin Mocha, Dracula, and
+    Catppuccin Mocha. Locally, with the runner's build version rewritten by `vtool`, each arrow
+    was undone with the SDK 27.0 and 27.2, and not with 15.0, 26.0, or 26.5.
+  - **Phase:** None. It resolves when CI's runner has macOS 27 and an Xcode with the macOS 27
+    SDK; until then, a change to the palette's SwiftUI views needs the app package's tests run
+    on such a Mac.
 - **The root file system repair command.**
   - **Seen:** maw reports a root file system that fails its check and leaves the disk image
     unchanged except for what `e2fsck -p` repaired. A repair needs e2fsck from a Linux system,
