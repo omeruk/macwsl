@@ -467,7 +467,8 @@ final class FakeProvisioningMachine: ProvisioningMachine, @unchecked Sendable {
     private var _failingStep: String?
     private var _blockingStep: String?
     private var _heldStep: String?
-    private var _released = false
+    private let released = OneTimeSignal()
+    private let discarded = OneTimeSignal()
 
     var calls: [String] { lock.withLock { _calls } }
     var configuration: GuestConfiguration? { lock.withLock { _configuration } }
@@ -487,14 +488,20 @@ final class FakeProvisioningMachine: ProvisioningMachine, @unchecked Sendable {
     }
 
     func release() {
-        lock.withLock { _released = true }
+        released.fire()
     }
 
     private func step(_ name: String) async throws(MawError) {
         lock.withLock { _calls.append(name) }
+        // The steps wait by suspending, not by polling with `Task.sleep`: once the installation
+        // is cancelled, `Task.sleep` returns at once, and a polling step would keep its thread
+        // of the cooperative pool busy, possibly the very thread that `discard()` needs.
         if heldStep == name {
-            while !lock.withLock({ _released }) {
-                try? await Task.sleep(for: .milliseconds(10))
+            // `discard()` fires `released` as well, so that a held step ends when the machine
+            // stops, as a blocking step does.
+            await released.wait()
+            if calls.contains("discard") {
+                throw .provisioningFailed(step: name, reason: "the machine stopped")
             }
         }
         if failingStep == name {
@@ -503,9 +510,7 @@ final class FakeProvisioningMachine: ProvisioningMachine, @unchecked Sendable {
         if blockingStep == name {
             // Blocks until discard() stops the machine, as a real machine's step ends when the
             // machine stops.
-            while !calls.contains("discard") {
-                try? await Task.sleep(for: .milliseconds(10))
-            }
+            await discarded.wait()
             throw .provisioningFailed(step: name, reason: "the machine stopped")
         }
     }
@@ -520,5 +525,44 @@ final class FakeProvisioningMachine: ProvisioningMachine, @unchecked Sendable {
         try await step("configure")
     }
     func finish() async throws(MawError) { try await step("finish") }
-    func discard() async { lock.withLock { _calls.append("discard") } }
+    func discard() async {
+        lock.withLock { _calls.append("discard") }
+        discarded.fire()
+        released.fire()
+    }
+}
+
+/// An event that happens once. Tasks wait for it by suspending, also after they were cancelled.
+final class OneTimeSignal: Sendable {
+    private struct State {
+        var fired = false
+        var waiters: [CheckedContinuation<Void, Never>] = []
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    func fire() {
+        let waiters = state.withLock { state in
+            state.fired = true
+            defer { state.waiters = [] }
+            return state.waiters
+        }
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let fired = state.withLock { state in
+                if !state.fired {
+                    state.waiters.append(continuation)
+                }
+                return state.fired
+            }
+            if fired {
+                continuation.resume()
+            }
+        }
+    }
 }
