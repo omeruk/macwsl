@@ -431,8 +431,9 @@ from `main`.
     unchanged text back when it receives the focus, with any SDK, and also whenever the view
     updates when the runner was linked with the macOS 27 SDK or later, on macOS 27.
     `CommandPaletteWindowTests` fails on both writes without the check in
-    `WindowModel.setPaletteQuery(_:)`. CI's runner has macOS 26.7.2 and Xcode 26.6 with the
-    macOS 26.5 SDK, so CI catches only the first write: without the check, CI reports that the
+    `WindowModel.setPaletteQuery(_:)`. CI's runner has macOS 26.7.2 and Xcode 26.6, whose
+    macOS SDK is 26.5 and whose test runners record SDK 26.4 (run 43029390677), so CI catches
+    only the first write: without the check, CI reports that the
     theme list opens on its first row, but not that each arrow is undone. On the owner's Mac,
     with Xcode 27.2, the test catches both.
   - **Evidence:** CI run 43027801133, of a deleted branch whose only change was the reverted
