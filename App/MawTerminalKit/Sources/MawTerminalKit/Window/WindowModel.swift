@@ -37,6 +37,22 @@ struct PaletteState: Equatable {
     var mode = Mode.commands
     var query = ""
     var selection = 0
+    /// The row that the user moved the selection to. The rows can change while the palette is
+    /// open, when the daemon's list arrives, so the selection follows its row rather than its
+    /// position, and Enter never runs another command than the one highlighted.
+    var selectedRowID: String?
+
+    /// The selected row's position among the rows with identifiers `ids`.
+    func selectedIndex(in ids: [String]) -> Int {
+        if let selectedRowID, let index = ids.firstIndex(of: selectedRowID) { return index }
+        return min(selection, max(ids.count - 1, 0))
+    }
+
+    /// Selects the row at `index` among the rows with identifiers `ids`.
+    mutating func select(_ index: Int, in ids: [String]) {
+        selection = index
+        selectedRowID = ids.indices.contains(index) ? ids[index] : nil
+    }
 }
 
 /// What the distributions screen shows. The three must not be confused: an empty list says that
