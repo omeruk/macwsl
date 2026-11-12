@@ -8,10 +8,6 @@ import Testing
 
 /// `watchDistributions`, against a store in a temporary directory and fake machines.
 extension DaemonServiceTests {
-    @Test func speaksInterfaceVersion4() {
-        #expect(DaemonInterface.version == 4)
-    }
-
     @Test func watchesTheDistributions() async throws {
         let distros = try TemporaryStore()
         try distros.install("Ubuntu-24.04")

@@ -27,6 +27,8 @@ import XPC
         .listDistributions,
         .setDefault(try! DistroName("ubuntu-24.04")),
         .terminate(try! DistroName("Ubuntu-24.04")),
+        .watchDistributions(after: 0),
+        .watchDistributions(after: .max),
     ]
 
     static let replies: [DaemonReply] = [
@@ -61,6 +63,12 @@ import XPC
         .defaultSet(try! DistroName("Ubuntu-24.04")),
         .terminated(TerminateSummary(wasRunning: true, endedSessions: 3)),
         .terminated(TerminateSummary(wasRunning: false, endedSessions: 0)),
+        .distributionSnapshot(
+            DistributionSnapshot(sequence: 7, distributions: [], defaultDistribution: nil)),
+        .distributionSnapshot(
+            DistributionSnapshot(
+                sequence: 8, distributions: [InterfaceCodingTests.runningFigures],
+                defaultDistribution: try! DistroName("Ubuntu-24.04"))),
         .failure(.virtualizationEntitlementMissing),
         .failure(.distributionNotInstalled(try! DistroName("Ubuntu"))),
     ]
@@ -112,8 +120,29 @@ import XPC
         #expect(try InterfaceCoding.decode(DaemonEvent.self, from: message, as: .client) == event)
     }
 
-    @Test func isInterfaceVersion3() {
-        #expect(DaemonInterface.version == 3)
+    @Test func isInterfaceVersion4() {
+        #expect(DaemonInterface.version == 4)
+    }
+
+    /// A running distribution with every figure.
+    static var runningFigures: DistributionFigures {
+        var figures = DistributionFigures(
+            name: try! DistroName("Ubuntu-24.04"), state: .running, defaultUser: "ayse",
+            diskImagePath:
+                "/Users/ayse/Library/Application Support/maw/distros/Ubuntu-24.04/disk.img")
+        figures.diskAllocatedBytes = 2_376_101_888
+        figures.diskSizeBytes = 274_877_906_944
+        figures.kernelRelease = "6.18.57-maw"
+        figures.run = 3
+        figures.uptimeMilliseconds = 37_000
+        figures.bootMilliseconds = 271
+        figures.memoryLimitBytes = 8 << 30
+        figures.memoryUsedBytes = 412 << 20
+        figures.ipv4Address = "192.168.64.3"
+        figures.cpuPercent = 0.4
+        figures.hostMemoryBytes = 710 << 20
+        figures.lastSampleMicroseconds = 1_250
+        return figures
     }
 
     @Test func namesTheNewRequestsInErrorMessages() throws {
@@ -121,6 +150,8 @@ import XPC
         #expect(DaemonRequest.listDistributions.displayName == "listing the distributions")
         #expect(DaemonRequest.setDefault(name).displayName == "setting the default distribution")
         #expect(DaemonRequest.terminate(name).displayName == "terminating the distribution")
+        #expect(
+            DaemonRequest.watchDistributions(after: 0).displayName == "watching the distributions")
     }
 
     /// The states travel as their names, so that the terminal app and later versions can read
