@@ -28,8 +28,8 @@ public struct AgentConfiguration: Sendable {
     /// Opens the connection to the host that a `dialBack` request asks for. The guest dials
     /// over vsock (`DialBackDialer`); tests supply their own.
     public var dialBack: @Sendable () throws(DialBackError) -> OwnedDescriptor
-    /// Where the foreground probe reads the process files that answer `foregroundQuery`:
-    /// `/proc` in the guest, a fixture in tests.
+    /// Where the foreground probe reads the process files that answer `foregroundQuery`, and
+    /// `sample` reads `meminfo` and `net/route`: `/proc` in the guest, a fixture in tests.
     public var processDirectory: String
 
     public init(
@@ -175,6 +175,13 @@ public final class AgentServer: @unchecked Sendable {
                             protocolVersion: ProtocolVersion.current,
                             kernelRelease: SystemInfo.kernelRelease(),
                             uptimeMilliseconds: SystemInfo.uptimeMilliseconds()))))
+        case .sample:
+            switch GuestFigures(processDirectory: configuration.processDirectory).sample() {
+            case .success(let sample):
+                connection.enqueue(.control(.sampled(sample)))
+            case .failure(let unavailable):
+                connection.enqueue(.control(.error(AgentError(.sampleFailed, unavailable.reason))))
+            }
         case .shutdown:
             logger.notice("shutdown requested; powering off")
             do {
@@ -218,7 +225,8 @@ public final class AgentServer: @unchecked Sendable {
             }
         default:
             throw .unexpectedMessage(
-                "expected a request (exec, info, shutdown, or dialBack), received \(request.name)")
+                "expected a request (exec, info, sample, shutdown, or dialBack), "
+                    + "received \(request.name)")
         }
         try connection.flush(until: .now + configuration.requestTimeout)
         return nil
