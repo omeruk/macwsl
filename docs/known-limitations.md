@@ -359,6 +359,17 @@ from `main`.
   - **Evidence:** [Decision record 0020](decisions/0020-distribution-figures.md);
     `prompts/11c-distribution-figures.md`, "Out of scope".
   - **Phase:** None yet; figures would go into `maw --status`, maw's own command.
+- **The daemon builds a snapshot more often than needed with several distributions or
+  watchers.**
+  - **Seen:** Each sampled distribution publishes a snapshot of its own, so one interval with
+    three running distributions wakes each watcher three times. Watchers that a change wakes
+    together each build the same snapshot once. Each build reads every `distro.json` and the
+    manifest and `stat`s every disk image. Sampling stays once per machine per interval.
+  - **Evidence:** `FigureSampler.finish` and `FigureSampler.snapshot(after:)` in
+    `Sources/MawDaemonKit/FigureSampler.swift`; pull request #29, code review. Not measured with
+    more than one distribution; the terminal app holds one watch.
+  - **Phase:** None yet. Publishing one snapshot per interval, and building it once per change,
+    would remove the repetition.
 - **`maw` suggests `--create-disk` when an installed distribution's disk image is missing.**
   - **Seen:** `maw -d <name>` reports `diskImageNotFound` with the suggestion "Pass
     --create-disk <size> to create it as a sparse image.", an option of `mawd debug-boot` that
