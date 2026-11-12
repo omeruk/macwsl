@@ -25,6 +25,10 @@
         /// agent dials it in reply to a `dialBack` request (docs/protocol.md).
         func openSessionConnection() async throws(MawError) -> OwnedDescriptor
 
+        /// Asks the guest agent for the guest's figures (docs/protocol.md, "Sample"), on a
+        /// connection of its own, within about a second. Takes no lease and starts nothing.
+        func sample() async throws(MawError) -> GuestSample
+
         /// Stops the machine cleanly, or forcibly if the guest does not power off in time.
         /// Returns once it has stopped, with a description of how for the log.
         func stop() async -> String

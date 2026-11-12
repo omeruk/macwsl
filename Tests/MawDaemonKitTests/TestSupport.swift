@@ -173,6 +173,17 @@ final class FakeMachine: MachineHandle, @unchecked Sendable {
         return OwnedDescriptor(fds[0])
     }
 
+    /// What `sample()` returns; a sample of 412 MiB in use by default.
+    let sampleResult = OSAllocatedUnfairLock(
+        initialState: Result<GuestSample, MawError>.success(
+            GuestSample(
+                memoryTotalBytes: 2 << 30, memoryAvailableBytes: (2 << 30) - (412 << 20),
+                ipv4Address: "192.168.64.3")))
+
+    func sample() async throws(MawError) -> GuestSample {
+        try sampleResult.withLock { $0 }.get()
+    }
+
     func stop() async -> String {
         lock.withLock { $0.stopCalls += 1 }
         if holdsStop {

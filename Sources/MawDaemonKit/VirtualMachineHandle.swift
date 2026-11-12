@@ -13,6 +13,8 @@
         static let stopTimeout = Duration.seconds(5)
         /// How long the connection for a session's `dialBack` request may take.
         static let connectTimeout = Duration.seconds(5)
+        /// How long `sample()` waits for the connection, and then for the reply.
+        static let sampleTimeout = Duration.seconds(1)
         /// How long `start()` waits for another virtual machine to release the disk.
         static let diskReleaseTimeout = Duration.seconds(10)
 
@@ -120,6 +122,12 @@
 
         public func openSessionConnection() async throws(MawError) -> OwnedDescriptor {
             try await virtualMachine.openSessionConnection(connectTimeout: Self.connectTimeout)
+        }
+
+        public func sample() async throws(MawError) -> GuestSample {
+            try await virtualMachine.agentClient(
+                connectTimeout: Self.sampleTimeout, replyTimeout: Self.sampleTimeout
+            ).sample()
         }
 
         public func stop() async -> String {
