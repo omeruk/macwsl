@@ -28,12 +28,22 @@ import Testing
                 uptimeMilliseconds: 1_234)),
         .shutdownAcknowledged,
         .dialedBack,
+        .sample,
+        .sampled(
+            GuestSample(
+                memoryTotalBytes: 2_093_694_976, memoryAvailableBytes: 1_984_000_000,
+                ipv4Address: "192.168.64.3")),
+        .sampled(
+            GuestSample(
+                memoryTotalBytes: UInt64.max, memoryAvailableBytes: UInt64.max, ipv4Address: nil)),
+        .sampled(GuestSample(memoryTotalBytes: 0, memoryAvailableBytes: 0, ipv4Address: "0.0.0.0")),
         .foregroundProgram(id: 7, program: nil),
         .foregroundProgram(id: 7, program: ForegroundProcess(processGroup: 812, name: "sleep")),
         .foregroundProgram(id: 8, program: ForegroundProcess(processGroup: 812, name: nil)),
         .foregroundProgram(
             id: 9, program: ForegroundProcess(processGroup: 1, name: "a (b) c\u{1B}")),
         .error(AgentError(.dialBackFailed, "no source port below 1024 is free")),
+        .error(AgentError(.sampleFailed, "/proc/meminfo has no MemAvailable")),
         .error(AgentError(.versionMismatch, "mismatch", hostVersion: 1, guestVersion: 2)),
         .error(AgentError(.commandNotFound, "nope: not found")),
         .error(AgentError(.userNotFound, "there is no user named 'bob'", user: "bob")),
@@ -51,7 +61,7 @@ import Testing
             names == [
                 "exec", "info", "shutdown", "stdinEOF", "signal", "resize", "started", "exited",
                 "agentInfo", "shutdownAcknowledged", "error", "dialBack", "dialedBack",
-                "foregroundQuery", "foregroundProgram",
+                "foregroundQuery", "foregroundProgram", "sample", "sampled",
             ])
     }
 
@@ -81,6 +91,20 @@ import Testing
                 == #"{"dialBack":{"nonce":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}"#
         )
         #expect(json(.dialedBack) == #"{"dialedBack":{}}"#)
+        #expect(json(.sample) == #"{"sample":{}}"#)
+        #expect(
+            json(
+                .sampled(
+                    GuestSample(
+                        memoryTotalBytes: 2_093_694_976, memoryAvailableBytes: 1_984_000_000,
+                        ipv4Address: "192.168.64.3")))
+                == #"{"sampled":{"ipv4Address":"192.168.64.3","memoryAvailableBytes":1984000000,"memoryTotalBytes":2093694976}}"#
+        )
+        #expect(
+            json(
+                .sampled(
+                    GuestSample(memoryTotalBytes: 2, memoryAvailableBytes: 1, ipv4Address: nil))
+            ) == #"{"sampled":{"memoryAvailableBytes":1,"memoryTotalBytes":2}}"#)
         #expect(json(.foregroundQuery(id: 7)) == #"{"foregroundQuery":{"id":7}}"#)
         #expect(json(.foregroundProgram(id: 7, program: nil)) == #"{"foregroundProgram":{"id":7}}"#)
         #expect(
@@ -114,9 +138,53 @@ import Testing
         #expect(request.user == nil && request.locale == nil && request.workingDirectory == nil)
     }
 
-    /// Version 4 adds `foregroundQuery` and `foregroundProgram`.
-    @Test func speaksVersion4() {
-        #expect(ProtocolVersion.current == 4)
+    /// Version 5 adds `sample`, `sampled`, and `sampleFailed`.
+    @Test func speaksVersion5() {
+        #expect(ProtocolVersion.current == 5)
+    }
+
+    /// A `sampled` reply comes from the guest; the host accepts it only within its limits.
+    @Test(arguments: [
+        // An agent reply without MemAvailable, and one without MemTotal.
+        #"{"sampled":{"memoryTotalBytes":2}}"#,
+        #"{"sampled":{"memoryAvailableBytes":1}}"#,
+        #"{"sampled":{"memoryAvailableBytes":3,"memoryTotalBytes":2}}"#,
+        #"{"sampled":{"memoryAvailableBytes":-1,"memoryTotalBytes":2}}"#,
+        #"{"sampled":{"memoryAvailableBytes":"1","memoryTotalBytes":2}}"#,
+        #"{"sampled":{"memoryAvailableBytes":1,"memoryTotalBytes":18446744073709551616}}"#,
+        #"{"sampled":5}"#,
+    ])
+    func rejectsAnInvalidSample(_ text: String) {
+        #expect {
+            try ControlMessage(json: Array(text.utf8))
+        } throws: { error in
+            guard case .malformedControl = error as? FrameError else { return false }
+            return true
+        }
+    }
+
+    @Test(arguments: [
+        "", "1.2.3", "1.2.3.4.5", "256.0.0.1", "1.2.3.-4", "1..3.4", "01234.1.1.1", " 1.2.3.4",
+        "1.2.3.4\n", "::1", "fe80::1", "1.2.3.4/24", "a.b.c.d", "١.2.3.4", "1.2.3.4\u{1B}[31m",
+    ])
+    func rejectsAnAddressThatIsNotIPv4(_ address: String) {
+        #expect(!GuestSample.isIPv4Address(address))
+        let text =
+            #"{"sampled":{"ipv4Address":"\#(address)","memoryAvailableBytes":1,"memoryTotalBytes":2}}"#
+        #expect(throws: FrameError.self) {
+            try ControlMessage(json: Array(text.utf8))
+        }
+    }
+
+    @Test(arguments: ["0.0.0.0", "192.168.64.3", "255.255.255.255", "10.0.2.15"])
+    func acceptsAnIPv4Address(_ address: String) {
+        #expect(GuestSample.isIPv4Address(address))
+    }
+
+    @Test func computesMemoryInUse() {
+        let sample = GuestSample(
+            memoryTotalBytes: 2_093_694_976, memoryAvailableBytes: 1_984_000_000, ipv4Address: nil)
+        #expect(sample.memoryUsedBytes == 109_694_976)
     }
 
     @Test(arguments: [

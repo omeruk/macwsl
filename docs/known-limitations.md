@@ -569,7 +569,7 @@ Deliberate choices that a decision record explains and that no phase plans to ch
   [Decision record 0016](decisions/0016-input-window.md). The repeat of the measurement on an
   idle Mac is listed under "No phase yet".
 - **Guest files and the host must come from the same build.** A host and guest files from
-  different builds fail at session open with `guestAgentVersionMismatch` (protocol version 4,
+  different builds fail at session open with `guestAgentVersionMismatch` (protocol version 5,
   `Sources/MawProtocol/ProtocolVersion.swift:7`). `scripts/fetch-guest.sh` installs guest
   files built from the same commit. [Decision record 0016](decisions/0016-input-window.md),
   "Consequences".
