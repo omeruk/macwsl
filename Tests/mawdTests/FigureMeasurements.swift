@@ -76,22 +76,85 @@ struct FigureMeasurements {
 
     /// The agent's CPU time per sample: its utime and stime from `/proc/<pid>/stat`, read through
     /// exec, before and after a batch of about 1,000 samples at 100 ms, minus the cost of one read
-    /// (two reads with no sample between them). The fields count 10 ms ticks, so over 1,000
-    /// samples the resolution is 0.01 ms per sample. The batch's snapshots give the time of one
-    /// sample in the daemon, from the request to the reply.
+    /// (two reads with no sample between them) and the agent's idle CPU over the batch's time. The
+    /// fields count 10 ms ticks, so over 1,000 samples the resolution is 0.01 ms per sample. The
+    /// machine's process is read the same way through `proc_pid_rusage`. The batch's snapshots give
+    /// the time of one sample in the daemon, from the request to the reply.
     @Test func measuresTheAgentsCPUPerSample() async throws {
-        try await registerDaemon(sampleInterval: Self.batchInterval)
+        let batch = try await measureBatches(withInfo: false)
+        Self.report(
+            "the guest agent's CPU time per sample (resolution 0.01 ms)", batch.agent, unit: "ms",
+            target: "< 0.5")
+        Self.report(
+            "the machine's process CPU time per sample", batch.machine, unit: "ms", target: "")
+        Self.report(
+            "the guest agent's idle CPU, % of one core", batch.agentIdle, unit: "", target: "")
+        Self.report(
+            "one sample in the daemon, from the request to the reply", batch.times, unit: "ms",
+            target: "median < 5")
+    }
+
+    /// The same batch with `info` in place of `sample` (`mawd serve --sample-with-info`): the cost
+    /// of a request without reading `/proc` and calling `getifaddrs`.
+    @Test func measuresTheAgentsCPUPerInfo() async throws {
+        let batch = try await measureBatches(withInfo: true)
+        Self.report(
+            "the guest agent's CPU time per info request (resolution 0.01 ms)", batch.agent,
+            unit: "ms", target: "")
+        Self.report(
+            "the machine's process CPU time per info request", batch.machine, unit: "ms", target: ""
+        )
+        Self.report(
+            "the guest agent's idle CPU, % of one core", batch.agentIdle, unit: "", target: "")
+    }
+
+    struct Batches {
+        var agent: [Double] = []
+        var machine: [Double] = []
+        var agentIdle: [Double] = []
+        var times: [Double] = []
+    }
+
+    private func measureBatches(withInfo: Bool) async throws -> Batches {
+        try await registerDaemon(
+            ["--sample-interval-ms", String(Self.batchInterval)]
+                + (withInfo ? ["--sample-with-info"] : []))
         defer { try? reinstallDaemon() }
         let session = try await heldSession()
         defer { session.stop() }
-        var perSample: [Double] = []
-        var sampleTimes: [Double] = []
+        let disk = maw.paths.diskImage(for: try DistroName(maw.distribution))
+        let identity = try #require(FileIdentity(path: disk.path(percentEncoded: false)))
+        let table = DarwinProcessTable()
+        let machine = try #require(
+            MachineProcessFinder.find(diskImage: identity, user: getuid(), in: table))
+        func machineCPU() throws -> (Double, ContinuousClock.Instant) {
+            let usage = try #require(MachineProcessFinder.usage(of: machine, in: table))
+            return (Double(usage.cpuNanoseconds) / 1e6, .now)
+        }
+        func seconds(_ from: ContinuousClock.Instant, _ to: ContinuousClock.Instant) -> Double {
+            let (whole, fraction) = (to - from).components
+            return Double(whole) + Double(fraction) / 1e18
+        }
+        var batches = Batches()
         for _ in 0..<Self.runs {
+            // One read's cost, then the idle rates over 30 s without a watcher.
             let first = try await agentTicks()
-            let read = try await agentTicks() - first
-            let before = try await agentTicks()
+            let read = Double(try await agentTicks() - first) * 10
+            let idleStart = (try await agentTicks(), ContinuousClock.now)
+            let machineIdleStart = try machineCPU()
+            try await Task.sleep(for: .seconds(30))
+            let machineIdleEnd = try machineCPU()
+            let idleEnd = (try await agentTicks(), ContinuousClock.now)
+            let agentIdle =
+                (Double(idleEnd.0 - idleStart.0) * 10 - read) / seconds(idleStart.1, idleEnd.1)
+            let machineIdle =
+                (machineIdleEnd.0 - machineIdleStart.0)
+                / seconds(machineIdleStart.1, machineIdleEnd.1)
+
+            let before = (try await agentTicks(), ContinuousClock.now)
+            let machineBefore = try machineCPU()
             let watcher = try Watcher(maw)
-            let start = try await watcher.first("the first sample") { $0.memoryUsedBytes != nil }
+            let start = try await watcher.first("the first sample") { $0.hostMemoryBytes != nil }
             let startSequence = watcher.entries.first { $0.time == start.time }?.sequence ?? 0
             let deadline = ContinuousClock.now + .seconds(300)
             while (watcher.entries.last?.sequence ?? 0) < startSequence + Self.batchSamples {
@@ -99,20 +162,22 @@ struct FigureMeasurements {
                 try await Task.sleep(for: .milliseconds(100))
             }
             try await stop(watcher)
-            let after = try await agentTicks()
+            let machineAfter = try machineCPU()
+            let after = (try await agentTicks(), ContinuousClock.now)
             let entries = watcher.entries
-            let samples = Double((entries.last?.sequence ?? 0) - startSequence + 1)
-            perSample.append((Double(after) - Double(before) - Double(read)) * 10 / samples)
-            sampleTimes += entries.compactMap(\.figures.lastSampleMicroseconds).map {
+            let requests = Double((entries.last?.sequence ?? 0) - startSequence + 1)
+            batches.agent.append(
+                (Double(after.0 - before.0) * 10 - read - agentIdle * seconds(before.1, after.1))
+                    / requests)
+            batches.machine.append(
+                (machineAfter.0 - machineBefore.0
+                    - machineIdle * seconds(machineBefore.1, machineAfter.1)) / requests)
+            batches.agentIdle.append(agentIdle / 10)
+            batches.times += entries.compactMap(\.figures.lastSampleMicroseconds).map {
                 Double($0) / 1000
             }
         }
-        Self.report(
-            "the guest agent's CPU time per sample (resolution 0.01 ms)", perSample, unit: "ms",
-            target: "< 0.5")
-        Self.report(
-            "one sample in the daemon, from the request to the reply", sampleTimes, unit: "ms",
-            target: "median < 5")
+        return batches
     }
 
     /// "Limits on cost" for one running distribution: 60 s without a watcher, then 60 s with one.
@@ -227,17 +292,16 @@ struct FigureMeasurements {
         return try #require(UInt64(text.trimmingCharacters(in: .whitespacesAndNewlines)))
     }
 
-    /// Registers the test daemon again with `--sample-interval-ms`, which `mawd install` does not
-    /// accept: the plist that `mawd install` would write, with the option added. The daemon
+    /// Registers the test daemon again with `mawd serve` options that `mawd install` does not
+    /// accept: the plist that `mawd install` would write, with `options` added. The daemon
     /// restarts.
-    private func registerDaemon(sampleInterval: Int) async throws {
+    private func registerDaemon(_ options: [String]) async throws {
         let mawd = try #require(MawIntegration.environment["MAWD_PATH"])
         let agent = LaunchAgent(
             label: maw.label, program: mawd, logDirectory: maw.logDirectory,
             machineIdleTimeout: maw.machineIdleTimeout, imageCacheDirectory: maw.imageCache)
         var list = agent.propertyList
-        list["ProgramArguments"] =
-            agent.arguments + ["--sample-interval-ms", String(sampleInterval)]
+        list["ProgramArguments"] = agent.arguments + options
         let plist = maw.paths.launchAgentFile(label: maw.label)
         try PropertyListSerialization.data(fromPropertyList: list, format: .xml, options: 0)
             .write(to: plist, options: .atomic)
