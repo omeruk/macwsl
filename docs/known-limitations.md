@@ -35,6 +35,15 @@ from `main`.
   - **Evidence:** `Sources/maw/Maw.swift:45`; pull request #22, "Known limitations and
     follow-up work".
   - **Phase:** 06b, which implements `--export` and gives the example an installed name.
+- **A watcher does not notice a distribution removed by hand while no machine runs.**
+  - **Seen:** A distribution whose directory is deleted by hand stays in the snapshots of
+    `watchDistributions` until the next snapshot: a sample of a running machine, a state change,
+    an installation, or a new default.
+  - **Evidence:** `FigureSampler.snapshot(after:)` reads the installed distributions only when
+    the sequence number has grown (`Sources/MawDaemonKit/FigureSampler.swift`); nothing watches
+    the distributions directory.
+  - **Phase:** 06b, whose `maw --unregister` removes a distribution through the daemon and can
+    publish a new snapshot.
 
 ## Phase 07: File sharing and paths
 
@@ -122,9 +131,33 @@ from `main`.
     (`Sources/MawVirtualization/VMConfiguration+Virtualization.swift:51`), but no code sets its
     target size. [Decision record 0013](decisions/0013-systemd-and-the-agent.md), item 5.
   - **Phase:** 12.
+  - **Related:** The distribution figures' host memory, the footprint of the machine's process,
+    does not fall when the guest frees memory, while MEMORY, from the guest, does. [Decision
+    record 0020](decisions/0020-distribution-figures.md), "Evidence".
+- **The distribution figures name the default user from `distro.json` only.**
+  - **Seen:** `watchDistributions` reports the user that the installation recorded, even when
+    `/etc/maw.conf` in the distribution names another.
+  - **Evidence:** `FigureSampler.figures(_:)` reads `DistroMetadata.defaultUser`
+    (`Sources/MawDaemonKit/FigureSampler.swift`).
+  - **Phase:** 12, which reads `/etc/maw.conf`'s setting.
 
 ## Phase 12b: Hardening
 
+- **Two of phase 11c's speed targets are missed: each sample opens a connection of its own.**
+  - **Seen:** One host-opened connection per sample costs about 3.2 ms of the machine's process
+    and 0.8 ms of the guest agent, before the agent reads anything. The agent's CPU time per
+    sample was 1.155 ms against a target of 0.5 ms, and the machine's process cost 0.372 % of
+    one core above its unwatched cost over 60 seconds against a target of 0.2 %, while a client
+    watches one running distribution. The owner accepted both misses on 2026-11-12: the cost is
+    a fraction of one percent of one core, only while a distributions screen is visible, and
+    zero otherwise.
+  - **Evidence:** [Decision record 0020](decisions/0020-distribution-figures.md), "What it
+    costs": development measurements on 2026-11-12 at load averages from 2.1 to 6.6, with
+    `info` measured in place of `sample` to separate the fixed cost of a request. The owner's
+    official measurements with `scripts/measure-figures.sh` decide whether this item stays as
+    it is.
+  - **Phase:** 12b. Reusing one connection per run, about 80 to 100 lines, would remove most of
+    the cost; it changes the protocol and needs new guest files.
 - **The dial-back exchange costs about 1.8 ms per session.**
   - **Seen:** Warm `maw -e true` measured 33 ms against 31 ms with host-opened sessions, within
     the target of 50 ms.
@@ -319,6 +352,13 @@ from `main`.
 
 ## No phase yet
 
+- **`maw` shows no distribution figures.**
+  - **Seen:** `maw --list --verbose` keeps the columns of `wsl.exe --list --verbose`, and
+    `maw --status` shows no memory, CPU, or disk per distribution. Only the terminal app's
+    distributions screen asks for them.
+  - **Evidence:** [Decision record 0020](decisions/0020-distribution-figures.md);
+    `prompts/11c-distribution-figures.md`, "Out of scope".
+  - **Phase:** None yet; figures would go into `maw --status`, maw's own command.
 - **`maw` suggests `--create-disk` when an installed distribution's disk image is missing.**
   - **Seen:** `maw -d <name>` reports `diskImageNotFound` with the suggestion "Pass
     --create-disk <size> to create it as a sparse image.", an option of `mawd debug-boot` that
@@ -542,6 +582,12 @@ from `main`.
 ## Accepted trade-offs
 
 Deliberate choices that a decision record explains and that no phase plans to change.
+
+- **CPU and host memory depend on an undocumented process.** The daemon finds a machine's
+  `com.apple.Virtualization.VirtualMachine` process by the disk image it has open. If Apple
+  changes the process model, the lookup finds nothing and the two figures stay empty; they are
+  never wrong, and the integration tests fail.
+  [Decision record 0020](decisions/0020-distribution-figures.md), "Evidence".
 
 - **Full disk synchronization by default.** `.full` makes `apt-get install build-essential`
   4.2 times slower than `.fsync` (17.58 s against 4.20 s), in exchange for data that survives
