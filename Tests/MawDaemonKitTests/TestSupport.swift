@@ -173,15 +173,46 @@ final class FakeMachine: MachineHandle, @unchecked Sendable {
         return OwnedDescriptor(fds[0])
     }
 
-    /// What `sample()` returns; a sample of 412 MiB in use by default.
+    /// 412 MiB in use of 2 GiB.
+    static let defaultSample = GuestSample(
+        memoryTotalBytes: 2 << 30, memoryAvailableBytes: (2 << 30) - (412 << 20),
+        ipv4Address: "192.168.64.3")
+
+    /// What `sample()` returns.
     let sampleResult = OSAllocatedUnfairLock(
-        initialState: Result<GuestSample, MawError>.success(
-            GuestSample(
-                memoryTotalBytes: 2 << 30, memoryAvailableBytes: (2 << 30) - (412 << 20),
-                ipv4Address: "192.168.64.3")))
+        initialState: Result<GuestSample, MawError>.success(defaultSample))
+
+    private let samples = OSAllocatedUnfairLock(
+        initialState: (calls: 0, holds: false, held: [CheckedContinuation<Void, Never>]()))
+
+    var sampleCalls: Int { samples.withLock { $0.calls } }
+
+    /// Makes every `sample()` wait until `releaseSamples()`.
+    func holdSamples() {
+        samples.withLock { $0.holds = true }
+    }
+
+    func releaseSamples() {
+        let held = samples.withLock { state in
+            defer { state = (state.calls, false, []) }
+            return state.held
+        }
+        for continuation in held {
+            continuation.resume()
+        }
+    }
 
     func sample() async throws(MawError) -> GuestSample {
-        try sampleResult.withLock { $0 }.get()
+        await withCheckedContinuation { continuation in
+            let resumeNow = samples.withLock { state -> Bool in
+                state.calls += 1
+                if !state.holds { return true }
+                state.held.append(continuation)
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+        return try sampleResult.withLock { $0 }.get()
     }
 
     func stop() async -> String {
@@ -257,5 +288,20 @@ final class EndedLeases: Sendable {
 
     var handler: @Sendable (Lease, String) -> Void {
         { [ended] lease, reason in ended.withLock { $0.append((lease, reason)) } }
+    }
+}
+
+/// Collects the daemon's log lines.
+final class LogLines: Sendable {
+    private let lines = OSAllocatedUnfairLock(initialState: [String]())
+
+    var all: [String] { lines.withLock { $0 } }
+
+    var log: DaemonLog {
+        DaemonLog { [lines] line in lines.withLock { $0.append(line) } }
+    }
+
+    func count(containing text: String) -> Int {
+        all.filter { $0.contains(text) }.count
     }
 }

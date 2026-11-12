@@ -190,6 +190,10 @@ its own, so that it never shares a file with a distribution's console log: a dis
 
 - **`mawd serve`** is the daemon. launchd runs it when a client connects; it does not run at
   load.
+- **`--sample-interval-ms`** is a hidden option of `mawd serve` for tests only. It sets the
+  interval between figure samples to at least 100 ms, so that `scripts/measure-figures.sh` can
+  time a batch of samples. `mawd install` neither accepts it nor writes it into the LaunchAgent,
+  so an installed daemon always samples every 1.5 seconds.
 - **Idle exit.** It exits after 5 minutes with no connected client and no running machine
   (`DaemonTimeouts.daemonIdle`), so that an idle daemon costs nothing.
 - **SIGTERM.** On SIGTERM (from launchd, `mawd install`, or `mawd uninstall`), SIGINT, or

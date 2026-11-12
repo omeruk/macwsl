@@ -238,6 +238,24 @@
             return summary
         }
 
+        /// Returns the first snapshot of the distributions whose sequence is greater than
+        /// `after`, waiting for the next sample or change if there is none yet; pass 0 for the
+        /// first. The first call makes this connection a watcher until it is closed, which keeps
+        /// the daemon sampling but no machine running. One call at a time.
+        public func watchDistributions(after: UInt64) async throws(MawError)
+            -> DistributionSnapshot
+        {
+            guard
+                case .distributionSnapshot(let snapshot) = try await send(
+                    .watchDistributions(after: after)
+                ).reply
+            else {
+                throw .daemonProtocolError(
+                    reason: "the reply to watchDistributions is not distributionSnapshot")
+            }
+            return snapshot
+        }
+
         /// Closes the connection, which ends its sessions.
         public func close() {
             state.withLock { $0.isClosed = true }

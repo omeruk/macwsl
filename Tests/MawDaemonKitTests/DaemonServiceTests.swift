@@ -13,24 +13,38 @@ import Testing
         let clock = TestClock()
         let factory: FakeFactory
         let registry: MachineRegistry<TestClock>
+        let sampler: FigureSampler<TestClock>
         let service: DaemonService<TestClock>
         let listener = XPCServiceListener.anonymous()
+        let lines = LogLines()
         private let task: Task<Void, Never>
+        private let follower: Task<Void, Never>
 
         init(factory: FakeFactory = FakeFactory(), store: DistributionStore? = nil) {
             self.factory = factory
-            registry = MachineRegistry(clock: clock, factory: factory.factory)
+            let (changes, continuation) = AsyncStream.makeStream(of: Void.self)
+            registry = MachineRegistry(
+                clock: clock, log: lines.log, factory: factory.factory,
+                stateChanged: { continuation.yield() })
+            sampler = FigureSampler(
+                clock: clock, registry: registry, store: store, processes: FakeProcessTable([]))
             service = DaemonService(
                 clock: clock, registry: registry,
                 lifetime: DaemonLifetime(clock: clock) {}, canRunVirtualMachines: true,
-                store: store)
+                store: store, sampler: sampler, log: lines.log)
             task = Task { [service, listener] in await service.serve(listener) }
+            follower = Task { [sampler] in
+                for await _ in changes {
+                    await sampler.machinesChanged()
+                }
+            }
             listener.activate()
         }
 
         deinit {
             listener.cancel()
             task.cancel()
+            follower.cancel()
         }
 
         func connect() async throws -> DaemonClient {

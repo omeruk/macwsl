@@ -23,6 +23,17 @@ struct Serve: AsyncParsableCommand {
 
     @OptionGroup var settings: DaemonSettings
 
+    /// For the measurements only: a shorter interval between samples. `mawd install` neither
+    /// accepts nor writes it (docs/daemon.md).
+    @Option(name: .customLong("sample-interval-ms"), help: .hidden)
+    var sampleInterval: Int?
+
+    func validate() throws {
+        if let sampleInterval, sampleInterval < 100 {
+            throw ValidationError("--sample-interval-ms must be at least 100.")
+        }
+    }
+
     func run() async throws {
         // A client that disappears must not take the daemon with it.
         signal(SIGPIPE, SIG_IGN)
@@ -58,6 +69,10 @@ struct Serve: AsyncParsableCommand {
                 await lifetime.setMachinesActive(active)
             }
         }
+        // The registry reports state changes through this stream, to the sampler; a change that
+        // arrives while the sampler handles the previous one is handled once.
+        let (changes, changesContinuation) = AsyncStream.makeStream(
+            of: Void.self, bufferingPolicy: .bufferingNewest(1))
         let store = DistributionStore(paths: paths, daemonLabel: daemonLabel)
         removeStagingLeftovers(store: store, label: label, paths: paths, log: log)
         let registry = MachineRegistry(
@@ -65,7 +80,18 @@ struct Serve: AsyncParsableCommand {
             factory: VirtualMachineHandle.factory(
                 kernelDirectory: paths.kernelDirectory, logDirectory: settings.logDirectoryURL,
                 store: store, log: log, canRunVirtualMachines: canRunVirtualMachines),
-            activityChanged: { activityContinuation.yield($0) })
+            activityChanged: { activityContinuation.yield($0) },
+            stateChanged: { changesContinuation.yield() })
+        let sampler = FigureSampler(
+            clock: clock, registry: registry, store: store,
+            interval: sampleInterval.map { .milliseconds($0) }
+                ?? FigureSampler<ContinuousClock>.defaultInterval,
+            log: log)
+        Task {
+            for await _ in changes {
+                await sampler.machinesChanged()
+            }
+        }
         let installer = Installer(
             store: store,
             images: ImageCache(directory: settings.imageCacheDirectoryURL, log: log),
@@ -83,7 +109,7 @@ struct Serve: AsyncParsableCommand {
         let service = DaemonService(
             clock: clock, registry: registry, lifetime: lifetime,
             canRunVirtualMachines: canRunVirtualMachines, store: store, installer: installer,
-            log: log)
+            sampler: sampler, log: log)
 
         let signals = SignalMonitor([SIGTERM, SIGINT, SIGHUP])
         Task {

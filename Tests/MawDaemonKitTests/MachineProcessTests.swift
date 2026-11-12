@@ -151,6 +151,7 @@ final class FakeProcessTable: ProcessTable, Sendable {
         var user: uid_t
         var files: [FileIdentity]
         var startTime: UInt64?
+        var cpuNanoseconds: UInt64?
     }
 
     private let state: OSAllocatedUnfairLock<(processes: [pid_t: Process], read: [pid_t])>
@@ -191,7 +192,8 @@ final class FakeProcessTable: ProcessTable, Sendable {
         state.withLock {
             $0.processes[processID].map {
                 ProcessUsage(
-                    cpuNanoseconds: UInt64($0.id) * 1_000, footprintBytes: UInt64($0.id) * 10_000)
+                    cpuNanoseconds: $0.cpuNanoseconds ?? UInt64($0.id) * 1_000,
+                    footprintBytes: UInt64($0.id) * 10_000)
             }
         }
     }
