@@ -277,6 +277,10 @@ struct FigureMeasurements {
         print(
             "measurement: \(what): median \(String(format: "%.3f", median))\(suffix), "
                 + "95th percentile \(String(format: "%.3f", p95))\(suffix), \(sorted.count) values"
-                + (target.isEmpty ? "" : ", target \(target)\(suffix)"))
+                + (target.isEmpty ? "" : ", target \(target)\(suffix)")
+                + (values.count > 20
+                    ? ""
+                    : "; in order: "
+                        + values.map { String(format: "%.1f", $0) }.joined(separator: ", ")))
     }
 }
