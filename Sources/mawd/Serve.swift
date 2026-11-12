@@ -28,6 +28,11 @@ struct Serve: AsyncParsableCommand {
     @Option(name: .customLong("sample-interval-ms"), help: .hidden)
     var sampleInterval: Int?
 
+    /// For the measurements only: each sample sends the guest `info` instead of `sample`, and
+    /// reports no memory. `mawd install` neither accepts nor writes it (docs/daemon.md).
+    @Flag(name: .customLong("sample-with-info"), help: .hidden)
+    var sampleWithInfo = false
+
     func validate() throws {
         if let sampleInterval, sampleInterval < 100 {
             throw ValidationError("--sample-interval-ms must be at least 100.")
@@ -79,7 +84,8 @@ struct Serve: AsyncParsableCommand {
             clock: clock, idleTimeout: settings.machineIdleDuration, log: log,
             factory: VirtualMachineHandle.factory(
                 kernelDirectory: paths.kernelDirectory, logDirectory: settings.logDirectoryURL,
-                store: store, log: log, canRunVirtualMachines: canRunVirtualMachines),
+                store: store, log: log, canRunVirtualMachines: canRunVirtualMachines,
+                samplesWithInfo: sampleWithInfo),
             activityChanged: { activityContinuation.yield($0) },
             stateChanged: { changesContinuation.yield() })
         let sampler = FigureSampler(

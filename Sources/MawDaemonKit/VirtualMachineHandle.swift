@@ -32,12 +32,17 @@
         private let boot = OSAllocatedUnfairLock(
             initialState: (kernelRelease: String?.none, milliseconds: UInt64?.none))
         private let log: DaemonLog
+        /// For the measurements only: `sample()` sends `info` instead (`mawd serve
+        /// --sample-with-info`).
+        private let samplesWithInfo: Bool
 
         public init(
-            machine: MachineID, configuration: VMConfiguration, log: DaemonLog = DaemonLog()
+            machine: MachineID, configuration: VMConfiguration, log: DaemonLog = DaemonLog(),
+            samplesWithInfo: Bool = false
         ) throws(MawError) {
             self.machine = machine
             self.log = log
+            self.samplesWithInfo = samplesWithInfo
             settings = configuration.clamped(to: .host)
             virtualMachine = try VirtualMachine(name: machine.name, configuration: configuration)
             (unexpectedStops, stopContinuation) = AsyncStream.makeStream(of: String.self)
@@ -47,7 +52,7 @@
         /// installed distribution, which boots its disk with systemd (decision record 0013).
         public static func factory(
             kernelDirectory: URL, logDirectory: URL, store: DistributionStore, log: DaemonLog,
-            canRunVirtualMachines: Bool
+            canRunVirtualMachines: Bool, samplesWithInfo: Bool = false
         ) -> MachineFactory {
             { (machine: MachineID) throws(MawError) -> any MachineHandle in
                 guard canRunVirtualMachines else {
@@ -67,7 +72,8 @@
                         configuration, disk: store.paths.diskImage(for: name), metadata: metadata)
                 }
                 return try VirtualMachineHandle(
-                    machine: machine, configuration: configuration, log: log)
+                    machine: machine, configuration: configuration, log: log,
+                    samplesWithInfo: samplesWithInfo)
             }
         }
 
@@ -125,9 +131,14 @@
         }
 
         public func sample() async throws(MawError) -> GuestSample {
-            try await virtualMachine.agentClient(
-                connectTimeout: Self.sampleTimeout, replyTimeout: Self.sampleTimeout
-            ).sample()
+            let client = virtualMachine.agentClient(
+                connectTimeout: Self.sampleTimeout, replyTimeout: Self.sampleTimeout)
+            guard !samplesWithInfo else {
+                // The cost of a request without reading the guest's figures; no figure results.
+                _ = try await client.info()
+                throw .guestAgentFailed(reason: "sample: replaced by info for a measurement")
+            }
+            return try await client.sample()
         }
 
         public func stop() async -> String {
