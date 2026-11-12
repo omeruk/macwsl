@@ -151,7 +151,10 @@
             }
         }
 
-        private func tick() {
+        /// Samples every running distribution; internal for the tests. The timer may have woken
+        /// just before the last watcher left and cancelled it; then it samples nothing.
+        func tick() {
+            guard watchers > 0 else { return }
             for name in runs.keys {
                 sample(name)
             }
@@ -254,8 +257,10 @@
                     "\(MachineID.distribution(name)): its virtual machine process was not found; "
                         + "CPU and host memory stay empty until it restarts")
             }
-            // The figures of a watch that has ended are not kept.
+            // The figures of a watch that has ended are not kept, and the next watch samples
+            // at once.
             guard watchers > 0 else {
+                run.hasSampled = false
                 runs[name] = run
                 return
             }

@@ -131,6 +131,28 @@ import Testing
         #expect(figures.hostMemoryBytes == 5_010_000)
     }
 
+    /// A tick that runs after the last watcher has left, because the timer had woken before
+    /// its cancellation, does not take the place of the next watch's immediate sample.
+    @Test func samplesAtOnceAfterALateTick() async throws {
+        let sampling = try Sampling()
+        try await sampling.start("Ubuntu-24.04")
+        let fake = try #require(sampling.fake("Ubuntu-24.04"))
+        await sampling.sampler.addWatcher()
+        try await eventually { fake.sampleCalls == 1 }
+        try await sampling.settle(sleepers: 2)
+        await sampling.sampler.removeWatcher()
+        await sampling.sampler.tick()
+        try await sampling.settle(sleepers: 1)
+        let calls = fake.sampleCalls
+        await sampling.sampler.addWatcher()
+        try await eventually("the next watch's immediate sample") {
+            fake.sampleCalls == calls + 1
+        }
+        try await eventually {
+            await sampling.figures("Ubuntu-24.04")?.memoryUsedBytes != nil
+        }
+    }
+
     @Test func samplesAMachineThatStartsWhileWatchedAtOnce() async throws {
         let sampling = try Sampling()
         await sampling.sampler.addWatcher()
