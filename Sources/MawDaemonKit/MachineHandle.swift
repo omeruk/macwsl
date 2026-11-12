@@ -11,6 +11,13 @@
         var cpuCount: Int { get }
         var memoryBytes: UInt64 { get }
 
+        /// The kernel release that the guest agent reported when the machine started, made
+        /// safe to show (`ForegroundAnswer.displayableName`); `nil` before it has.
+        var kernelRelease: String? { get }
+        /// The time from the start of the machine to its agent's answer, as `start()` logs it;
+        /// `nil` before the agent has answered.
+        var bootMilliseconds: UInt64? { get }
+
         /// Boots the machine and returns once its guest agent answers.
         func start() async throws(MawError)
 

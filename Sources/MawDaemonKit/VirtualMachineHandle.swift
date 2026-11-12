@@ -20,11 +20,15 @@
         public let unexpectedStops: AsyncStream<String>
         public var cpuCount: Int { settings.cpuCount }
         public var memoryBytes: UInt64 { settings.memorySize.bytes }
+        public var kernelRelease: String? { boot.withLock { $0.kernelRelease } }
+        public var bootMilliseconds: UInt64? { boot.withLock { $0.milliseconds } }
 
         private let virtualMachine: VirtualMachine
         private let settings: VMConfiguration
         private let stopContinuation: AsyncStream<String>.Continuation
         private let stopRequested = OSAllocatedUnfairLock(initialState: false)
+        private let boot = OSAllocatedUnfairLock(
+            initialState: (kernelRelease: String?.none, milliseconds: UInt64?.none))
         private let log: DaemonLog
 
         public init(
@@ -94,17 +98,24 @@
                 try await DiskImage.waitUntilUnlocked(disk.url, timeout: Self.diskReleaseTimeout)
             }
             let rootCheck = watchRootFileSystemCheck()
+            let info: AgentInfo
             do throws(MawError) {
                 try await virtualMachine.start()
                 watchForUnexpectedStops()
-                try await waitForAgent(rootCheck: rootCheck)
+                info = try await waitForAgent(rootCheck: rootCheck)
             } catch {
                 rootCheck?.cancel()
                 throw error
             }
             rootCheck?.cancel()
-            log.notice(
-                "\(machine): agent ready after \((ContinuousClock.now - started).milliseconds) ms")
+            let milliseconds = (ContinuousClock.now - started).milliseconds
+            boot.withLock {
+                $0 = (
+                    ForegroundAnswer.displayableName(info.kernelRelease),
+                    UInt64(max(0, milliseconds))
+                )
+            }
+            log.notice("\(machine): agent ready after \(milliseconds) ms")
         }
 
         public func openSessionConnection() async throws(MawError) -> OwnedDescriptor {
@@ -195,16 +206,16 @@
             return .vmFailed(reason: "the guest powered off before its agent answered")
         }
 
-        /// Retries `info` until the agent answers, the machine stops, or the deadline passes.
+        /// Retries `info` until the agent answers, the machine stops, or the deadline passes, and
+        /// returns the agent's answer.
         private func waitForAgent(
             rootCheck: Task<RootFileSystemCheck?, Never>?
-        ) async throws(MawError) {
+        ) async throws(MawError) -> AgentInfo {
             let deadline = ContinuousClock.now + Self.agentReadyTimeout
             let client = virtualMachine.agentClient(connectTimeout: .milliseconds(250))
             while true {
                 do throws(MawError) {
-                    _ = try await client.info()
-                    return
+                    return try await client.info()
                 } catch {
                     let state = await virtualMachine.state
                     if case .error(let failure) = state {

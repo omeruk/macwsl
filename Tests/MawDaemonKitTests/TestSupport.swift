@@ -102,6 +102,8 @@ final class FakeMachine: MachineHandle, @unchecked Sendable {
     let machine: MachineID
     let cpuCount = 2
     let memoryBytes: UInt64 = 1 << 30
+    let kernelRelease: String? = "6.18.57-maw"
+    let bootMilliseconds: UInt64? = 271
     let unexpectedStops: AsyncStream<String>
 
     private let lock = OSAllocatedUnfairLock(
