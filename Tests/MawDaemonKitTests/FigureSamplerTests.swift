@@ -168,12 +168,20 @@ import Testing
         try await eventually { sampling.fake("Ubuntu-24.04")?.sampleCalls == 2 }
         await Task.megaYield()
         #expect(sampling.fake("Ubuntu-24.04")?.sampleCalls == 2)
+        // A snapshot with the figures, which a later watch must not receive.
+        try await eventually {
+            await sampling.figures("Ubuntu-24.04")?.memoryUsedBytes != nil
+        }
         // Watching stops with the last watcher only.
         await sampling.sampler.removeWatcher()
         await sampling.sampler.removeWatcher()
         #expect(await sampling.sampler.hasTimer)
         await sampling.sampler.removeWatcher()
         #expect(await !sampling.sampler.hasTimer)
+        // The next watch starts without the figures of the last one.
+        let figures = await sampling.figures("Ubuntu-24.04")
+        #expect(figures?.state == .running && figures?.memoryUsedBytes == nil)
+        #expect(figures?.hostMemoryBytes == nil && figures?.cpuPercent == nil)
     }
 
     @Test func doesNotSampleAMachineThatStartsOrStops() async throws {

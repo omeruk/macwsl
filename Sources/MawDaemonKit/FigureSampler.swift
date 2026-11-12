@@ -94,6 +94,7 @@
                 runs[name]?.cpu = nil
                 runs[name]?.hasSampled = false
             }
+            changed()
             updateTimer()
         }
 
