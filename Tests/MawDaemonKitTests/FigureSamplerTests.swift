@@ -291,11 +291,15 @@ import Testing
         try await eventually {
             await sampling.figures("Ubuntu-24.04")?.memoryUsedBytes == 412 << 20
         }
-        for reason in [
-            "sample: /proc/meminfo has no MemAvailable",
-            "sample: the frame could not be decoded",
-        ] {
-            fake.sampleResult.withLock { $0 = .failure(.guestAgentFailed(reason: reason)) }
+        let failures: [Result<GuestSample, MawError>] = [
+            .failure(.guestAgentFailed(reason: "sample: /proc/meminfo has no MemAvailable")),
+            .failure(.guestAgentFailed(reason: "sample: the frame could not be decoded")),
+            // More available than total, which the decoder rejects, is not subtracted.
+            .success(
+                GuestSample(memoryTotalBytes: 1, memoryAvailableBytes: 2, ipv4Address: "10.0.0.2")),
+        ]
+        for failure in failures {
+            fake.sampleResult.withLock { $0 = failure }
             try await sampling.settle(sleepers: 2)
             sampling.clock.advance(by: .milliseconds(1_500))
             try await eventually("an empty MEMORY") {

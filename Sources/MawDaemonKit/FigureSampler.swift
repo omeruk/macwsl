@@ -265,7 +265,9 @@
                 return
             }
             var figures = Figures()
-            if let guest {
+            // The decoder rejects more available memory than total; a sample from elsewhere
+            // that has it is not used, rather than subtracted.
+            if let guest, guest.0.memoryAvailableBytes <= guest.0.memoryTotalBytes {
                 figures.memoryUsedBytes = guest.0.memoryUsedBytes
                 figures.ipv4Address = guest.0.ipv4Address
                 figures.sampleMicroseconds = guest.1
