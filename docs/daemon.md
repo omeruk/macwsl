@@ -240,7 +240,7 @@ Every message is an XPC dictionary (`Sources/MawXPC/InterfaceCoding.swift`):
 
 | Key | Type | Content |
 |-----|------|---------|
-| `interfaceVersion` | uint64 | `DaemonInterface.version`, currently **3**. This key never changes. |
+| `interfaceVersion` | uint64 | `DaemonInterface.version`, currently **4**. This key never changes. |
 | `body` | data | the message, JSON-encoded from the `Codable` types in `Sources/MawXPC/DaemonInterface.swift` |
 | `descriptor` | fd | only in `sessionOpened`: the guest agent connection |
 
@@ -263,13 +263,15 @@ there is no negotiation.
 | `listDistributions` | `distributions(DistributionList)` | Every installed distribution, by stored name and sorted by name, each with a `DistributionState` (`stopped`, `starting`, `running`, or `stopping`), and the effective default: the one `state.json` names if it is installed, otherwise the first installed one by name. With nothing installed, the list is empty and the default is absent; clients report that. It starts no machine. |
 | `setDefault(DistroName)` | `defaultSet(DistroName)` | Resolves the name (see "Machines") and records the stored spelling in `state.json`, which is written atomically. The reply carries the stored spelling. It starts no machine. |
 | `terminate(DistroName)` | `terminated(TerminateSummary)` | Resolves the name and stops that one machine (see "Terminating one distribution"). The reply comes once the machine has stopped. `TerminateSummary` holds whether this request stopped the machine and how many sessions ended. |
+| `watchDistributions(after: UInt64)` | `distributionSnapshot(DistributionSnapshot)` | A long poll: the reply comes at once if the daemon's latest snapshot has a sequence number greater than `after`, and otherwise when the next one exists. Makes the connection a watcher until it closes (see "Watching the distributions"). It starts no machine. |
 
 Any request can be answered with `failure(MawError)`, which carries the error unchanged; the
 client shows its message and suggested fix. A daemon without a distribution store, as in some
 unit tests, lists nothing and answers `setDefault` and `terminate` with
 `distributionNotInstalled`.
 
-Version 3 added `listDistributions`, `setDefault`, and `terminate`.
+Version 3 added `listDistributions`, `setDefault`, and `terminate`. Version 4 adds
+`watchDistributions` ([decision record 0020](decisions/0020-distribution-figures.md)).
 
 **Events** (daemon to client, without a request):
 
@@ -338,12 +340,65 @@ releases every lease the connection holds. That drives the 60-second idle timer 
 trusting the client to report anything.
 
 A connection should therefore open one session. `maw` opens one connection per invocation, and
-each Linux session of the terminal app opens one of its own (see the next section).
+each Linux session of the terminal app opens one of its own (see "The client library").
+
+### Watching the distributions
+
+`watchDistributions(after:)` gives a client every installed distribution with its state, the
+default, and its figures, and follows them
+([decision record 0020](decisions/0020-distribution-figures.md)). `maw` does not use it;
+`DaemonClient.watchDistributions(after:)` is for the terminal app.
+
+- **The snapshot.** `DistributionSnapshot` holds a sequence number, the default distribution,
+  and one `DistributionFigures` per installed distribution, sorted by name. Each has its name,
+  its state, the default user from `distro.json`, the disk image's path, and, when they can be
+  read, the image's allocated size and size on the Mac. KERNEL is the running guest's release,
+  or otherwise `kernel.release` in the installed guest files' `manifest.json`. A running
+  distribution adds its run identifier, uptime, time from start to agent, memory size, and the
+  sampled figures: the guest's memory in use and IPv4 address, the CPU of the machine's process
+  in percent of one core, and its memory footprint. A figure that is not known is absent.
+  `lastSampleMicroseconds`, the time of the last guest request, is for diagnosis and
+  measurement only; clients do not show it or depend on it.
+- **When a reply comes.** The sequence number grows after each sample of a distribution, at once
+  when a machine changes state, after an installation completes, and after `setDefault`. A
+  connection has at most one `watchDistributions` outstanding; a second fails with
+  `daemonProtocolError`. A daemon without a sampler, as in some unit tests, answers
+  `notImplemented`.
+- **Watchers.** A connection that has sent `watchDistributions` is a watcher until it closes.
+  The daemon logs `process <pid> started watching the distributions` at its first request and
+  `process <pid> stopped watching the distributions` when it closes, and never a sample.
+- **The sampler** (`FigureSampler`, `Sources/MawDaemonKit/FigureSampler.swift`). When the first
+  watcher arrives, and when a machine reaches the running state while watched, it samples that
+  machine at once, and then every 1.5 seconds. Its timer exists only while a client watches and
+  a distribution runs. A sample sends the guest agent `sample` on a host-opened connection
+  (docs/protocol.md, "Sample") and reads the machine's process on the Mac. The guest's answer
+  is bounded to 1 second, connection included, and at most one guest request per machine is in
+  flight; a request past its bound goes on in the background and the next sample does not ask
+  the guest until it ends. A failed, late, or malformed answer leaves MEMORY and the address
+  empty for that sample, and never fails the machine. CPU is the difference of two CPU times
+  over the difference of two clock readings, so it appears from the second sample. When the
+  last watcher leaves, the sampler forgets the figures, so that a later watch never reports
+  CPU over a time nobody watched.
+- **The machine's process.** Virtualization.framework runs each machine in a process of its own,
+  `com.apple.Virtualization.VirtualMachine`, and does not name it. At the first sample of a run,
+  the daemon lists the process IDs, keeps those whose executable is that path and whose user is
+  its own, and only for those reads the open files, to find the one process that has the
+  distribution's disk image open, by device and inode (`MachineProcessFinder`). It keeps the
+  process's ID with its start time for the run, and reads the usage only while the start time
+  matches. A lookup that finds no process, or two, is repeated at each following sample, at most
+  10 more times; then CPU and host memory stay empty for that run, and the daemon logs once
+  `<machine>: its virtual machine process was not found; CPU and host memory stay empty until
+  it restarts`.
+- **Idle exit and idle stop.** A watcher's connection keeps the daemon from its idle exit, as any
+  connected client does. It takes no lease, and the sampler never starts a machine or touches
+  its idle timer, so a distribution with no session stops after the idle timeout while it is
+  watched. With no watcher, the daemon holds no timer and samples nothing.
 
 ### The client library
 
 `DaemonClient` (`Sources/MawClient/DaemonClient.swift`) has no AppKit dependency. It connects,
-exchanges `hello`, and maps every failure to a `MawError`:
+exchanges `hello`, sends the requests above, including `watchDistributions(after:)`, and maps
+every failure to a `MawError`:
 
 | Situation | Error |
 |-----------|-------|
