@@ -49,6 +49,19 @@ extension DaemonServiceTests {
         #expect(await daemon.registry.status().first?.sessionCount == 1)
     }
 
+    /// A daemon's sequence starts again at each start, so a connection's first watch does not
+    /// wait for a number that an earlier daemon process reached.
+    @Test func answersAConnectionsFirstWatchAtOnce() async throws {
+        let distros = try TemporaryStore()
+        try distros.install("Ubuntu-24.04")
+        let daemon = Daemon(store: distros.store)
+        let watcher = try await daemon.connect()
+        defer { watcher.close() }
+        let first = try await watcher.watchDistributions(after: 1_000_000)
+        #expect(first.sequence < 1_000_000)
+        #expect(first.distributions.map(\.state) == [.stopped])
+    }
+
     @Test func refusesASecondOutstandingWatch() async throws {
         let distros = try TemporaryStore()
         try distros.install("Ubuntu-24.04")

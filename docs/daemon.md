@@ -360,9 +360,11 @@ default, and its figures, and follows them
   `lastSampleMicroseconds`, the time of the last guest request, is for diagnosis and
   measurement only; clients do not show it or depend on it.
 - **When a reply comes.** The sequence number grows after each sample of a distribution, at once
-  when a machine changes state, after an installation completes, and after `setDefault`. A
-  connection has at most one `watchDistributions` outstanding; a second fails with
-  `daemonProtocolError`. A daemon without a sampler, as in some unit tests, answers
+  when a machine changes state, after an installation completes, and after `setDefault`. The
+  numbers start again with each daemon process, so a connection's first `watchDistributions` is
+  answered at once, whatever its `after`. A connection has at most one `watchDistributions`
+  outstanding; a second fails with `daemonProtocolError`, and a client withdraws a watch only by
+  closing its connection. A daemon without a sampler, as in some unit tests, answers
   `notImplemented`.
 - **Watchers.** A connection that has sent `watchDistributions` is a watcher until it closes.
   The daemon logs `process <pid> started watching the distributions` at its first request and

@@ -166,6 +166,9 @@
                             throw .daemonProtocolError(
                                 reason: "this connection already waits for a distribution snapshot")
                         }
+                        // A connection's first watch is answered at once: its `after` may come from
+                        // an earlier daemon process, whose sequence numbers this one does not know.
+                        let after = watching ? after : 0
                         if !watching {
                             watching = true
                             log.notice("process \(processID) started watching the distributions")
@@ -191,6 +194,11 @@
                 descriptor?.close()
             }
 
+            watch?.cancel()
+            if watching, let sampler {
+                await sampler.removeWatcher()
+                log.notice("process \(processID) stopped watching the distributions")
+            }
             if let installation, isRunning(installation.id) {
                 // The client went away: the installation stops and removes its traces.
                 log.notice(
@@ -205,11 +213,6 @@
                 log.notice(
                     "process \(processID) closed its connection; released \(leases.count) "
                         + (leases.count == 1 ? "session" : "sessions"))
-            }
-            watch?.cancel()
-            if watching, let sampler {
-                await sampler.removeWatcher()
-                log.notice("process \(processID) stopped watching the distributions")
             }
             await lifetime.clientDisconnected()
         }
