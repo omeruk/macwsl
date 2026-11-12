@@ -46,6 +46,11 @@ code signing requirement
   can also list the installed distributions with the state of each machine and the default
   (`listDistributions`). The listing changes nothing, and it shows only what that user can
   already read in the distributions directory and with `status`.
+- **`watchDistributions`.** The request is available to every peer that the peer check accepts.
+  It reveals what `status` and `listDistributions` reveal, and the figures. The number of
+  watchers does not change how often the daemon samples, a connection has at most one watch
+  outstanding, and a held connection keeps the daemon running but takes no lease, so it keeps no
+  machine running.
 - Every message carries the interface version, which is checked before the body is decoded.
   Bodies are JSON decoded into fixed types; a malformed body fails the request.
 - Phase 13 adds the team identifier to the requirement, which only Apple's certificate chain
@@ -88,7 +93,7 @@ the host may connect:
 
 - On the Mac, vsock connections into a machine are opened through Virtualization.framework,
   which only the process that runs the machine, `mawd`, can do. The daemon opens them only
-  for `info`, `shutdown`, and `dialBack` requests; a session runs on a connection that the
+  for `info`, `sample`, `shutdown`, and `dialBack` requests; a session runs on a connection that the
   agent dials back (see the next section), whose descriptor the daemon hands to its client
   after the XPC checks above.
 - Inside the guest, the kernel is built without the vsock loopback transport
@@ -111,6 +116,34 @@ as root without a password. An integration test now checks that a guest process 
   Unicode scalars and replaces control, format, and separator characters with U+FFFD
   (`ForegroundAnswer.displayableName`), so that a name cannot move the cursor, change colors,
   or reorder the text of a dialog.
+- The kernel release in the agent's `info` reply is guest input too. The daemon keeps it for the
+  distribution figures only after the same treatment (`ForegroundAnswer.displayableName`, in
+  `VirtualMachineHandle.start()`), so that a client shows it as text.
+
+### Figures from the guest
+
+The `sample` request is a new reply from the guest, on a connection that the host opens. Root in
+the guest can report any memory figures and any address for its own machine; they are only
+displayed, in that machine's row. The host decodes the reply strictly, bounds its size by the
+frame limit, rejects a reply whose available memory exceeds its total, accepts the address only
+if it parses as an IPv4 address, and never logs text that the guest supplied. At most one
+`sample` request is in flight per machine, with a reply timeout of 1 second, so a guest that
+does not answer holds neither the daemon's threads nor more than one of the agent's 64
+connections.
+
+### Finding a machine's process
+
+To read a machine's CPU time and memory footprint, the daemon looks for the machine's process
+at the first sample of the machine's run, and only while a client watches the distributions; a
+machine that runs while nothing watches is never looked up. It lists the process IDs and keeps
+only processes whose executable is Virtualization.framework's
+`com.apple.Virtualization.VirtualMachine` and whose user is the daemon's user. Only for those
+processes does it list the open files, to find the one that has the distribution's disk image
+open; it never lists the open files of any other process. These processes include the virtual
+machines of other programs of the same user, such as other virtualization apps; the daemon
+reads their open files' paths and identities, and nothing else, and keeps only the matching
+process's ID and start time. A lookup that finds nothing is repeated at the next samples, at
+most 10 times, and then given up for that run. It needs no privilege and gains no right.
 
 ### The dial-back listener
 
@@ -303,6 +336,7 @@ message of its own failed start.
     version and carries one request:
     - `info`, without a payload, which the daemon sends only while it waits for the agent at
       the machine's start;
+    - `sample`, without a payload, while a client watches the distributions;
     - `shutdown`, without a payload;
     - `dialBack`, whose payload is the 32-byte nonce of a session that is opening.
 
@@ -320,6 +354,8 @@ message of its own failed start.
       by 10. Virtualization.framework's stop request then still powers the machine off
       cleanly (`VirtualMachine.stop`).
     - A false `agentInfo` could only matter during a start.
+    - A false `sampled` shows false memory figures and a false address in that machine's row,
+      as root in the guest can (see "Figures from the guest").
   - **What it can block:** every new session of that machine, until the machine stops.
   - **What it cannot do:** use a nonce. It cannot bind a source port below 1024, so the
     daemon refuses its dials before reading them, as above.
