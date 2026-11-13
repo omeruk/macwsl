@@ -67,6 +67,14 @@ from `main`.
     #26, security review.
   - **Phase:** 07, if its file share exposes `~/Library` to the guest: show only a valid
     distribution name, or remove control characters before the notice is written.
+- **The distributions screen's details box has no `mounts` row.**
+  - **Seen:** `Distributions.dc.html` shows `mounts` (`/mnt/mac ← ~`) for each distribution.
+    The app leaves the row out, because nothing is mounted yet, and an empty or `—` row would
+    be a placeholder.
+  - **Evidence:** `DaemonDistributions.make(_:isDefault:history:home:)` in
+    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift`;
+    `prompts/11c-distribution-figures.md`, "Deviations from `Distributions.dc.html`", item 2.
+  - **Phase:** 07, which mounts the Mac's home directory and can report it in the snapshot.
 
 ## Phase 08: Networking
 
@@ -92,29 +100,14 @@ from `main`.
     `systemd-timesyncd` after `systemd-resolved`, which removes that wait without depending on
     this item; the decision record lists the measurements.
   - **Phase:** 08, together with DNS under VPNs.
-
-## Phase 11c: Live figures on the distributions screen
-
-- **The distributions screen shows no figures, details box, or memory chart.**
-  - **Seen:** The MEMORY, CPU, DISK, UPTIME, and KERNEL cells of every distribution are empty,
-    and the details box and the memory chart do not appear. The screen shows the name, the
-    state, and the default marker, which is all that `listDistributions` reports.
-  - **Evidence:** `DaemonDistributions.make(entry:isDefault:)` in
-    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift` sets only
-    those three; `DistributionsContent` shows the two boxes once a distribution has details or
-    a memory history.
-  - **Phase:** 11c, which fills the fields of `DistributionInfo` from the daemon.
-- **An open distributions screen does not follow machines that it did not start or stop.**
-  - **Seen:** The screen reads the daemon's list when it becomes the selected tab, after each
-    of its actions, and when a tab opened from it has started. A machine that starts or stops
-    for another reason, such as a tab opened in another window, `maw` in a terminal, or the
-    idle stop, keeps its earlier state on a screen that stays in view, until the screen is
-    selected again.
-  - **Evidence:** `WindowModel.tabs` and `WindowModel.perform(_:)` in
-    `App/MawTerminalKit/Sources/MawTerminalKit/Window/WindowModel.swift`; pull request #26,
-    code review. The list is never polled, as phase 11b's plan requires.
-  - **Phase:** 11c, whose live figures need the screen to follow the daemon while it is in
-    view.
+- **The distributions screen's details box has no `forwarded` row.**
+  - **Seen:** `Distributions.dc.html` shows `forwarded` (`localhost:8000 → 8000`) for each
+    distribution. The app leaves the row out, because no port is forwarded yet, and an empty or
+    `—` row would be a placeholder.
+  - **Evidence:** `DaemonDistributions.make(_:isDefault:history:home:)` in
+    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift`;
+    `prompts/11c-distribution-figures.md`, "Deviations from `Distributions.dc.html`", item 2.
+  - **Phase:** 08, which forwards ports and can report them in the snapshot.
 
 ## Phase 12: Configuration and lifecycle
 
@@ -407,17 +400,6 @@ from `main`.
     `daemonVersionMismatch` it therefore names `scripts/sign-dev.sh` and `mawd install` rather
     than the app's build, and for `launchctlTimedOut` "Run the command again", where the
     screen's retry is ⌘⇧L or the key of the action. The same `fix/` branch can word these.
-- **The distributions screen's stop does not order its two requests.**
-  - **Seen:** After `s`, the screen sends `terminate` and reads the list while the guest shuts
-    down, so that the row reads stopping. The list's request opens a connection of its own
-    first, so it usually reaches the daemon after `terminate`, but nothing orders the two. If
-    it arrived first, the row would read running until the stop completed, and then stopped.
-    This has not been observed.
-  - **Evidence:** `DaemonDistributions.stop(_:)` in
-    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift`; pull
-    request #26, code review. `terminate` is answered only once the machine has stopped.
-  - **Phase:** None yet. Ordering the two needs the daemon to report that a stop has begun,
-    which changes the daemon interface.
 - **Linux tabs show no working directory.**
   - **Seen:** A Linux tab's label and the key hint bar show the distribution's name without
     the working directory that a local tab shows. The app takes a Linux session's directory

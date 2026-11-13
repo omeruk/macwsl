@@ -346,11 +346,30 @@ local shell as described above.
 ### The distributions screen
 
 ⌘⇧L, or View > Distributions, opens the distributions screen. It lists the installed
-distributions with the state of each one (starting, running, stopping, or stopped) and marks the
-default. When the daemon cannot be reached, it shows maw's message and suggestion instead. The
-list is read when the screen opens or becomes the selected tab, and after each action; it is
-not polled. The columns for memory, CPU, disk, uptime, and the kernel stay empty until a later
-version.
+distributions with the state of each one (starting, running, stopping, or stopped), marks the
+default, and shows live figures:
+
+| Column | What it shows |
+|--------|---------------|
+| MEMORY | Memory in use inside the guest, as `free` reports it as used. |
+| CPU | The CPU use of the machine's process on the Mac, in percent of one core, as Activity Monitor shows it; it may exceed 100 %. |
+| DISK | The space the disk image takes on the Mac, and the most it can grow to: `2.2G/256G`. |
+| UPTIME | The time since the machine started. |
+| KERNEL | The running guest's kernel, or the one the next start boots. |
+
+A stopped distribution shows its disk and kernel only. Below the table, a details box shows the
+selected distribution's default flag, user, and disk image, and while it runs its IPv4
+address, the time from its start to its agent (`boot`), and the memory its process takes on the
+Mac (`host memory`). A memory chart shows the last 60 seconds of MEMORY while it runs. A figure
+that is not known is left empty.
+
+The screen follows the daemon while it is visible in a window: a machine that starts or stops
+for any reason, such as a tab in another window, `maw` in a terminal, or the idle stop, changes
+its row at once, and the figures follow every 1.5 seconds. Reading them never starts a machine
+or keeps one running. While no window shows the screen, because another tab is selected or the
+window is minimized or covered, the app holds no connection for it and the daemon samples
+nothing. When the daemon cannot be reached, the screen shows maw's message and suggestion, and
+tries again after 1, 2, 4, 8, and 16 seconds, then every 30 seconds while it stays visible.
 
 | Key | Action |
 |-----|--------|

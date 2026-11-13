@@ -224,3 +224,7 @@ and 0.372 % above the unwatched cost, and met the others, as the official ones d
   ([docs/security.md](../security.md#finding-a-machines-process)).
 - A host and guest files of different protocol versions refuse each other, and an app built
   before interface version 4 fails with `daemonVersionMismatch` until it is rebuilt.
+- The terminal app draws one bar of its memory chart per sample. A snapshot is also published
+  after state changes, installations, a new default, and the samples of other distributions, so
+  phase 11c's second pull request adds each distribution's `sampleNumber` to the snapshots, which
+  increments the daemon interface version to 5 ([docs/daemon.md](../daemon.md#watching-the-distributions)).

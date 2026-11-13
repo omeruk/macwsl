@@ -50,7 +50,13 @@ code signing requirement
   It reveals what `status` and `listDistributions` reveal, and the figures. The number of
   watchers does not change how often the daemon samples, a connection has at most one watch
   outstanding, and a held connection keeps the daemon running but takes no lease, so it keeps no
-  machine running.
+  machine running. The terminal app holds one such connection, only while at least one of its
+  windows shows the distributions screen, and closes it when none does.
+- The app's measurement harness (`App/MawTerminalKit/Tests/FiguresHarness`) is signed ad hoc
+  with the app's identifier, `dev.maw.app`, by `scripts/measure-figures.sh`, as
+  `scripts/integration-test.sh` signs its probe as `dev.maw.maw`. Nothing installs it, and it
+  refuses to run unless `MAW_DAEMON_LABEL` names a daemon other than the installed one. It gains
+  nothing that the same-user check does not already allow.
 - Every message carries the interface version, which is checked before the body is decoded.
   Bodies are JSON decoded into fixed types; a malformed body fails the request.
 - Phase 13 adds the team identifier to the requirement, which only Apple's certificate chain

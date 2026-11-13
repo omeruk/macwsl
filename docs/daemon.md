@@ -454,8 +454,11 @@ Outside sessions, the app's `DaemonDistributions`
 (`App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift`) sends
 `listDistributions`, `status`, `setDefault`, and `terminate` for its profiles and its
 distributions screen. Each request connects a `DaemonClient` of its own and closes it once the
-answer arrives, so that the app holds no connection that would keep the daemon from its idle
-exit. The app reads the list when a menu, the palette, or the screen needs it, and never polls.
+answer arrives. While at least one window shows the distributions screen, the app also holds one
+connection that repeats `watchDistributions`, and closes it when no window shows the screen, so
+that otherwise it holds no connection that would keep the daemon from its idle exit. The app
+reads the list when a menu, the palette, or the settings open while no window shows the screen,
+and never polls.
 
 ## Peer validation
 
