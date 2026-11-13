@@ -29,4 +29,4 @@ Phase 11 is delivered as phases 11a, 11b, and 11c. Phase 11b is delivered in two
 requests: the first (#25) adds Linux tabs in the app, and the second (#26) adds the profiles
 per installed distribution and the distributions screen's list and actions. Phase 11c is
 delivered in two pull requests: the first (#29) adds the figures in the daemon, and the
-second (#B) shows them on the distributions screen.
+second (#30) shows them on the distributions screen.
