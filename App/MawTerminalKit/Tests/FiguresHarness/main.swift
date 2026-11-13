@@ -47,8 +47,24 @@ final class TimedProvider: DistributionProvider {
     }
 }
 
-struct HarnessFailure: Error, CustomStringConvertible {
-    var description: String
+/// Why a measurement could not be made.
+enum HarnessFailure: LocalizedError {
+    case noWindow
+    case timedOut(String, Duration)
+    case screenNeverShown
+
+    var errorDescription: String? {
+        switch self {
+        case .noWindow: "The terminal window could not be created."
+        case .timedOut(let what, let timeout): "\(what) did not happen within \(timeout)."
+        case .screenNeverShown: "No window showed the distributions screen."
+        }
+    }
+
+    var recoverySuggestion: String? {
+        "Leave the harness's windows uncovered, with the display awake, and run "
+            + "scripts/measure-figures.sh again."
+    }
 }
 
 @MainActor
@@ -69,7 +85,7 @@ struct Harness {
     /// A window on screen, at `offset` steps from the first so that each stays partly visible.
     func window(offset: Int = 0) async throws -> (NSWindowController, WindowModel) {
         let (controller, model) = makeTerminalWindow(settingsStore: store, distributions: provider)
-        guard let window = controller.window else { throw HarnessFailure(description: "no window") }
+        guard let window = controller.window else { throw HarnessFailure.noWindow }
         window.setFrameAutosaveName("")
         window.setFrame(
             NSRect(x: 80 + offset * 60, y: 80 + offset * 60, width: 1100, height: 700),
@@ -94,7 +110,7 @@ struct Harness {
         let deadline = ContinuousClock.now + timeout
         while !condition() {
             guard ContinuousClock.now < deadline else {
-                throw HarnessFailure(description: "\(what) did not happen within \(timeout)")
+                throw HarnessFailure.timedOut(what, timeout)
             }
             try await Task.sleep(for: .milliseconds(1))
         }
@@ -118,7 +134,7 @@ struct Harness {
         try await until("the first CPU figure", within: .seconds(10)) { row(name)?.cpu != nil }
         let cpu = ContinuousClock.now
         guard let shown = provider.shownAt else {
-            throw HarnessFailure(description: "the screen was never shown")
+            throw HarnessFailure.screenNeverShown
         }
         print("value: first-figures \(Self.milliseconds(figures - shown))")
         print("value: first-cpu \(Self.milliseconds(cpu - shown))")
@@ -218,7 +234,9 @@ func run(_ arguments: [String]) async -> Int32 {
             return 64
         }
     } catch {
-        FileHandle.standardError.write(Data("maw-figures-harness: \(error)\n".utf8))
+        let text = [error.localizedDescription, (error as? LocalizedError)?.recoverySuggestion]
+            .compactMap { $0 }.joined(separator: " ")
+        FileHandle.standardError.write(Data("maw-figures-harness: \(text)\n".utf8))
         return 1
     }
     return 0

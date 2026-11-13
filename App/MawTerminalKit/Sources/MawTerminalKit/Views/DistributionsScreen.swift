@@ -265,30 +265,24 @@ struct MemoryChartBox: View {
         .accessibilityLabel("Memory over the last 60 seconds: \(Self.caption(distribution))")
     }
 
-    /// `412M now · 8.0G limit`, with only the figures that are known.
-    static func caption(_ distribution: DistributionInfo) -> String {
-        [
-            distribution.memory.map { "\($0) now" },
-            distribution.memoryLimit.map { "\(FigureFormat.bytes($0)) limit" },
-        ].compactMap { $0 }.joined(separator: " · ")
+    /// The caption's parts, `412M` `now · 8.0G limit`, with only the figures that are known.
+    /// The first part is the memory in use, drawn in the numbers' color as in the board.
+    static func captionParts(_ distribution: DistributionInfo) -> (memory: String?, rest: String) {
+        let limit = distribution.memoryLimit.map { "\(FigureFormat.bytes($0)) limit" }
+        guard let memory = distribution.memory else { return (nil, limit ?? "") }
+        return (memory, [" now", limit].compactMap { $0 }.joined(separator: " · "))
     }
 
-    /// The caption with the memory in use in the numbers' color, as in the board.
+    static func caption(_ distribution: DistributionInfo) -> String {
+        let parts = captionParts(distribution)
+        return (parts.memory ?? "") + parts.rest
+    }
+
     private var caption: Text {
-        let secondary = chrome.textSecondary.color
-        var text = Text("")
-        if let memory = distribution.memory {
-            text =
-                text + Text(memory).foregroundStyle(ansi.magenta.color)
-                + Text(" now").foregroundStyle(secondary)
-        }
-        if let limit = distribution.memoryLimit {
-            let separator = distribution.memory == nil ? "" : " · "
-            text =
-                text
-                + Text("\(separator)\(FigureFormat.bytes(limit)) limit").foregroundStyle(secondary)
-        }
-        return text.font(MawFonts.chromeFont())
+        let parts = Self.captionParts(distribution)
+        let memory = Text(parts.memory ?? "").foregroundStyle(ansi.magenta.color)
+        return (memory + Text(parts.rest).foregroundStyle(chrome.textSecondary.color))
+            .font(MawFonts.chromeFont())
     }
 }
 

@@ -145,7 +145,8 @@ func figures(
     // MARK: Retries
 
     /// While the daemon cannot be reached, the error stays shown, and the attempts wait 1, 2,
-    /// 4, 8, 16, then 30 seconds; an answer starts the delays again from the first.
+    /// 4, 8, 16, then 30 seconds; a connection that delivered two snapshots starts the delays
+    /// again from the first.
     @Test func retriesWithAGrowingDelayWhileTheErrorStaysShown() async throws {
         let daemon = FakeDaemonClient()
         let error = MawError.daemonUnreachable(reason: "the connection was invalidated")
@@ -168,10 +169,12 @@ func figures(
         gate.open()
         #expect(await waitUntil(seconds: 5) { provider.failure == nil })
         #expect(provider.distributions.map(\.name) == ["Ubuntu-24.04"])
+        daemon.publish([figures(sample: 2, memory: 2 << 20)])
+        #expect(
+            await waitUntil(seconds: 5) { provider.distributions.first?.memoryHistory.count == 2 })
 
         let lost = MawError.daemonConnectionLost(during: "watchDistributions")
         daemon.watchFailure.withLock { $0 = lost }
-        daemon.publish([figures(sample: 2, memory: 1 << 20)])
         #expect(await waitUntil(seconds: 5) { gate.delays.count == expected.count + 1 })
         #expect(gate.delays.last == .seconds(1))
         #expect(provider.failure == lost && provider.distributions.isEmpty)
@@ -188,6 +191,70 @@ func figures(
         #expect(await waitUntil(seconds: 5) { gate.delays.count == expected.count + 2 })
         #expect(gate.delays.last == .seconds(1))
         provider.setScreenVisible(false, in: window)
+    }
+
+    /// A daemon that answers once and then fails does not reset the delays.
+    @Test func oneSnapshotThenAFailureKeepsTheDelayGrowing() async {
+        let daemon = FakeDaemonClient()
+        let gate = SleepGate()
+        let provider = daemon.provider(sleep: gate.sleep)
+        daemon.connectFailure.withLock { $0 = .daemonUnreachable(reason: "test") }
+        provider.setScreenVisible(true, in: window)
+        #expect(await waitUntil(seconds: 5) { gate.delays.count == 1 && gate.isWaiting })
+        daemon.connectFailure.withLock { $0 = nil }
+        daemon.publish([figures(sample: 1, memory: 1 << 20)])
+        gate.open()
+        #expect(await waitUntil(seconds: 5) { provider.failure == nil })
+        daemon.watchFailure.withLock { $0 = .daemonConnectionLost(during: "watchDistributions") }
+        #expect(await waitUntil(seconds: 5) { gate.delays.count == 2 && gate.isWaiting })
+        #expect(gate.delays == [.seconds(1), .seconds(2)])
+        provider.setScreenVisible(false, in: window)
+    }
+
+    /// While the attempts wait, a refresh (⌘⇧L on the screen, or an action) tries again at
+    /// once, from the shortest delay.
+    @Test func aRefreshTriesAgainAtOnceWhileTheAttemptsWait() async {
+        let daemon = FakeDaemonClient()
+        let gate = SleepGate()
+        let provider = daemon.provider(sleep: gate.sleep)
+        daemon.connectFailure.withLock { $0 = .daemonUnreachable(reason: "test") }
+        provider.setScreenVisible(true, in: window)
+        for attempt in 1...3 {
+            #expect(await waitUntil(seconds: 5) { gate.delays.count == attempt && gate.isWaiting })
+            if attempt < 3 { gate.open() }
+        }
+        #expect(gate.delays.last == .seconds(4))
+        provider.refresh()
+        #expect(await waitUntil(seconds: 5) { record(daemon).connects == 4 })
+        #expect(await waitUntil(seconds: 5) { gate.delays.count == 4 })
+        #expect(gate.delays.last == .seconds(1))
+        #expect(record(daemon).lists == 0)
+        daemon.connectFailure.withLock { $0 = nil }
+        daemon.install(["Ubuntu-24.04"])
+        provider.refresh()
+        #expect(await waitUntil(seconds: 5) { provider.failure == nil && provider.hasAnswer })
+        // While the watch answers, a refresh asks nothing.
+        let connects = record(daemon).connects
+        provider.refresh()
+        #expect(record(daemon).connects == connects && record(daemon).lists == 0)
+        provider.setScreenVisible(false, in: window)
+    }
+
+    /// A watch that ends while it fails reads the list once, so that the profiles of every
+    /// window do not keep the failure.
+    @Test func aWatchThatEndsWhileItFailsReadsTheList() async {
+        let daemon = FakeDaemonClient()
+        daemon.install(["Ubuntu-24.04"])
+        daemon.watchFailure.withLock { $0 = .daemonConnectionLost(during: "watchDistributions") }
+        let gate = SleepGate()
+        let provider = daemon.provider(sleep: gate.sleep)
+        provider.setScreenVisible(true, in: window)
+        #expect(await waitUntil(seconds: 5) { provider.failure != nil && gate.isWaiting })
+        daemon.watchFailure.withLock { $0 = nil }
+        provider.setScreenVisible(false, in: window)
+        await provider.pending?.value
+        #expect(record(daemon).lists == 1)
+        #expect(provider.failure == nil && provider.distributions.map(\.name) == ["Ubuntu-24.04"])
     }
 
     // MARK: History

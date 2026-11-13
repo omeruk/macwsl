@@ -33,8 +33,8 @@
             let handle: any MachineHandle
             var lookup = MachineProcessLookup()
             var figures = Figures()
-            /// The samples published since watching started, failed ones included, so that a
-            /// client can tell each sample from the snapshots that other changes publish.
+            /// The samples published since the first watcher arrived, failed ones included, so
+            /// that a client can tell each sample from the snapshots that other changes publish.
             var samples: UInt64 = 0
             /// The CPU time at the previous sample, for the next one's difference.
             var cpu: (nanoseconds: UInt64, at: C.Instant)?

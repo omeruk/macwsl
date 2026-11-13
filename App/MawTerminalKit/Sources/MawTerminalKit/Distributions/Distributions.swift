@@ -160,7 +160,12 @@ public final class DaemonDistributions: DistributionProvider {
     }
 
     public func refresh() {
-        guard watch == nil else { return }
+        if watch != nil {
+            // The watch keeps the list current. While it waits to try again, ⌘⇧L or an action
+            // tries again at once, from the shortest delay.
+            if failure != nil { startWatching() }
+            return
+        }
         guard pending == nil else {
             refreshesAgain = true
             return
@@ -215,9 +220,12 @@ public final class DaemonDistributions: DistributionProvider {
         }
     }
 
-    /// Watches until cancelled. After a failure it shows the error and tries again after each
-    /// of `retryDelays`; a snapshot starts the delays from the first again.
+    /// Watches until cancelled, in place of any earlier watch. After a failure it shows the
+    /// error and tries again after each of `retryDelays`. A connection that delivered two
+    /// snapshots starts the delays from the first again, so that a daemon that answers once and
+    /// then fails each time is not asked every second.
     private func startWatching() {
+        watch?.cancel()
         watchNumber += 1
         let number = watchNumber
         let received: @Sendable (DistributionSnapshot) async -> Void = { [weak self] snapshot in
@@ -229,10 +237,10 @@ public final class DaemonDistributions: DistributionProvider {
         watch = Task { [connect, sleep] in
             var failures = 0
             while !Task.isCancelled {
-                let (error, answered) = await Self.follow(connect, received: received)
+                let (error, snapshots) = await Self.follow(connect, received: received)
                 guard let error, !Task.isCancelled else { return }
                 await failed(error)
-                if answered { failures = 0 }
+                if snapshots >= 2 { failures = 0 }
                 let delay = Self.retryDelays[min(failures, Self.retryDelays.count - 1)]
                 failures += 1
                 try? await sleep(delay)
@@ -251,37 +259,39 @@ public final class DaemonDistributions: DistributionProvider {
             DistributionInfo(name: $0.name, state: $0.state, isDefault: $0.isDefault)
         }
         if rows != distributions { distributions = rows }
+        // The profiles of every window would otherwise keep the watch's failure, and no list.
+        if failure != nil { refresh() }
     }
 
     /// Connects and repeats `watchDistributions` until it fails or the task is cancelled, and
-    /// closes the connection. Returns the failure, `nil` when cancelled, and whether any
-    /// snapshot arrived.
+    /// closes the connection. Returns the failure, `nil` when cancelled, and how many snapshots
+    /// arrived.
     @concurrent
     nonisolated static func follow(
         _ connect: Connector, received: @Sendable (DistributionSnapshot) async -> Void
-    ) async -> (MawError?, Bool) {
+    ) async -> (MawError?, Int) {
         let client: any DaemonRequests
         do {
             client = try await connect()
         } catch {
-            return (error, false)
+            return (error, 0)
         }
         let closer = Closer(client)
         defer { closer.close() }
         return await withTaskCancellationHandler {
             var after: UInt64 = 0
-            var answered = false
+            var snapshots = 0
             while !Task.isCancelled {
                 do throws(MawError) {
                     let snapshot = try await client.watchDistributions(after: after)
                     after = snapshot.sequence
-                    answered = true
+                    snapshots += 1
                     await received(snapshot)
                 } catch {
-                    return (Task.isCancelled ? nil : error, answered)
+                    return (Task.isCancelled ? nil : error, snapshots)
                 }
             }
-            return (nil, answered)
+            return (nil, snapshots)
         } onCancel: {
             // A held `watchDistributions` returns only when its connection closes.
             closer.close()

@@ -418,9 +418,10 @@
         public var hostMemoryBytes: UInt64?
         /// Diagnostic only: the last guest sample's time from the request to the reply.
         public var lastSampleMicroseconds: UInt64?
-        /// The number of this run's samples since watching started: 1 for the first, and one
-        /// more for each later sample, including one whose guest request failed. It lets a
-        /// client tell a new sample from a snapshot that another change published.
+        /// The number of this run's samples since a client started watching while none did: 1
+        /// for the first, and one more for each later sample, including one whose guest request
+        /// failed. It lets a client tell a new sample from a snapshot that another change
+        /// published.
         public var sampleNumber: UInt64?
 
         public init(
