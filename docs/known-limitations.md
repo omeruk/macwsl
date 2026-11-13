@@ -166,6 +166,16 @@ from `main`.
   - **Phase:** 12b. Two options, neither built or measured: a persistent request connection
     per machine, estimated to save 0.7 ms and requiring a protocol change; or reused threads in
     the daemon and the agent, estimated to save 0.1 to 0.3 ms without a protocol change.
+- **The warm prompt runs close to its limit of 150 ms.**
+  - **Seen:** `DistributionIntegrationTests.measuresWarmPrompt`, added in phase 05, checks the
+    median of five warm starts of `maw` to a prompt against the limit of 150 ms that
+    `prompts/05-distro-install.md` sets. In the full integration run at `8dc2d12` (pull request
+    #29) it measured a median of 155 ms (165, 120, 155, 141, 167 ms) and failed; the run's load
+    average was 4.28 at its start and 3.87 at its end. Run alone twice afterwards, it passed
+    with medians of 147 and 142 ms, at load averages of 3.51 and 3.66 at their starts.
+  - **Evidence:** Pull request #29, "Verification". The limit is unchanged.
+  - **Phase:** 12b. Where the time to the prompt goes on a warm machine is not measured; the
+    dial-back exchange above is one known part of it.
 - **Virtualization.framework can end the host's side of a guest-opened connection.**
   - **Seen:** Rarely, a running session ends with `sessionConnectionEnded`, and in bursts of
     64 sessions an accepted connection is reset. The command may keep running in the guest
