@@ -147,16 +147,28 @@ from `main`.
     `getifaddrs` add 0.90 ms and 1.2 ms. The development measurements gave 1.155 ms and 0.372 %,
     with a fixed cost of 0.821 ms and 3.20 ms. The owner accepted both misses on 2026-11-12 and
     kept this item on 2026-11-13 after the official measurements: the cost is a fraction of one
-    percent of one core, only while a distributions screen is visible, and zero otherwise.
+    percent of one core, only while a distributions screen is visible, and zero otherwise. The
+    official run C at `1d91067` gave 0.773 ms (95th percentile 1.611 ms) and 0.364 % (95th
+    percentile 0.367 %).
   - **Evidence:** [Decision record 0020](decisions/0020-distribution-figures.md), "What it
-    costs": the official measurements of 2026-11-13 at `6829e27` and `694eb11`, after a restart
-    and with only Terminal open, and the development measurements of 2026-11-12 at load averages
-    from 2.1 to 6.6.
+    costs": the official measurements of 2026-11-13 at `6829e27`, `694eb11`, and `1d91067`,
+    after a restart and with only Terminal open, and the development measurements of 2026-11-12
+    at load averages from 2.1 to 6.6.
   - **Phase:** 12b. Reusing one connection per run, about 80 to 100 lines, would remove most of
-    the fixed cost; it changes the protocol and needs new guest files. By the official figures
-    that is 71 % of the machine's process's time per sample but only 39 % of the agent's, whose
-    larger part is the reading of the figures. Where that time goes in the agent is not
-    measured.
+    the fixed cost; it changes the protocol and needs new guest files. In the machine's process
+    the fixed cost is most of a sample in both official runs that measured it, 71 % in run A and
+    79 % in run C, so a reused connection would remove most of that cost. In the guest agent,
+    the split between the fixed cost of a request and the reading of the figures is not
+    established. This item first stated, from run A, that the fixed cost is 39 % of a sample's
+    agent time, whose larger part is the reading of the figures. Run C did not reproduce that
+    split: by its medians, the fixed cost (0.869 ms per `info` request) is larger than a whole
+    sample (0.773 ms), and both sets of batches are scattered, per sample 0.7 to 0.8 ms in three
+    batches and 1.5 to 1.6 ms in two, and per `info` request 0.5 to 1.2 ms. How much of the
+    agent's time a reused connection would save is therefore unknown. Before the protocol
+    change is decided, measure the agent's split again with a method that gives stable results:
+    for example, 20 batches of 1,000 requests per run instead of 5, alternating `sample` and
+    `info` batches so that both meet the same conditions, with the guest's `steal` time read
+    from `/proc/stat` before and after each batch.
 - **The dial-back exchange costs about 1.8 ms per session.**
   - **Seen:** Warm `maw -e true` measured 33 ms against 31 ms with host-opened sessions, within
     the target of 50 ms.
@@ -329,6 +341,23 @@ from `main`.
     goes inside the view has not been profiled.
   - **Phase:** 12b. Profile the terminal view's parsing and drawing with Instruments during a
     flood, and reduce the work per byte where the profile shows it.
+- **The terminal app's cost with the distributions screen visible is within its limit by about
+  7 %.**
+  - **Seen:** In the owner's official measurement, the app's CPU over 60 seconds with the screen
+    visible and one distribution running, above its cost with the screen hidden, was 0.927 % of
+    one core (95th percentile 0.965 %) against the limit of 1 % that
+    `prompts/11c-distribution-figures.md` sets: 1.041 % visible against 0.115 % hidden. An
+    earlier official run, during which another app was opened for a short time, measured
+    0.982 % (95th percentile 1.019 %); the development measurement gave 0.814 %.
+  - **Evidence:** Pull request #30, "Speed targets": `AppFigureMeasurements.measuresTheAppsCost`
+    in `Tests/mawdTests/AppFigureMeasurements.swift`, run by `scripts/measure-figures.sh` at
+    `1d91067` on 2026-11-13. Where the time goes has not been profiled.
+  - **Phase:** 12b. Profile the app with the screen visible, starting from the provider:
+    `DaemonDistributions` in
+    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift` builds every
+    row again at each snapshot and replaces the whole array when any row differs, which, with a
+    distribution running, is at every sample; every window's views observe that array. Reduce
+    the work where the profile shows it.
 
 ## Phase 13: Packaging and release
 
