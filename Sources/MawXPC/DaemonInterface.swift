@@ -8,7 +8,7 @@
     /// (see `InterfaceCoding`). The client's first request on every connection is `hello`.
     public enum DaemonInterface {
         /// Incremented on every change to the messages below, their fields, or their meaning.
-        public static let version: UInt32 = 4
+        public static let version: UInt32 = 5
 
         /// The LaunchAgent label, which is also the name of the daemon's Mach service.
         public static let defaultLabel = "dev.maw.mawd"
@@ -418,6 +418,10 @@
         public var hostMemoryBytes: UInt64?
         /// Diagnostic only: the last guest sample's time from the request to the reply.
         public var lastSampleMicroseconds: UInt64?
+        /// The number of this run's samples since watching started: 1 for the first, and one
+        /// more for each later sample, including one whose guest request failed. It lets a
+        /// client tell a new sample from a snapshot that another change published.
+        public var sampleNumber: UInt64?
 
         public init(
             name: DistroName, state: DistributionState, defaultUser: String, diskImagePath: String

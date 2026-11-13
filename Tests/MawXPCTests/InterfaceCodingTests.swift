@@ -120,8 +120,8 @@ import XPC
         #expect(try InterfaceCoding.decode(DaemonEvent.self, from: message, as: .client) == event)
     }
 
-    @Test func isInterfaceVersion4() {
-        #expect(DaemonInterface.version == 4)
+    @Test func isInterfaceVersion5() {
+        #expect(DaemonInterface.version == 5)
     }
 
     /// A running distribution with every figure.
@@ -142,6 +142,7 @@ import XPC
         figures.cpuPercent = 0.4
         figures.hostMemoryBytes = 710 << 20
         figures.lastSampleMicroseconds = 1_250
+        figures.sampleNumber = 12
         return figures
     }
 
