@@ -67,6 +67,14 @@ from `main`.
     #26, security review.
   - **Phase:** 07, if its file share exposes `~/Library` to the guest: show only a valid
     distribution name, or remove control characters before the notice is written.
+- **The distributions screen's details box has no `mounts` row.**
+  - **Seen:** `Distributions.dc.html` shows `mounts` (`/mnt/mac ← ~`) for each distribution.
+    The app leaves the row out, because nothing is mounted yet, and an empty or `—` row would
+    be a placeholder.
+  - **Evidence:** `DaemonDistributions.make(_:isDefault:history:home:)` in
+    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift`;
+    `prompts/11c-distribution-figures.md`, "Deviations from `Distributions.dc.html`", item 2.
+  - **Phase:** 07, which mounts the Mac's home directory and can report it in the snapshot.
 
 ## Phase 08: Networking
 
@@ -92,29 +100,14 @@ from `main`.
     `systemd-timesyncd` after `systemd-resolved`, which removes that wait without depending on
     this item; the decision record lists the measurements.
   - **Phase:** 08, together with DNS under VPNs.
-
-## Phase 11c: Live figures on the distributions screen
-
-- **The distributions screen shows no figures, details box, or memory chart.**
-  - **Seen:** The MEMORY, CPU, DISK, UPTIME, and KERNEL cells of every distribution are empty,
-    and the details box and the memory chart do not appear. The screen shows the name, the
-    state, and the default marker, which is all that `listDistributions` reports.
-  - **Evidence:** `DaemonDistributions.make(entry:isDefault:)` in
-    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift` sets only
-    those three; `DistributionsContent` shows the two boxes once a distribution has details or
-    a memory history.
-  - **Phase:** 11c, which fills the fields of `DistributionInfo` from the daemon.
-- **An open distributions screen does not follow machines that it did not start or stop.**
-  - **Seen:** The screen reads the daemon's list when it becomes the selected tab, after each
-    of its actions, and when a tab opened from it has started. A machine that starts or stops
-    for another reason, such as a tab opened in another window, `maw` in a terminal, or the
-    idle stop, keeps its earlier state on a screen that stays in view, until the screen is
-    selected again.
-  - **Evidence:** `WindowModel.tabs` and `WindowModel.perform(_:)` in
-    `App/MawTerminalKit/Sources/MawTerminalKit/Window/WindowModel.swift`; pull request #26,
-    code review. The list is never polled, as phase 11b's plan requires.
-  - **Phase:** 11c, whose live figures need the screen to follow the daemon while it is in
-    view.
+- **The distributions screen's details box has no `forwarded` row.**
+  - **Seen:** `Distributions.dc.html` shows `forwarded` (`localhost:8000 → 8000`) for each
+    distribution. The app leaves the row out, because no port is forwarded yet, and an empty or
+    `—` row would be a placeholder.
+  - **Evidence:** `DaemonDistributions.make(_:isDefault:history:home:)` in
+    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift`;
+    `prompts/11c-distribution-figures.md`, "Deviations from `Distributions.dc.html`", item 2.
+  - **Phase:** 08, which forwards ports and can report them in the snapshot.
 
 ## Phase 12: Configuration and lifecycle
 
@@ -154,16 +147,28 @@ from `main`.
     `getifaddrs` add 0.90 ms and 1.2 ms. The development measurements gave 1.155 ms and 0.372 %,
     with a fixed cost of 0.821 ms and 3.20 ms. The owner accepted both misses on 2026-11-12 and
     kept this item on 2026-11-13 after the official measurements: the cost is a fraction of one
-    percent of one core, only while a distributions screen is visible, and zero otherwise.
+    percent of one core, only while a distributions screen is visible, and zero otherwise. The
+    official run C at `1d91067` gave 0.773 ms (95th percentile 1.611 ms) and 0.364 % (95th
+    percentile 0.367 %).
   - **Evidence:** [Decision record 0020](decisions/0020-distribution-figures.md), "What it
-    costs": the official measurements of 2026-11-13 at `6829e27` and `694eb11`, after a restart
-    and with only Terminal open, and the development measurements of 2026-11-12 at load averages
-    from 2.1 to 6.6.
+    costs": the official measurements of 2026-11-13 at `6829e27`, `694eb11`, and `1d91067`,
+    after a restart and with only Terminal open, and the development measurements of 2026-11-12
+    at load averages from 2.1 to 6.6.
   - **Phase:** 12b. Reusing one connection per run, about 80 to 100 lines, would remove most of
-    the fixed cost; it changes the protocol and needs new guest files. By the official figures
-    that is 71 % of the machine's process's time per sample but only 39 % of the agent's, whose
-    larger part is the reading of the figures. Where that time goes in the agent is not
-    measured.
+    the fixed cost; it changes the protocol and needs new guest files. In the machine's process
+    the fixed cost is most of a sample in both official runs that measured it, 71 % in run A and
+    79 % in run C, so a reused connection would remove most of that cost. In the guest agent,
+    the split between the fixed cost of a request and the reading of the figures is not
+    established. This item first stated, from run A, that the fixed cost is 39 % of a sample's
+    agent time, whose larger part is the reading of the figures. Run C did not reproduce that
+    split: by its medians, the fixed cost (0.869 ms per `info` request) is larger than a whole
+    sample (0.773 ms), and both sets of batches are scattered, per sample 0.7 to 0.8 ms in three
+    batches and 1.5 to 1.6 ms in two, and per `info` request 0.5 to 1.2 ms. How much of the
+    agent's time a reused connection would save is therefore unknown. Before the protocol
+    change is decided, measure the agent's split again with a method that gives stable results:
+    for example, 20 batches of 1,000 requests per run instead of 5, alternating `sample` and
+    `info` batches so that both meet the same conditions, with the guest's `steal` time read
+    from `/proc/stat` before and after each batch.
 - **The dial-back exchange costs about 1.8 ms per session.**
   - **Seen:** Warm `maw -e true` measured 33 ms against 31 ms with host-opened sessions, within
     the target of 50 ms.
@@ -336,6 +341,23 @@ from `main`.
     goes inside the view has not been profiled.
   - **Phase:** 12b. Profile the terminal view's parsing and drawing with Instruments during a
     flood, and reduce the work per byte where the profile shows it.
+- **The terminal app's cost with the distributions screen visible is within its limit by about
+  7 %.**
+  - **Seen:** In the owner's official measurement, the app's CPU over 60 seconds with the screen
+    visible and one distribution running, above its cost with the screen hidden, was 0.927 % of
+    one core (95th percentile 0.965 %) against the limit of 1 % that
+    `prompts/11c-distribution-figures.md` sets: 1.041 % visible against 0.115 % hidden. An
+    earlier official run, during which another app was opened for a short time, measured
+    0.982 % (95th percentile 1.019 %); the development measurement gave 0.814 %.
+  - **Evidence:** Pull request #30, "Speed targets": `AppFigureMeasurements.measuresTheAppsCost`
+    in `Tests/mawdTests/AppFigureMeasurements.swift`, run by `scripts/measure-figures.sh` at
+    `1d91067` on 2026-11-13. Where the time goes has not been profiled.
+  - **Phase:** 12b. Profile the app with the screen visible, starting from the provider:
+    `DaemonDistributions` in
+    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift` builds every
+    row again at each snapshot and replaces the whole array when any row differs, which, with a
+    distribution running, is at every sample; every window's views observe that array. Reduce
+    the work where the profile shows it.
 
 ## Phase 13: Packaging and release
 
@@ -407,17 +429,6 @@ from `main`.
     `daemonVersionMismatch` it therefore names `scripts/sign-dev.sh` and `mawd install` rather
     than the app's build, and for `launchctlTimedOut` "Run the command again", where the
     screen's retry is ⌘⇧L or the key of the action. The same `fix/` branch can word these.
-- **The distributions screen's stop does not order its two requests.**
-  - **Seen:** After `s`, the screen sends `terminate` and reads the list while the guest shuts
-    down, so that the row reads stopping. The list's request opens a connection of its own
-    first, so it usually reaches the daemon after `terminate`, but nothing orders the two. If
-    it arrived first, the row would read running until the stop completed, and then stopped.
-    This has not been observed.
-  - **Evidence:** `DaemonDistributions.stop(_:)` in
-    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift`; pull
-    request #26, code review. `terminate` is answered only once the machine has stopped.
-  - **Phase:** None yet. Ordering the two needs the daemon to report that a stop has begun,
-    which changes the daemon interface.
 - **Linux tabs show no working directory.**
   - **Seen:** A Linux tab's label and the key hint bar show the distribution's name without
     the working directory that a local tab shows. The app takes a Linux session's directory

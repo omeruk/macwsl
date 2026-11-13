@@ -32,6 +32,13 @@ let package = Package(
                 .product(name: "MawProtocol", package: "maw"),
             ]
         ),
+        // The app's measurements of phase 11c, which scripts/measure-figures.sh builds, signs
+        // as the app, and runs against the test daemon. Not part of any product.
+        .executableTarget(
+            name: "maw-figures-harness",
+            dependencies: ["MawTerminalKit", .product(name: "MawCore", package: "maw")],
+            path: "Tests/FiguresHarness"
+        ),
         .testTarget(
             name: "MawTerminalKitTests",
             dependencies: ["MawTerminalKit", .product(name: "SwiftTerm", package: "SwiftTerm")]

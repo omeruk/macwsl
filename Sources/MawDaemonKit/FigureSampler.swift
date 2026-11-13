@@ -33,6 +33,9 @@
             let handle: any MachineHandle
             var lookup = MachineProcessLookup()
             var figures = Figures()
+            /// The samples published since the first watcher arrived, failed ones included, so
+            /// that a client can tell each sample from the snapshots that other changes publish.
+            var samples: UInt64 = 0
             /// The CPU time at the previous sample, for the next one's difference.
             var cpu: (nanoseconds: UInt64, at: C.Instant)?
             /// Whether it was sampled since watching started.
@@ -92,6 +95,7 @@
             for name in runs.keys {
                 runs[name]?.figures = Figures()
                 runs[name]?.cpu = nil
+                runs[name]?.samples = 0
                 runs[name]?.hasSampled = false
             }
             changed()
@@ -289,6 +293,7 @@
                 run.cpu = nil
             }
             run.figures = figures
+            run.samples += 1
             runs[name] = run
             changed()
         }
@@ -360,6 +365,7 @@
                     entry.cpuPercent = run.figures.cpuPercent
                     entry.hostMemoryBytes = run.figures.hostMemoryBytes
                     entry.lastSampleMicroseconds = run.figures.sampleMicroseconds
+                    entry.sampleNumber = run.samples > 0 ? run.samples : nil
                 }
                 return entry
             }

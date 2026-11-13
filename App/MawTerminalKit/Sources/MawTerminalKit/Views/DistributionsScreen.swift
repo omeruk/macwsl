@@ -2,11 +2,11 @@ import SwiftUI
 
 /// The distributions screen (⌘⇧L), a tab of its own, as in `Distributions.dc.html`.
 ///
-/// It shows what the daemon reported and asks again when it opens and after each action, never
-/// on a timer. The actions on the selected distribution are commands of the registry, whose
-/// keys the hint bar shows: the screen looks each typed key up there. The details box and the
-/// memory chart appear once a distribution has data for them, which phase 11c supplies; until
-/// then previews with sample data cover them.
+/// It shows what the daemon reported: while the screen is visible, the provider follows the
+/// daemon's snapshots, never a timer of its own. The actions on the selected distribution are
+/// commands of the registry, whose keys the hint bar shows: the screen looks each typed key up
+/// there. The details box and the memory chart appear independently, each once the selected
+/// distribution has data for it.
 struct DistributionsScreen: View {
     let model: WindowModel
     @FocusState private var focused: Bool
@@ -111,11 +111,20 @@ struct DistributionsContent: View {
             }
             .fixedSize(horizontal: false, vertical: true)
             if let selected = listed?.first(where: { $0.name == selection }),
-                !selected.details.isEmpty || !selected.memoryHistory.isEmpty
+                !selected.details.isEmpty || MemoryChartBox.hasData(selected)
             {
+                // Each half keeps its place, so that a box that appears moves nothing.
                 HStack(spacing: 10) {
-                    DistributionDetailsBox(distribution: selected)
-                    MemoryChartBox(distribution: selected)
+                    if selected.details.isEmpty {
+                        Color.clear.frame(height: 0)
+                    } else {
+                        DistributionDetailsBox(distribution: selected)
+                    }
+                    if MemoryChartBox.hasData(selected) {
+                        MemoryChartBox(distribution: selected)
+                    } else {
+                        Color.clear.frame(height: 0)
+                    }
                 }
             }
             Spacer(minLength: 0)
@@ -202,28 +211,43 @@ struct DistributionDetailsBox: View {
     }
 }
 
-/// A bar chart of memory use over the last 60 seconds, in the theme's blue slot.
+/// A bar chart of memory use over the last 60 seconds, in the theme's blue slot: one slot per
+/// sample, the newest on the right, scaled to the machine's memory size. A sample whose memory
+/// is not known, and a slot before the first sample, draw no bar.
 struct MemoryChartBox: View {
     let distribution: DistributionInfo
     @Environment(\.chrome) private var chrome
     @Environment(\.ansi) private var ansi
 
+    /// Whether the distribution has a sample to draw.
+    static func hasData(_ distribution: DistributionInfo) -> Bool {
+        distribution.memoryHistory.contains { $0 != nil }
+    }
+
+    /// The bars' values, `historyLength` slots, oldest first.
+    static func slots(_ history: [UInt64?]) -> [UInt64?] {
+        let count = DaemonDistributions.historyLength
+        let recent = history.suffix(count)
+        return Array(repeating: nil, count: count - recent.count) + recent
+    }
+
     var body: some View {
-        let history = distribution.memoryHistory
-        let peak = max(history.max() ?? 1, distribution.memoryLimit ?? 1, 1)
+        let slots = Self.slots(distribution.memoryHistory)
+        let peak = max(
+            distribution.memoryLimit ?? slots.compactMap { $0 }.max() ?? 1, 1)
         Box(
             title: "memory", trailingTitle: "last 60 s", titleColor: chrome.text,
             trailingTitleColor: chrome.textSecondary, borderColor: chrome.line
         ) {
             VStack(alignment: .leading, spacing: 6) {
                 GeometryReader { geometry in
-                    HStack(alignment: .bottom, spacing: 2) {
-                        ForEach(Array(history.enumerated()), id: \.offset) { _, value in
+                    HStack(alignment: .bottom, spacing: 3) {
+                        ForEach(Array(slots.enumerated()), id: \.offset) { _, value in
+                            let share = CGFloat(min(value ?? 0, peak)) / CGFloat(peak)
                             Rectangle()
-                                .fill(ansi.blue.color)
+                                .fill(value == nil ? Color.clear : ansi.blue.color)
                                 .frame(
-                                    height: max(
-                                        2, geometry.size.height * CGFloat(value) / CGFloat(peak)))
+                                    height: value == nil ? 0 : max(2, geometry.size.height * share))
                         }
                     }
                     .frame(maxHeight: .infinity, alignment: .bottom)
@@ -231,21 +255,34 @@ struct MemoryChartBox: View {
                 HStack {
                     Text("60s").chromeStyle(chrome.textMuted)
                     Spacer()
-                    Text(caption).chromeStyle(chrome.textSecondary)
+                    caption
                     Spacer()
                     Text("0s").chromeStyle(chrome.textMuted)
                 }
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Memory over the last 60 seconds: \(caption)")
+        .accessibilityLabel("Memory over the last 60 seconds: \(Self.caption(distribution))")
     }
 
-    private var caption: String {
-        let now = distribution.memory ?? "—"
-        guard let limit = distribution.memoryLimit else { return "\(now) now" }
-        return
-            "\(now) now · \(ByteCountFormatter.string(fromByteCount: Int64(limit), countStyle: .memory)) limit"
+    /// The caption's parts, `412M` `now · 8.0G limit`, with only the figures that are known.
+    /// The first part is the memory in use, drawn in the numbers' color as in the board.
+    static func captionParts(_ distribution: DistributionInfo) -> (memory: String?, rest: String) {
+        let limit = distribution.memoryLimit.map { "\(FigureFormat.bytes($0)) limit" }
+        guard let memory = distribution.memory else { return (nil, limit ?? "") }
+        return (memory, [" now", limit].compactMap { $0 }.joined(separator: " · "))
+    }
+
+    static func caption(_ distribution: DistributionInfo) -> String {
+        let parts = captionParts(distribution)
+        return (parts.memory ?? "") + parts.rest
+    }
+
+    private var caption: Text {
+        let parts = Self.captionParts(distribution)
+        let memory = Text(parts.memory ?? "").foregroundStyle(ansi.magenta.color)
+        return (memory + Text(parts.rest).foregroundStyle(chrome.textSecondary.color))
+            .font(MawFonts.chromeFont())
     }
 }
 
@@ -277,18 +314,23 @@ extension DistributionInfo {
             details: [
                 .init("default", "yes", role: .positive), .init("user", "omer"),
                 .init("ip", "192.168.64.3", role: .number),
-                .init("forwarded", "localhost:8000 → 8000", role: .link),
-                .init("mounts", "/mnt/mac ← ~", role: .link),
-                .init("disk image", "~/Library/…/ubuntu-24.04/disk.img"),
+                .init(
+                    "disk image", "~/Library/Application Support/maw/distros/ubuntu-24.04/disk.img"),
                 .init("boot", "271 ms to agent", role: .timing),
+                .init("host memory", "710M", role: .number),
             ],
             memoryHistory: [4, 5, 5, 6, 7, 7, 8, 8, 9, 12, 18, 22, 21, 19, 16, 14, 13, 12, 12, 11]
                 .map { UInt64($0) << 24 },
-            memoryLimit: 2 << 30),
+            memoryLimit: 8 << 30),
         DistributionInfo(
             name: "debian-13", state: .running, memory: "188M", cpu: "0.0%", disk: "1.4G/64G",
             uptime: "41m", kernel: "6.18.57-maw"),
         DistributionInfo(
-            name: "alpine-3.22", state: .stopped, disk: "0.2G/16G", kernel: "6.18.57-maw"),
+            name: "alpine-3.22", state: .stopped, disk: "0.2G/16G", kernel: "6.18.57-maw",
+            details: [
+                .init("default", "no", role: .muted), .init("user", "root"),
+                .init(
+                    "disk image", "~/Library/Application Support/maw/distros/alpine-3.22/disk.img"),
+            ]),
     ]
 }

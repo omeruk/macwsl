@@ -363,6 +363,51 @@ import os
         #expect(!sampling.lines.all.contains { $0.contains("MemAvailable") })
     }
 
+    /// Every published sample counts, a failed one too, so that the app's chart keeps one
+    /// slot per sample; a new watch and a new run count from 1 again.
+    @Test func numbersEverySampleOfARunAndWatch() async throws {
+        let sampling = try Sampling()
+        try await sampling.start("Ubuntu-24.04")
+        let fake = try #require(sampling.fake("Ubuntu-24.04"))
+        // Before the first sample of a watch, the snapshot has no number.
+        #expect(await sampling.figures("Ubuntu-24.04")?.sampleNumber == nil)
+        await sampling.sampler.addWatcher()
+        try await eventually("the first sample") {
+            await sampling.figures("Ubuntu-24.04")?.sampleNumber == 1
+        }
+        fake.sampleResult.withLock {
+            $0 = .failure(.guestAgentFailed(reason: "sample: /proc/meminfo has no MemAvailable"))
+        }
+        try await sampling.settle(sleepers: 2)
+        sampling.clock.advance(by: .milliseconds(1_500))
+        try await eventually("a failed sample counts") {
+            let figures = await sampling.figures("Ubuntu-24.04")
+            return figures?.sampleNumber == 2 && figures?.memoryUsedBytes == nil
+        }
+        fake.sampleResult.withLock { $0 = .success(FakeMachine.defaultSample) }
+        try await sampling.settle(sleepers: 2)
+        sampling.clock.advance(by: .milliseconds(1_500))
+        try await eventually("the third sample") {
+            await sampling.figures("Ubuntu-24.04")?.sampleNumber == 3
+        }
+        let first = try #require(await sampling.figures("Ubuntu-24.04")?.run)
+        // A watch that ends and starts again in the same run counts from 1.
+        await sampling.sampler.removeWatcher()
+        #expect(await sampling.figures("Ubuntu-24.04")?.sampleNumber == nil)
+        await sampling.sampler.addWatcher()
+        try await eventually("the first sample of the next watch") {
+            let figures = await sampling.figures("Ubuntu-24.04")
+            return figures?.sampleNumber == 1 && figures?.run == first
+        }
+        // A new run counts from 1.
+        _ = await sampling.registry.terminate(sampling.machine("Ubuntu-24.04"), reason: "test")
+        try await sampling.start("Ubuntu-24.04")
+        try await eventually("the first sample of the next run") {
+            let figures = await sampling.figures("Ubuntu-24.04")
+            return figures?.sampleNumber == 1 && figures?.run != first && figures?.run != nil
+        }
+    }
+
     @Test func computesCPUFromTwoReadings() async throws {
         let sampling = try Sampling()
         try await sampling.start("Ubuntu-24.04")

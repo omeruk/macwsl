@@ -19,12 +19,14 @@ pass on a real Apple Silicon Mac.
 | 10 | Rosetta                        | Run x86_64 Linux binaries through Rosetta                                 | Planned |
 | 11a | Terminal app foundation      | maw app: title-bar tabs, split panes, command palette, themes, settings (local shell) | Done    |
 | 11b | Linux sessions in the app    | Distribution tabs and profiles, the distributions screen's list and actions, through the daemon | Done    |
-| 11c | Distributions screen figures | Live memory, CPU, disk, uptime, and kernel, the details box, and the memory chart | Planned |
-| 11 | Terminal app                   | SwiftUI + SwiftTerm app: tabs, distro profiles, themes, settings         | Planned |
+| 11c | Distributions screen figures | Live memory, CPU, disk, uptime, and kernel, the details box, and the memory chart | Done    |
+| 11 | Terminal app                   | SwiftUI + SwiftTerm app: tabs, distro profiles, themes, settings         | Done    |
 | 12 | Configuration and lifecycle    | `.mawconfig`, `maw.conf`, idle shutdown, sleep/wake clock sync, a `.mawconfig` setting to choose `.fsync` disk synchronization ([0013](decisions/0013-systemd-and-the-agent.md)) | Planned |
 | 12b | Hardening                    | Close the limitations recorded in [`docs/known-limitations.md`](known-limitations.md), long-running and sleep/wake soak tests, `docs/security.md` review, beta testing | Planned |
 | 13 | Packaging and release          | Signed, notarized app; Homebrew cask; auto-update                        | Planned |
 
-Phase 11b is delivered in two pull requests: the first (#25) adds Linux tabs in the app, and the
-second (#26) adds the profiles per installed distribution and the distributions screen's list
-and actions.
+Phase 11 is delivered as phases 11a, 11b, and 11c. Phase 11b is delivered in two pull
+requests: the first (#25) adds Linux tabs in the app, and the second (#26) adds the profiles
+per installed distribution and the distributions screen's list and actions. Phase 11c is
+delivered in two pull requests: the first (#29) adds the figures in the daemon, and the
+second (#30) shows them on the distributions screen.

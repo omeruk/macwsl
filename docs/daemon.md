@@ -240,7 +240,7 @@ Every message is an XPC dictionary (`Sources/MawXPC/InterfaceCoding.swift`):
 
 | Key | Type | Content |
 |-----|------|---------|
-| `interfaceVersion` | uint64 | `DaemonInterface.version`, currently **4**. This key never changes. |
+| `interfaceVersion` | uint64 | `DaemonInterface.version`, currently **5**. This key never changes. |
 | `body` | data | the message, JSON-encoded from the `Codable` types in `Sources/MawXPC/DaemonInterface.swift` |
 | `descriptor` | fd | only in `sessionOpened`: the guest agent connection |
 
@@ -270,8 +270,10 @@ client shows its message and suggested fix. A daemon without a distribution stor
 unit tests, lists nothing and answers `setDefault` and `terminate` with
 `distributionNotInstalled`.
 
-Version 3 added `listDistributions`, `setDefault`, and `terminate`. Version 4 adds
-`watchDistributions` ([decision record 0020](decisions/0020-distribution-figures.md)).
+Version 3 added `listDistributions`, `setDefault`, and `terminate`. Version 4 added
+`watchDistributions` ([decision record 0020](decisions/0020-distribution-figures.md)). Version 5
+adds `sampleNumber` to each distribution's figures, so that the terminal app can tell each sample
+from a snapshot that another change published.
 
 **Events** (daemon to client, without a request):
 
@@ -358,7 +360,11 @@ default, and its figures, and follows them
   sampled figures: the guest's memory in use and IPv4 address, the CPU of the machine's process
   in percent of one core, and its memory footprint. A figure that is not known is absent.
   `lastSampleMicroseconds`, the time of the last guest request, is for diagnosis and
-  measurement only; clients do not show it or depend on it.
+  measurement only; clients do not show it or depend on it. `sampleNumber` counts the samples of
+  the distribution's run: one more for each sample, including one whose guest request failed or
+  timed out. It starts from 1 with a new run, and when watching starts while no client watched;
+  a client that starts watching while another watches sees the count where it stands. The
+  terminal app draws one bar of its memory chart per number, from the first number it sees.
 - **When a reply comes.** The sequence number grows after each sample of a distribution, at once
   when a machine changes state, after an installation completes, and after `setDefault`. The
   numbers start again with each daemon process, so a connection's first `watchDistributions` is
@@ -449,8 +455,11 @@ Outside sessions, the app's `DaemonDistributions`
 (`App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift`) sends
 `listDistributions`, `status`, `setDefault`, and `terminate` for its profiles and its
 distributions screen. Each request connects a `DaemonClient` of its own and closes it once the
-answer arrives, so that the app holds no connection that would keep the daemon from its idle
-exit. The app reads the list when a menu, the palette, or the screen needs it, and never polls.
+answer arrives. While at least one window shows the distributions screen, the app also holds one
+connection that repeats `watchDistributions`, and closes it when no window shows the screen, so
+that otherwise it holds no connection that would keep the daemon from its idle exit. The app
+reads the list when a menu, the palette, or the settings open while no window shows the screen,
+and never polls.
 
 ## Peer validation
 

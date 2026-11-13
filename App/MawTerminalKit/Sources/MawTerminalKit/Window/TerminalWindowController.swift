@@ -85,6 +85,30 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         updateTitleBarMetrics()
     }
 
+    /// The distributions screen counts as visible only while its window is on screen, so that
+    /// a minimized or covered window, or a hidden app, reads no figures.
+    func updateVisibility() {
+        guard let window else { return }
+        model.isWindowVisible = Self.isVisible(
+            window.occlusionState, miniaturized: window.isMiniaturized)
+    }
+
+    static func isVisible(_ occlusion: NSWindow.OcclusionState, miniaturized: Bool) -> Bool {
+        occlusion.contains(.visible) && !miniaturized
+    }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        updateVisibility()
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) {
+        updateVisibility()
+    }
+
+    func windowDidDeminiaturize(_ notification: Notification) {
+        updateVisibility()
+    }
+
     /// The window closes once its sessions have said what runs in them, after a question if
     /// a program runs (`WindowModel.requestCloseWindow()`).
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -158,6 +182,17 @@ extension TerminalWindowController: WindowHost {
             window?.title = title
         }
     }
+}
+
+/// A terminal window as the app opens it, with its model, for the measurement harness of
+/// phase 11c (`Tests/FiguresHarness`).
+@MainActor
+package func makeTerminalWindow(
+    settingsStore: SettingsStore, distributions: any DistributionProvider
+) -> (controller: NSWindowController, model: WindowModel) {
+    let controller = TerminalWindowController(
+        settingsStore: settingsStore, distributions: distributions)
+    return (controller, controller.model)
 }
 
 /// Wraps a command identifier for `NSMenuItem.representedObject`.
