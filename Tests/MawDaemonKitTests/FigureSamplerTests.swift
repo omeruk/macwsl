@@ -5,6 +5,7 @@ import MawProtocol
 import MawVirtualization
 import MawXPC
 import Testing
+import os
 
 @testable import MawDaemonKit
 
@@ -281,22 +282,46 @@ import Testing
         #expect(fake.sampleCalls == 2)
     }
 
-    /// The guest task cancels the timeout when the guest answers. A cancelled sleep throws, and
-    /// that must not count as a timeout: the timeout task could otherwise report "no answer"
-    /// before the guest task reports the answer, and the answer would be lost. The test clock
-    /// ends the timeout's sleep at once, as the cancellation does, before the guest answers.
-    @Test func keepsTheGuestsAnswerWhenItsTimeoutIsCancelled() async throws {
+    /// When the guest answers, the guest task must report the answer before it cancels the
+    /// timeout task. The cancelled sleep throws, and the timeout task then reports no answer,
+    /// which would discard the answer if it came first. The test clock holds the guest task in
+    /// the cancellation for up to 2 seconds, while the sampler publishes the figures: they
+    /// arrive only if the answer was reported before the cancellation.
+    @Test func reportsTheGuestsAnswerBeforeCancellingItsTimeout() async throws {
         let sampling = try Sampling()
         try await sampling.start("Ubuntu-24.04")
         let fake = try #require(sampling.fake("Ubuntu-24.04"))
         fake.holdSamples()
-        sampling.clock.endsSleepsAtOnce = true
         await sampling.sampler.addWatcher()
         try await eventually { fake.sampleCalls == 1 }
-        fake.releaseSamples()
-        try await eventually("the guest's figures from the first sample") {
-            await sampling.figures("Ubuntu-24.04")?.memoryUsedBytes == 412 << 20
+        // The idle timer, the sampler's timer, and the guest request's timeout.
+        try await eventually { sampling.clock.sleeperCount == 3 }
+        let start = try #require(await sampling.sampler.snapshot(after: 0)).sequence
+        let published = OSAllocatedUnfairLock(initialState: false)
+        let watcher = Task { [sampler = sampling.sampler] in
+            var after = start
+            while let snapshot = await sampler.snapshot(after: after) {
+                if snapshot.distributions.first?.memoryUsedBytes == 412 << 20 {
+                    published.withLock { $0 = true }
+                    return
+                }
+                after = snapshot.sequence
+            }
         }
+        defer { watcher.cancel() }
+        let publishedWhenCancelled = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+        sampling.clock.whenCancelling = {
+            let deadline = ContinuousClock.now + .seconds(2)
+            while !published.withLock({ $0 }), ContinuousClock.now < deadline {
+                usleep(1_000)
+            }
+            publishedWhenCancelled.withLock { $0 = published.withLock { $0 } }
+        }
+        fake.releaseSamples()
+        try await eventually { publishedWhenCancelled.withLock { $0 } != nil }
+        #expect(
+            publishedWhenCancelled.withLock { $0 } == true,
+            "the timeout was cancelled before the answer was reported")
         #expect(fake.sampleCalls == 1)
     }
 

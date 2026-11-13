@@ -224,14 +224,7 @@
             return await withCheckedContinuation { continuation in
                 first.wait(continuation)
                 let timeout = Task { [clock] in
-                    // Only a sleep that ran its full time is a timeout. The guest task cancels
-                    // this one when the guest answers, and the cancelled sleep throws; resuming
-                    // here then could come first and discard the answer.
-                    do {
-                        try await clock.sleep(for: Self.guestTimeout)
-                    } catch {
-                        return
-                    }
+                    try? await clock.sleep(for: Self.guestTimeout)
                     first.resume(nil)
                 }
                 Task { [clock] in
@@ -241,8 +234,10 @@
                     let microseconds =
                         UInt64(max(0, elapsed.seconds)) * 1_000_000
                         + UInt64(max(0, elapsed.attoseconds)) / 1_000_000_000_000
-                    timeout.cancel()
+                    // The answer first: the cancelled timeout task resumes with nil, which
+                    // must find the answer already taken.
                     first.resume(sample.map { ($0, microseconds) })
+                    timeout.cancel()
                     await self.guestAnswered(name, run: run)
                 }
             }

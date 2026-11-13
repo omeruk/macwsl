@@ -31,14 +31,15 @@ final class TestClock: Clock, Sendable {
 
     private let state = OSAllocatedUnfairLock(
         initialState: (
-            now: Instant(offset: .zero), sleepers: [UUID: Sleeper](), endsSleepsAtOnce: false
+            now: Instant(offset: .zero), sleepers: [UUID: Sleeper](),
+            whenCancelling: (@Sendable () -> Void)?.none
         ))
 
-    /// Whether a new sleep throws `CancellationError` at once, as a sleep does whose task is
-    /// cancelled before its deadline.
-    var endsSleepsAtOnce: Bool {
-        get { state.withLock { $0.endsSleepsAtOnce } }
-        set { state.withLock { $0.endsSleepsAtOnce = newValue } }
+    /// Runs on the task that cancels a sleeping task, during the cancellation and before that
+    /// task goes on, so that a test can see what the cancelling task did before it cancelled.
+    var whenCancelling: (@Sendable () -> Void)? {
+        get { state.withLock { $0.whenCancelling } }
+        set { state.withLock { $0.whenCancelling = newValue } }
     }
 
     var now: Instant { state.withLock { $0.now } }
@@ -53,14 +54,12 @@ final class TestClock: Clock, Sendable {
             try await withCheckedThrowingContinuation {
                 (continuation: CheckedContinuation<Void, any Error>) in
                 let resumeNow = state.withLock { state -> Bool in
-                    if deadline <= state.now || Task.isCancelled || state.endsSleepsAtOnce {
-                        return true
-                    }
+                    if deadline <= state.now || Task.isCancelled { return true }
                     state.sleepers[id] = Sleeper(deadline: deadline, continuation: continuation)
                     return false
                 }
                 if resumeNow {
-                    if Task.isCancelled || endsSleepsAtOnce {
+                    if Task.isCancelled {
                         continuation.resume(throwing: CancellationError())
                     } else {
                         continuation.resume()
@@ -68,8 +67,13 @@ final class TestClock: Clock, Sendable {
                 }
             }
         } onCancel: {
-            state.withLock { $0.sleepers.removeValue(forKey: id) }?
-                .continuation.resume(throwing: CancellationError())
+            let (sleeper, hook) = state.withLock {
+                ($0.sleepers.removeValue(forKey: id), $0.whenCancelling)
+            }
+            sleeper?.continuation.resume(throwing: CancellationError())
+            if sleeper != nil {
+                hook?()
+            }
         }
     }
 
