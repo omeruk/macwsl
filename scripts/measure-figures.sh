@@ -27,16 +27,18 @@ if [ $# -gt 1 ]; then
     echo "usage: scripts/measure-figures.sh [<measurement>]" >&2
     exit 64
 elif [ $# -eq 1 ]; then
+    # A Swift name, and a test of the suite: an @Test function, not a helper or a comment.
     case "$1" in
-        measures*[!A-Za-z]*) known=false ;;
-        measures?*) known=true ;;
-        *) known=false ;;
+        *[!A-Za-z0-9_]* | [!A-Za-z_]*) known=false ;;
+        *) known=true ;;
     esac
-    if [ "$known" = false ] || ! grep -q "func $1()" Tests/mawdTests/FigureMeasurements.swift; then
+    if [ "$known" = false ] ||
+        ! grep -Eq "^[[:space:]]*@Test func $1\(\)" Tests/mawdTests/FigureMeasurements.swift; then
         echo "measure-figures.sh: FigureMeasurements has no measurement named $1" >&2
         exit 64
     fi
-    filter="FigureMeasurements/$1"
+    # The parentheses end the name, so that no other test whose name starts with it runs.
+    filter="FigureMeasurements/$1\(\)"
     only=", only $1"
 fi
 
