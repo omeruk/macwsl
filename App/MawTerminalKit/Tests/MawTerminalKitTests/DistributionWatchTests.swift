@@ -34,9 +34,10 @@ final class SleepGate: @unchecked Sendable {
     var isWaiting: Bool { state.withLock { !$0.waiting.isEmpty } }
 
     func open() {
-        let waiting = state.withLock {
-            defer { $0.waiting = [:] }
-            return $0.waiting
+        let waiting = state.withLock { state in
+            let waiting = state.waiting
+            state.waiting = [:]
+            return waiting
         }
         for continuation in waiting.values { continuation.resume() }
     }

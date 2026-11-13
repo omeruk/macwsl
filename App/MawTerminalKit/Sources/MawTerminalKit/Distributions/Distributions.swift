@@ -308,9 +308,10 @@ public final class DaemonDistributions: DistributionProvider {
         }
 
         func close() {
-            let first = closed.withLock {
-                defer { $0 = true }
-                return !$0
+            let first = closed.withLock { closed in
+                let first = !closed
+                closed = true
+                return first
             }
             if first { client.close() }
         }

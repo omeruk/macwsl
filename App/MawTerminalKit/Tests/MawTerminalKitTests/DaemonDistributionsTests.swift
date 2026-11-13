@@ -204,9 +204,10 @@ final class FakeConnection: DaemonRequests, @unchecked Sendable {
 
     /// Whether this is the connection's first watch.
     func startsWatching() -> Bool {
-        state.withLock {
-            defer { $0.watching = true }
-            return !$0.watching
+        state.withLock { state in
+            let first = !state.watching
+            state.watching = true
+            return first
         }
     }
 
@@ -231,9 +232,10 @@ final class FakeConnection: DaemonRequests, @unchecked Sendable {
     }
 
     func close() {
-        let (first, watching) = state.withLock {
-            defer { $0.closed = true }
-            return (!$0.closed, $0.watching)
+        let (first, watching) = state.withLock { state in
+            let result = (!state.closed, state.watching)
+            state.closed = true
+            return result
         }
         daemon.record.withLock {
             $0.closes += 1
