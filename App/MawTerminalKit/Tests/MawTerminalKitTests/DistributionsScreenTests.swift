@@ -16,14 +16,17 @@ import Testing
     let stop = CommandID.stopDistribution
     let setDefault = CommandID.setDefaultDistribution
 
-    /// A window showing the distributions screen, once the daemon has answered.
-    func screen(_ daemon: FakeDaemonClient) async -> (
+    /// A window showing the distributions screen, once the daemon has answered. A window that
+    /// is not `visible` reads the list; a visible one watches.
+    func screen(_ daemon: FakeDaemonClient, visible: Bool = false) async -> (
         model: WindowModel, host: FakeHost, provider: DaemonDistributions, asked: () -> [Profile]
     ) {
         let provider = daemon.provider()
         let (model, host, asked) = WindowModelTests().window(distributions: provider)
+        model.isWindowVisible = visible
         model.perform(.openDistributions)
         await provider.pending?.value
+        if visible { _ = await waitUntil(seconds: 5) { provider.hasAnswer } }
         return (model, host, provider, asked)
     }
 
@@ -406,15 +409,18 @@ import Testing
     }
 
     /// The requests run off the main actor, so the screen stays in use while the guest shuts
-    /// down: the list shows the machine stopping, the selection moves, and another action is
-    /// carried out.
+    /// down: the watch shows the machine stopping, the selection moves, and another action is
+    /// carried out. The stop sends no list request.
     @Test func theScreenStaysInUseWhileAStopTakesItsSeconds() async {
         let daemon = FakeDaemonClient()
         daemon.install(["Debian-13", "Ubuntu-24.04"], states: [.running, .running])
         daemon.holdsStops.withLock { $0 = true }
-        // A list is answered a moment after it is asked for, as by a daemon.
-        daemon.delay.withLock { $0 = .milliseconds(30) }
-        let (model, host, provider, _) = await screen(daemon)
+        let (model, host, provider, _) = await screen(daemon, visible: true)
+        func shown(_ name: String) -> DistributionInfo? {
+            row(name, in: model).map {
+                DistributionInfo(name: $0.name, state: $0.state, isDefault: $0.isDefault)
+            }
+        }
         model.selectDistribution("Ubuntu-24.04")
         model.perform(stop)
         let stopping = model.distributionAction
@@ -432,17 +438,24 @@ import Testing
                 "status", "terminate Ubuntu-24.04", "setDefault Ubuntu-24.04",
             ])
         #expect(
-            row("Ubuntu-24.04", in: model)
-                == DistributionInfo(name: "Ubuntu-24.04", state: .stopping, isDefault: true))
+            await waitUntil(seconds: 5) {
+                shown("Ubuntu-24.04")
+                    == DistributionInfo(name: "Ubuntu-24.04", state: .stopping, isDefault: true)
+            })
 
         daemon.holdsStops.withLock { $0 = false }
         await stopping?.value
-        await provider.pending?.value
         #expect(
-            row("Ubuntu-24.04", in: model)
-                == DistributionInfo(name: "Ubuntu-24.04", state: .stopped, isDefault: true))
+            await waitUntil(seconds: 5) {
+                shown("Ubuntu-24.04")
+                    == DistributionInfo(name: "Ubuntu-24.04", state: .stopped, isDefault: true)
+            })
         #expect(model.selectedDistribution?.name == "Ubuntu-24.04")
+        let watching = provider.watch
+        model.shutDown()
+        await watching?.value
         let record = daemon.record.withLock { $0 }
+        #expect(record.lists == 0)
         #expect(record.connectsOnMain == 0 && record.connects == record.closes)
         #expect(host.failures.isEmpty && host.questions.isEmpty)
     }

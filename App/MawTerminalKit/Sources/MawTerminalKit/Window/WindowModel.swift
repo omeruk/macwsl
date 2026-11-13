@@ -76,6 +76,7 @@ final class WindowModel {
 
     private(set) var tabs = TabList() {
         didSet {
+            updateScreenVisibility()
             // A screen that shows the distributions has become the selected tab, by whatever
             // way: the distributions screen, and the settings, whose new-tab setting offers
             // each one. Their list may be as old as the last time it was read.
@@ -95,6 +96,13 @@ final class WindowModel {
     var previewThemeName: String? {
         didSet { applyAppearance() }
     }
+    /// Whether the window is on screen: neither minimized nor covered entirely. The window
+    /// controller sets it from AppKit's occlusion state.
+    var isWindowVisible = false {
+        didSet { updateScreenVisibility() }
+    }
+    /// Whether this window has told the provider that it shows the distributions screen.
+    @ObservationIgnored private var showsDistributions = false
     /// The title bar's height and the space the traffic lights need, measured from the window.
     var titleBarHeight: CGFloat = 38
     var trafficLightsWidth: CGFloat = 78
@@ -170,6 +178,7 @@ final class WindowModel {
     /// the window closes.
     func shutDown() {
         isShutDown = true
+        updateScreenVisibility()
         refreshTask?.cancel()
         for pane in panes.values {
             pane.terminate()
@@ -480,6 +489,15 @@ final class WindowModel {
     }
 
     // MARK: Distributions
+
+    /// Tells the provider whether this window shows the distributions screen, which it does
+    /// while the screen is the selected tab and the window is visible, until it closes.
+    private func updateScreenVisibility() {
+        let shows = !isShutDown && isWindowVisible && tabs.selectedTab?.screen == .distributions
+        guard shows != showsDistributions else { return }
+        showsDistributions = shows
+        distributions.setScreenVisible(shows, in: ObjectIdentifier(self))
+    }
 
     /// What the distributions screen shows: nothing yet, the reason the daemon could not be
     /// asked, or its list.

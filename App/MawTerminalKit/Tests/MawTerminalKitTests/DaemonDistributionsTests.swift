@@ -9,8 +9,9 @@ import os
 @testable import MawTerminalKit
 
 /// A daemon that answers `listDistributions` as the test sets it, carries out the screen's
-/// requests on that list, and records each connection and request.
-final class FakeDaemonClient: DaemonRequests, @unchecked Sendable {
+/// requests on that list, answers `watchDistributions` with the snapshots that the test
+/// publishes, and records each connection and request.
+final class FakeDaemonClient: @unchecked Sendable {
     struct Record {
         var connects = 0
         var lists = 0
@@ -19,6 +20,65 @@ final class FakeDaemonClient: DaemonRequests, @unchecked Sendable {
         var connectsOnMain = 0
         /// Every request other than a list, in order, such as `terminate Ubuntu-24.04`.
         var requests: [String] = []
+        /// `watchDistributions` requests, with the `after` of each.
+        var watches: [UInt64] = []
+        /// Connections that sent `watchDistributions`, ever and still open.
+        var watchingConnections = 0
+        var openWatchingConnections = 0
+    }
+
+    /// The newest snapshot, which a watch waits for until its sequence is past `after`.
+    let snapshot = OSAllocatedUnfairLock<DistributionSnapshot?>(initialState: nil)
+    /// The list's snapshots while the test publishes none: the list and its sequence number.
+    private let derived = OSAllocatedUnfairLock<(UInt64, DistributionList?)>(
+        initialState: (0, nil))
+    /// What `watchDistributions` throws, such as a lost daemon, or `nil` to answer.
+    let watchFailure = OSAllocatedUnfairLock<MawError?>(initialState: nil)
+
+    /// Publishes a snapshot with the next sequence number.
+    func publish(_ distributions: [DistributionFigures], default name: String? = nil) {
+        snapshot.withLock {
+            $0 = DistributionSnapshot(
+                sequence: ($0?.sequence ?? 0) + 1, distributions: distributions,
+                defaultDistribution: (name ?? distributions.first?.name.rawValue).map {
+                    try! DistroName($0)
+                })
+        }
+    }
+
+    /// The list as a snapshot without figures, with a new sequence number whenever it changed.
+    private func listSnapshot() -> DistributionSnapshot? {
+        guard case .success(let list) = answer.withLock({ $0 }) else { return nil }
+        let sequence = derived.withLock {
+            if $0.1 != list { $0 = ($0.0 + 1, list) }
+            return $0.0
+        }
+        return DistributionSnapshot(
+            sequence: sequence,
+            distributions: list.distributions.map {
+                DistributionFigures(
+                    name: $0.name, state: $0.state, defaultUser: "user", diskImagePath: "/disk.img")
+            }, defaultDistribution: list.defaultDistribution)
+    }
+
+    func watchDistributions(after: UInt64, on connection: FakeConnection) async throws(MawError)
+        -> DistributionSnapshot
+    {
+        record.withLock { $0.watches.append(after) }
+        if connection.startsWatching() {
+            record.withLock {
+                $0.watchingConnections += 1
+                $0.openWatchingConnections += 1
+            }
+        }
+        while true {
+            if connection.isClosed { throw .daemonConnectionLost(during: "watchDistributions") }
+            if let failure = watchFailure.withLock({ $0 }) { throw failure }
+            if let current = snapshot.withLock({ $0 }) ?? listSnapshot(), current.sequence > after {
+                return current
+            }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
     }
 
     let record = OSAllocatedUnfairLock(initialState: Record())
@@ -113,10 +173,6 @@ final class FakeDaemonClient: DaemonRequests, @unchecked Sendable {
         }
     }
 
-    func close() {
-        record.withLock { $0.closes += 1 }
-    }
-
     var connector: DaemonDistributions.Connector {
         { () async throws(MawError) -> any DaemonRequests in
             self.record.withLock {
@@ -124,13 +180,65 @@ final class FakeDaemonClient: DaemonRequests, @unchecked Sendable {
                 if pthread_main_np() != 0 { $0.connectsOnMain += 1 }
             }
             if let failure = self.connectFailure.withLock({ $0 }) { throw failure }
-            return self
+            return FakeConnection(self)
         }
     }
 
     /// A provider that asks this daemon, and has not asked yet.
-    @MainActor func provider() -> DaemonDistributions {
-        DaemonDistributions(connect: connector)
+    @MainActor func provider(sleep: DaemonDistributions.Sleep? = nil) -> DaemonDistributions {
+        if let sleep { return DaemonDistributions(connect: connector, sleep: sleep) }
+        return DaemonDistributions(connect: connector)
+    }
+}
+
+/// One connection to the fake daemon. A held watch ends when it closes, as an XPC request does.
+final class FakeConnection: DaemonRequests, @unchecked Sendable {
+    let daemon: FakeDaemonClient
+    private let state = OSAllocatedUnfairLock(initialState: (closed: false, watching: false))
+
+    init(_ daemon: FakeDaemonClient) {
+        self.daemon = daemon
+    }
+
+    var isClosed: Bool { state.withLock { $0.closed } }
+
+    /// Whether this is the connection's first watch.
+    func startsWatching() -> Bool {
+        state.withLock {
+            defer { $0.watching = true }
+            return !$0.watching
+        }
+    }
+
+    func listDistributions() async throws(MawError) -> DistributionList {
+        try await daemon.listDistributions()
+    }
+
+    func status() async throws(MawError) -> DaemonStatus {
+        try await daemon.status()
+    }
+
+    func setDefault(_ name: DistroName) async throws(MawError) -> DistroName {
+        try await daemon.setDefault(name)
+    }
+
+    func terminate(_ name: DistroName) async throws(MawError) -> TerminateSummary {
+        try await daemon.terminate(name)
+    }
+
+    func watchDistributions(after: UInt64) async throws(MawError) -> DistributionSnapshot {
+        try await daemon.watchDistributions(after: after, on: self)
+    }
+
+    func close() {
+        let (first, watching) = state.withLock {
+            defer { $0.closed = true }
+            return (!$0.closed, $0.watching)
+        }
+        daemon.record.withLock {
+            $0.closes += 1
+            if first, watching { $0.openWatchingConnections -= 1 }
+        }
     }
 }
 
