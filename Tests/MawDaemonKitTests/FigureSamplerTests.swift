@@ -281,6 +281,25 @@ import Testing
         #expect(fake.sampleCalls == 2)
     }
 
+    /// The guest task cancels the timeout when the guest answers. A cancelled sleep throws, and
+    /// that must not count as a timeout: the timeout task could otherwise report "no answer"
+    /// before the guest task reports the answer, and the answer would be lost. The test clock
+    /// ends the timeout's sleep at once, as the cancellation does, before the guest answers.
+    @Test func keepsTheGuestsAnswerWhenItsTimeoutIsCancelled() async throws {
+        let sampling = try Sampling()
+        try await sampling.start("Ubuntu-24.04")
+        let fake = try #require(sampling.fake("Ubuntu-24.04"))
+        fake.holdSamples()
+        sampling.clock.endsSleepsAtOnce = true
+        await sampling.sampler.addWatcher()
+        try await eventually { fake.sampleCalls == 1 }
+        fake.releaseSamples()
+        try await eventually("the guest's figures from the first sample") {
+            await sampling.figures("Ubuntu-24.04")?.memoryUsedBytes == 412 << 20
+        }
+        #expect(fake.sampleCalls == 1)
+    }
+
     /// `sampleFailed`, and a malformed `sampled`, which the client reports as
     /// `guestAgentFailed`, leave MEMORY empty, and the machine runs on.
     @Test func reportsAFailedSampleAsEmptyMemory() async throws {

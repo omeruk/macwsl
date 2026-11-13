@@ -30,7 +30,16 @@ final class TestClock: Clock, Sendable {
     }
 
     private let state = OSAllocatedUnfairLock(
-        initialState: (now: Instant(offset: .zero), sleepers: [UUID: Sleeper]()))
+        initialState: (
+            now: Instant(offset: .zero), sleepers: [UUID: Sleeper](), endsSleepsAtOnce: false
+        ))
+
+    /// Whether a new sleep throws `CancellationError` at once, as a sleep does whose task is
+    /// cancelled before its deadline.
+    var endsSleepsAtOnce: Bool {
+        get { state.withLock { $0.endsSleepsAtOnce } }
+        set { state.withLock { $0.endsSleepsAtOnce = newValue } }
+    }
 
     var now: Instant { state.withLock { $0.now } }
     var minimumResolution: Duration { .zero }
@@ -44,12 +53,14 @@ final class TestClock: Clock, Sendable {
             try await withCheckedThrowingContinuation {
                 (continuation: CheckedContinuation<Void, any Error>) in
                 let resumeNow = state.withLock { state -> Bool in
-                    if deadline <= state.now || Task.isCancelled { return true }
+                    if deadline <= state.now || Task.isCancelled || state.endsSleepsAtOnce {
+                        return true
+                    }
                     state.sleepers[id] = Sleeper(deadline: deadline, continuation: continuation)
                     return false
                 }
                 if resumeNow {
-                    if Task.isCancelled {
+                    if Task.isCancelled || endsSleepsAtOnce {
                         continuation.resume(throwing: CancellationError())
                     } else {
                         continuation.resume()
