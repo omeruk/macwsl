@@ -184,6 +184,17 @@ extension TerminalWindowController: WindowHost {
     }
 }
 
+/// A terminal window as the app opens it, with its model, for the measurement harness of
+/// phase 11c (`Tests/FiguresHarness`).
+@MainActor
+package func makeTerminalWindow(
+    settingsStore: SettingsStore, distributions: any DistributionProvider
+) -> (controller: NSWindowController, model: WindowModel) {
+    let controller = TerminalWindowController(
+        settingsStore: settingsStore, distributions: distributions)
+    return (controller, controller.model)
+}
+
 /// Wraps a command identifier for `NSMenuItem.representedObject`.
 final class CommandBox: NSObject {
     let id: CommandID

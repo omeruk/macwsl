@@ -3,7 +3,8 @@
 # "Speed targets" and "Limits on cost"). Run them on a restarted, idle Mac on AC power, with Low
 # Power Mode off, under `caffeinate -dims`, and with only Terminal open.
 #
-# The measurements are the FigureMeasurements suite in Tests/mawdTests. This script runs it through
+# The measurements are the FigureMeasurements suite in Tests/mawdTests, for the daemon, and the
+# AppFigureMeasurements suite there, for the terminal app. This script runs them through
 # scripts/integration-test.sh, which registers the test daemon, installs a test distribution,
 # protects state.json, and removes everything on exit; the suite runs only here, never with the
 # other integration tests, because it keeps a machine running for minutes. Each measurement runs
@@ -12,10 +13,15 @@
 # `mawd serve --sample-interval-ms 100`, so that its batch of 1,000 samples takes 100 seconds;
 # the other measurements use the daemon's 1.5 s.
 #
+# The app's measurements run its harness (App/MawTerminalKit/Tests/FiguresHarness), which shows
+# the distributions screen in real windows, in-process, against the test daemon. The script builds
+# it and signs it ad hoc with the app's identifier, dev.maw.app, which the daemon requires of its
+# clients; nothing installs it. Its windows appear on screen while it runs: leave them uncovered.
+#
 # Usage: scripts/measure-figures.sh [<measurement>]
 #
-# With <measurement>, the name of one test in the suite, such as measuresTheFirstFigures, it runs
-# only that test.
+# With <measurement>, the name of one test in either suite, such as measuresTheFirstFigures or
+# measuresTheAppsFirstFigures, it runs only that test.
 
 set -eu
 
@@ -32,15 +38,30 @@ elif [ $# -eq 1 ]; then
         *[!A-Za-z0-9_]* | [!A-Za-z_]*) known=false ;;
         *) known=true ;;
     esac
-    if [ "$known" = false ] ||
-        ! grep -Eq "^[[:space:]]*@Test func $1\(\)" Tests/mawdTests/FigureMeasurements.swift; then
-        echo "measure-figures.sh: FigureMeasurements has no measurement named $1" >&2
+    suite=""
+    if [ "$known" = true ]; then
+        for candidate in FigureMeasurements AppFigureMeasurements; do
+            if grep -Eq "^[[:space:]]*@Test func $1\(\)" "Tests/mawdTests/$candidate.swift"; then
+                suite=$candidate
+            fi
+        done
+    fi
+    if [ -z "$suite" ]; then
+        echo "measure-figures.sh: no measurement is named $1" >&2
         exit 64
     fi
-    # The parentheses end the name, so that no other test whose name starts with it runs.
-    filter="FigureMeasurements/$1\(\)"
+    # The suite's whole name and the parentheses, so that no other test whose name starts or
+    # ends the same way runs.
+    filter="(^|\.)$suite/$1\(\)"
     only=", only $1"
 fi
+
+# The app's harness, built and signed as the app.
+harness_bin=$(swift build --package-path App/MawTerminalKit --show-bin-path)
+swift build --package-path App/MawTerminalKit --product maw-figures-harness
+harness="$harness_bin/maw-figures-harness"
+codesign --force --sign - --identifier dev.maw.app "$harness"
+export MAW_FIGURES_HARNESS_PATH="$harness"
 
 manifest="$HOME/Library/Application Support/maw/kernel/manifest.json"
 guest=$(plutil -extract guestVersion raw -o - "$manifest" 2> /dev/null || echo unknown)

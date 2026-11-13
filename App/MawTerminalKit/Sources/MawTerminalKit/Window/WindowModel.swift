@@ -69,7 +69,7 @@ enum DistributionListing: Equatable {
 /// The state and behavior of one window: its tabs, the panes in them, and every command.
 @MainActor
 @Observable
-final class WindowModel {
+package final class WindowModel {
     let settingsStore: SettingsStore
     let distributions: any DistributionProvider
     @ObservationIgnored weak var host: (any WindowHost)?
@@ -98,7 +98,7 @@ final class WindowModel {
     }
     /// Whether the window is on screen: neither minimized nor covered entirely. The window
     /// controller sets it from AppKit's occlusion state.
-    var isWindowVisible = false {
+    package internal(set) var isWindowVisible = false {
         didSet { updateScreenVisibility() }
     }
     /// Whether this window has told the provider that it shows the distributions screen.
@@ -217,7 +217,7 @@ final class WindowModel {
 
     /// Performs a command if it is enabled. Every command reaches the window through here,
     /// from the menu bar, a shortcut, the palette, a key hint, or a click.
-    func perform(_ id: CommandID) {
+    package func perform(_ id: CommandID) {
         guard isEnabled(id) else { return }
         if palette != nil, id != .commandPalette {
             closePalette(restoringTheme: palette?.mode == .themes)
