@@ -143,21 +143,27 @@ from `main`.
 
 ## Phase 12b: Hardening
 
-- **Two of phase 11c's speed targets are missed: each sample opens a connection of its own.**
-  - **Seen:** One host-opened connection per sample costs about 3.2 ms of the machine's process
-    and 0.8 ms of the guest agent, before the agent reads anything. The agent's CPU time per
-    sample was 1.155 ms against a target of 0.5 ms, and the machine's process cost 0.372 % of
-    one core above its unwatched cost over 60 seconds against a target of 0.2 %, while a client
-    watches one running distribution. The owner accepted both misses on 2026-11-12: the cost is
-    a fraction of one percent of one core, only while a distributions screen is visible, and
-    zero otherwise.
+- **Two of phase 11c's speed targets are missed: each sample opens a connection of its own and
+  reads the guest's figures.**
+  - **Seen:** In the owner's official measurements, while a client watches one running
+    distribution, the guest agent's CPU time per sample was 1.473 ms (95th percentile 1.687 ms)
+    against a target of 0.5 ms, and the machine's process cost 0.357 % of one core (95th
+    percentile 0.431 %) above its unwatched cost over 60 seconds against a target of 0.2 %. Of a
+    sample, the fixed cost of a request on a host-opened connection, measured with `info`, is
+    0.569 ms of the agent and 2.900 ms of the machine's process; reading `/proc` and calling
+    `getifaddrs` add 0.90 ms and 1.2 ms. The development measurements gave 1.155 ms and 0.372 %,
+    with a fixed cost of 0.821 ms and 3.20 ms. The owner accepted both misses on 2026-11-12 and
+    kept this item on 2026-11-13 after the official measurements: the cost is a fraction of one
+    percent of one core, only while a distributions screen is visible, and zero otherwise.
   - **Evidence:** [Decision record 0020](decisions/0020-distribution-figures.md), "What it
-    costs": development measurements on 2026-11-12 at load averages from 2.1 to 6.6, with
-    `info` measured in place of `sample` to separate the fixed cost of a request. The owner's
-    official measurements with `scripts/measure-figures.sh` decide whether this item stays as
-    it is.
+    costs": the official measurements of 2026-11-13 at `6829e27` and `694eb11`, after a restart
+    and with only Terminal open, and the development measurements of 2026-11-12 at load averages
+    from 2.1 to 6.6.
   - **Phase:** 12b. Reusing one connection per run, about 80 to 100 lines, would remove most of
-    the cost; it changes the protocol and needs new guest files.
+    the fixed cost; it changes the protocol and needs new guest files. By the official figures
+    that is 71 % of the machine's process's time per sample but only 39 % of the agent's, whose
+    larger part is the reading of the figures. Where that time goes in the agent is not
+    measured.
 - **The dial-back exchange costs about 1.8 ms per session.**
   - **Seen:** Warm `maw -e true` measured 33 ms against 31 ms with host-opened sessions, within
     the target of 50 ms.

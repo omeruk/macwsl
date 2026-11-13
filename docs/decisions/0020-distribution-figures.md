@@ -103,11 +103,79 @@ while the host read the machine's process once a second. The load average was no
 
 ## What it costs
 
-Development measurements with `scripts/measure-figures.sh` and its `FigureMeasurements` suite,
-on the Mac above, macOS 27.0.1, on 2026-11-12. The Mac was in use: the load averages, which
-`sysctl -n vm.loadavg` gave at the start and end of each run, are listed. They are not the
-owner's official measurements, which run on an idle Mac and decide whether the conclusions
-below stand.
+### Official measurements
+
+The owner's official measurements with `scripts/measure-figures.sh` and its `FigureMeasurements`
+suite, on the Mac above, macOS 27.0.1, on 2026-11-13: after a restart, on AC power, with Low
+Power Mode off, under `caffeinate -dims`, and with only Terminal open. The load averages are
+those that `sysctl -n vm.loadavg` gave at the start and end of each run.
+
+| Measurement | Median | 95th percentile | Target | Result | Run |
+|-------------|--------|-----------------|--------|--------|-----|
+| First figures from the start of a watch | 13.179 ms | 14.599 ms | under 500 ms | Met | B |
+| First CPU figure from the start of a watch | 1,531.677 ms | 1,545.612 ms | under 3 s | Met | B |
+| A state change by `maw --terminate`, to a watcher | 23.473 ms | 28.796 ms | under 500 ms | Met | A |
+| One sample in the daemon, from the request to the reply (4,995 samples) | 3.746 ms | 7.583 ms | median under 5 ms | Met | A |
+| The guest agent's CPU time per `sample` request (5 batches) | 1.473 ms | 1.687 ms | under 0.5 ms | Missed; accepted | A |
+| The guest agent's CPU time per `info` request (5 batches) | 0.569 ms | 0.588 ms | none | | A |
+| The machine's process CPU time per `sample` request | 4.105 ms | 4.441 ms | none | | A |
+| The machine's process CPU time per `info` request | 2.900 ms | 2.977 ms | none | | A |
+| Over 60 s, watched, one distribution running: `mawd` | 0.459 % | 0.462 % | under 0.5 % of one core | Met | A |
+| The same: the guest agent | 0.079 % | 0.113 % | under 0.1 % | Met by the median; the 95th percentile is above | A |
+| The same: the machine's process, above its cost unwatched | 0.357 % | 0.431 % | under 0.2 % | Missed; accepted | A |
+| The same: `mawd`'s resident memory growth | 0.047 MiB | 0.172 MiB | under 1 MiB | Met | A |
+| `mawd` unwatched, one distribution running | 0.004 % | 0.004 % | none | | A |
+
+- **Run A**, the whole suite, from 07:45:20 UTC, at commit `6829e27` with guest files `7e6f5cb`;
+  load average 1.60, 14.71, 14.42 at the start, the 5- and 15-minute values still falling after
+  the restart, and 1.38, 1.62, 3.54 at the end. The agent's idle cost subtracted from the
+  batches was 0.031 % of one core with `sample` and 0.000 % with `info`. Run A also measured the
+  first figures, median 15.302 ms and 95th percentile 1,527.623 ms, and the first CPU figure,
+  1,524.244 ms and 1,533.220 ms. The 95th percentile of the first figures came from a race in
+  which a cancelled timeout discarded the guest's answer; commit `f88ae07` fixes it, and run B
+  replaces both rows.
+- **Run B**, `scripts/measure-figures.sh measuresTheFirstFigures` only, from 11:20:14 UTC, at
+  commit `694eb11` with guest files `694eb11` (Guest run 43409382196), with the 1-minute load
+  average under 2 before the start; load average 1.46, 4.79, 8.76 at the start and 2.22, 4.55,
+  8.47 at the end.
+- **Why run A's other rows stand at `694eb11`.** Between `6829e27` and `694eb11`, the daemon's
+  code changes only in `FigureSampler.askGuest`: the guest task reports the guest's answer
+  before it cancels the timeout, instead of after. The request, its connection, the guest's
+  work, the reading of the machine's process, the timer, and the snapshots are unchanged, and so
+  are the guest files' sources: the newest change to a path of the Guest workflow is `34dc80b`,
+  older than both runs' guest files. The other commits change `scripts/measure-figures.sh`, the
+  tests, and the documentation. Before the fix, about 0.6 % of answers were discarded; they cost
+  the same, and were missing only from the snapshots, and so from the 4,995 sample times.
+
+**Where the time goes.** `info` is the fixed cost of a request on a host-opened connection: the
+connection, the agent's thread, the version exchange, and a small reply. In the official run it
+costs 0.569 ms in the agent and 2.900 ms in the machine's process, or 39 % and 71 % of a
+`sample`. Reading `/proc/meminfo` and `/proc/net/route` and calling `getifaddrs` add 0.90 ms in
+the agent and 1.2 ms in the machine's process. At one sample every 1.5 seconds, 1.473 ms of
+agent time would be 0.098 % of one core, while the 60 s window measured 0.079 %; and 4.105 ms
+of the machine's process would be 0.274 %, while the window measured 0.357 %. The batches and
+the window do not agree, and why is not established; the agent's figures are read in ticks of
+10 ms over a batch of 1,000 requests, a resolution of 0.01 ms per request.
+
+**Two targets are missed, and the owner accepted both on 2026-11-12 and kept them on
+2026-11-13 after the official measurements:** the guest agent's CPU time per sample (1.473 ms
+against 0.5 ms), and the machine's process over 60 s (0.357 % above its unwatched cost against
+0.2 %). The fixed cost of one request alone exceeds the agent's target. In the machine's
+process it is 0.193 % of one core at one request every 1.5 seconds, just under the limit, and
+reading the figures takes the rest. The cost is a fraction of one percent of one core, and only
+while a distributions screen is visible; with no screen visible it is zero. The targets in the
+prompt stay as they are. Reusing one host-opened connection for every sample of a run would
+remove most of the fixed cost: most of the machine's process's time per sample, but less than
+half of the agent's. It changes the protocol and the guest files, and is recorded under phase
+12b in [docs/known-limitations.md](../known-limitations.md#phase-12b-hardening). Sampling every
+3 seconds instead would halve the cost and the chart's resolution, and was not chosen.
+
+### Development measurements
+
+Development measurements, recorded before the official ones with the same script, on the Mac
+above, macOS 27.0.1, on 2026-11-12. The Mac was in use: the load averages, which
+`sysctl -n vm.loadavg` gave at the start and end of each run, are listed. They do not decide the
+targets.
 
 | Measurement | Median | 95th percentile | Target | Run |
 |-------------|--------|-----------------|--------|-----|
@@ -137,24 +205,14 @@ below stand.
   batches add `--sample-with-info`, which sends `info` in place of `sample`
   ([docs/daemon.md](../daemon.md#the-daemon)).
 
-**Where the time goes.** `info` is the fixed cost of a request on a host-opened connection: the
-connection, the agent's thread, the version exchange, and a small reply. It costs 0.82 ms in the
-agent and 3.2 ms in the machine's process. Reading `/proc/meminfo` and `/proc/net/route` and
-calling `getifaddrs` add 0.33 ms in the agent and about 1.0 ms in the machine's process. At one
-sample every 1.5 seconds, 1.155 ms of agent time is 0.077 % of one core, which matches the 60 s
+**Where the time goes, in the development measurements.** `info` cost 0.82 ms in the agent
+and 3.2 ms in the machine's process. Reading `/proc/meminfo` and `/proc/net/route` and calling
+`getifaddrs` added 0.33 ms in the agent and about 1.0 ms in the machine's process. At one
+sample every 1.5 seconds, 1.155 ms of agent time is 0.077 % of one core, which matched the 60 s
 window's 0.079 %. Run 1's 1.95 ms against run 3's 1.155 ms is not explained; a busier Mac may
 inflate the guest's CPU accounting, which the guest's `steal` time would show, and was not
-measured.
-
-**Two targets are missed, and the owner accepted both on 2026-11-12:** the guest agent's CPU
-time per sample (1.155 ms against 0.5 ms), and the machine's process over 60 s (0.372 % above
-its unwatched cost against 0.2 %). The fixed cost of one request alone exceeds both. The cost is
-a fraction of one percent of one core, and only while a distributions screen is visible; with
-no screen visible it is zero. The targets in the prompt stay as they are. Reusing one
-host-opened connection for every sample of a run would remove most of the fixed cost; it changes
-the protocol and the guest files, and is recorded under phase 12b in
-[docs/known-limitations.md](../known-limitations.md#phase-12b-hardening). Sampling every 3
-seconds instead would halve the cost and the chart's resolution, and was not chosen.
+measured. The development measurements missed the same two targets, with 1.155 ms per sample
+and 0.372 % above the unwatched cost, and met the others, as the official ones do.
 
 ## Consequences
 
