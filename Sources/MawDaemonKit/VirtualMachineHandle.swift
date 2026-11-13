@@ -13,6 +13,8 @@
         static let stopTimeout = Duration.seconds(5)
         /// How long the connection for a session's `dialBack` request may take.
         static let connectTimeout = Duration.seconds(5)
+        /// How long `sample()` waits for the connection, and then for the reply.
+        static let sampleTimeout = Duration.seconds(1)
         /// How long `start()` waits for another virtual machine to release the disk.
         static let diskReleaseTimeout = Duration.seconds(10)
 
@@ -20,18 +22,27 @@
         public let unexpectedStops: AsyncStream<String>
         public var cpuCount: Int { settings.cpuCount }
         public var memoryBytes: UInt64 { settings.memorySize.bytes }
+        public var kernelRelease: String? { boot.withLock { $0.kernelRelease } }
+        public var bootMilliseconds: UInt64? { boot.withLock { $0.milliseconds } }
 
         private let virtualMachine: VirtualMachine
         private let settings: VMConfiguration
         private let stopContinuation: AsyncStream<String>.Continuation
         private let stopRequested = OSAllocatedUnfairLock(initialState: false)
+        private let boot = OSAllocatedUnfairLock(
+            initialState: (kernelRelease: String?.none, milliseconds: UInt64?.none))
         private let log: DaemonLog
+        /// For the measurements only: `sample()` sends `info` instead (`mawd serve
+        /// --sample-with-info`).
+        private let samplesWithInfo: Bool
 
         public init(
-            machine: MachineID, configuration: VMConfiguration, log: DaemonLog = DaemonLog()
+            machine: MachineID, configuration: VMConfiguration, log: DaemonLog = DaemonLog(),
+            samplesWithInfo: Bool = false
         ) throws(MawError) {
             self.machine = machine
             self.log = log
+            self.samplesWithInfo = samplesWithInfo
             settings = configuration.clamped(to: .host)
             virtualMachine = try VirtualMachine(name: machine.name, configuration: configuration)
             (unexpectedStops, stopContinuation) = AsyncStream.makeStream(of: String.self)
@@ -41,7 +52,7 @@
         /// installed distribution, which boots its disk with systemd (decision record 0013).
         public static func factory(
             kernelDirectory: URL, logDirectory: URL, store: DistributionStore, log: DaemonLog,
-            canRunVirtualMachines: Bool
+            canRunVirtualMachines: Bool, samplesWithInfo: Bool = false
         ) -> MachineFactory {
             { (machine: MachineID) throws(MawError) -> any MachineHandle in
                 guard canRunVirtualMachines else {
@@ -61,7 +72,8 @@
                         configuration, disk: store.paths.diskImage(for: name), metadata: metadata)
                 }
                 return try VirtualMachineHandle(
-                    machine: machine, configuration: configuration, log: log)
+                    machine: machine, configuration: configuration, log: log,
+                    samplesWithInfo: samplesWithInfo)
             }
         }
 
@@ -94,21 +106,39 @@
                 try await DiskImage.waitUntilUnlocked(disk.url, timeout: Self.diskReleaseTimeout)
             }
             let rootCheck = watchRootFileSystemCheck()
+            let info: AgentInfo
             do throws(MawError) {
                 try await virtualMachine.start()
                 watchForUnexpectedStops()
-                try await waitForAgent(rootCheck: rootCheck)
+                info = try await waitForAgent(rootCheck: rootCheck)
             } catch {
                 rootCheck?.cancel()
                 throw error
             }
             rootCheck?.cancel()
-            log.notice(
-                "\(machine): agent ready after \((ContinuousClock.now - started).milliseconds) ms")
+            let milliseconds = (ContinuousClock.now - started).milliseconds
+            boot.withLock {
+                $0 = (
+                    ForegroundAnswer.displayableName(info.kernelRelease),
+                    UInt64(max(0, milliseconds))
+                )
+            }
+            log.notice("\(machine): agent ready after \(milliseconds) ms")
         }
 
         public func openSessionConnection() async throws(MawError) -> OwnedDescriptor {
             try await virtualMachine.openSessionConnection(connectTimeout: Self.connectTimeout)
+        }
+
+        public func sample() async throws(MawError) -> GuestSample {
+            let client = virtualMachine.agentClient(
+                connectTimeout: Self.sampleTimeout, replyTimeout: Self.sampleTimeout)
+            guard !samplesWithInfo else {
+                // The cost of a request without reading the guest's figures; no figure results.
+                _ = try await client.info()
+                throw .guestAgentFailed(reason: "sample: replaced by info for a measurement")
+            }
+            return try await client.sample()
         }
 
         public func stop() async -> String {
@@ -195,16 +225,16 @@
             return .vmFailed(reason: "the guest powered off before its agent answered")
         }
 
-        /// Retries `info` until the agent answers, the machine stops, or the deadline passes.
+        /// Retries `info` until the agent answers, the machine stops, or the deadline passes, and
+        /// returns the agent's answer.
         private func waitForAgent(
             rootCheck: Task<RootFileSystemCheck?, Never>?
-        ) async throws(MawError) {
+        ) async throws(MawError) -> AgentInfo {
             let deadline = ContinuousClock.now + Self.agentReadyTimeout
             let client = virtualMachine.agentClient(connectTimeout: .milliseconds(250))
             while true {
                 do throws(MawError) {
-                    _ = try await client.info()
-                    return
+                    return try await client.info()
                 } catch {
                     let state = await virtualMachine.state
                     if case .error(let failure) = state {

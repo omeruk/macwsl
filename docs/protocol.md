@@ -1,14 +1,15 @@
 # Host and guest agent protocol
 
 The host (`mawd`, and the client library in `MawProtocol`) talks to the guest agent,
-`maw-agent`, over vsock. This document specifies protocol version **4**. The code is in
+`maw-agent`, over vsock. This document specifies protocol version **5**. The code is in
 `Sources/MawProtocol` (both sides) and `Sources/MawAgentKit` (the agent). Version 2 added the
 user a session runs as, its program (a command, a shell command line, or a login shell), its
 locale, and the input window, with which `signal` and `resize` overtake queued standard input
 ([0016](decisions/0016-input-window.md)). Version 3 adds the dial-back: the `dialBack`
 request, its `dialedBack` reply, the `dialBackNonce` frame, and the `dialBackFailed` error.
 Every session runs on a connection that the agent dials. Version 4 adds `foregroundQuery` and
-`foregroundProgram`.
+`foregroundProgram`. Version 5 adds `sample`, its `sampled` reply, and the `sampleFailed`
+error ([0020](decisions/0020-distribution-figures.md)).
 
 ## Transport
 
@@ -16,13 +17,13 @@ Every session runs on a connection that the agent dials. Version 4 adds `foregro
   `AgentProtocol.vsockPort` defines it. It accepts connections only from the host, context ID
   2, and closes any other before reading from it (docs/security.md).
 - Each request uses a connection of its own. An exec session holds its connection until the
-  process ends. `info`, `shutdown`, and `dialBack` each use a short connection that the agent
-  closes after replying.
+  process ends. `info`, `sample`, `shutdown`, and `dialBack` each use a short connection that
+  the agent closes after replying.
 - In reply to `dialBack`, the agent connects to the host's vsock port **19800** (`0x4D58`,
   `AgentProtocol.dialBackPort`); see [Dial-back](#dial-back).
 - The host opens connections with `VirtualMachine.connectToAgent(timeout:)`, which retries
   every 20 ms while the agent is not listening yet, until the deadline. It uses them only for
-  `info`, `shutdown`, and `dialBack`, whose replies are small. Every exec session, in `maw`,
+  `info`, `sample`, `shutdown`, and `dialBack`, whose replies are small. Every exec session, in `maw`,
   in provisioning, and in `mawd debug-boot`, runs on a connection that the agent dials:
   `VirtualMachine.openSessionConnection(connectTimeout:)` sends `dialBack` and returns the
   dialed connection. Either descriptor is a plain connected stream socket, independent of the
@@ -59,7 +60,7 @@ An empty data frame is valid and has no effect.
 ## Handshake
 
 1. As soon as the connection is open, each side sends a `version` frame. Neither waits for
-   the other first. The host sends its one request, `exec`, `info`, `shutdown`, or
+   the other first. The host sends its one request, `exec`, `info`, `sample`, `shutdown`, or
    `dialBack`, right after its `version` frame, without waiting for the agent's version,
    which would cost a round trip.
 2. Each side reads the first frame. It must be a `version` frame with a 4-byte payload.
@@ -92,6 +93,7 @@ names, missing required fields, and wrong types are protocol errors.
 |---------|--------|-------|
 | `exec` | `program`: one of `{"argv": [string]}`, `{"shellCommand": string}`, `{"loginShell": {}}`, required. `user`: string, default: the distribution's default user. `locale`: string, the host's preferred locale, optional. `environment`: {string: string}, default `{}`. `workingDirectory`: string, default: the user's home directory. `terminal`: `{"rows": u16, "columns": u16}`, absent for pipe mode. | `started`, then the session; or `error` |
 | `info` | none | `agentInfo` |
+| `sample` | none | `sampled`, or `error` (`sampleFailed`); see [Sample](#sample) |
 | `shutdown` | none | `shutdownAcknowledged`, or `error` (`shutdownFailed`) |
 | `dialBack` | `nonce`: 64 lowercase hexadecimal digits, the 32 bytes of the nonce | `dialedBack`, or `error` (`dialBackFailed`); see [Dial-back](#dial-back) |
 
@@ -117,6 +119,7 @@ TSTP TTIN TTOU URG XCPU XFSZ VTALRM PROF WINCH IO SYS`.
 | `agentInfo` | `agentVersion`: string, `protocolVersion`: u32, `kernelRelease`: string, `uptimeMilliseconds`: u64 | Reply to `info`. |
 | `shutdownAcknowledged` | none | The agent has asked `init` to power off. The VM stops shortly after. |
 | `dialedBack` | none | Reply to `dialBack`: the agent has connected to the host and sends the nonce first on that connection. |
+| `sampled` | `memoryTotalBytes`: u64, `memoryAvailableBytes`: u64, optional `ipv4Address`: string | Reply to `sample`; see [Sample](#sample). |
 | `foregroundProgram` | `id`: u32, optional `processGroup`: i32, optional `name`: string | Reply to `foregroundQuery` with its `id`. `processGroup` is present exactly when a program other than the shell is in the foreground; `name` is its leader's command name, absent when the leader has exited. A `name` without `processGroup` is a protocol violation. |
 | `error` | `code`: string, `message`: string, optional `hostVersion`, `guestVersion`: u32, optional `user`: string | A request failed, or the agent is closing the connection because of a protocol error. |
 
@@ -132,6 +135,7 @@ Error codes:
 | `shutdownFailed` | The agent could not signal `init`. | `guestAgentFailed` |
 | `busy` | The agent is serving its maximum of 64 connections. It sends its `version` frame and this error without acting on the request. | `guestAgentFailed` |
 | `userNotFound` | The requested user, or the default user that `/etc/maw.conf` names, is not in `/etc/passwd`. `user` names it. | `userNotFound` |
+| `sampleFailed` | The agent could not read its memory figures for `sample`: `/proc/meminfo` cannot be read, has no `MemTotal` or no `MemAvailable`, or reports more available memory than its total. The message says which. | `guestAgentFailed` |
 | `dialBackFailed` | The agent could not connect to the host for `dialBack`: no source port below 1024 was free, binding one failed, or the connection failed or did not complete within 2 seconds. The message says which. | `sessionDialBackFailed` |
 
 ## Dial-back
@@ -181,6 +185,33 @@ host                                    agent
    nonce arrives within the 5 seconds, the session fails with `sessionDialBackFailed` or
    `sessionDialBackMissing`. The host never falls back to running the session on a
    connection that it opened.
+
+## Sample
+
+`sample` asks for the figures of the guest that only the guest knows, for the daemon's
+distribution figures ([decision record 0020](decisions/0020-distribution-figures.md)). It is
+sent on a connection that the host opens, as `info` is, and needs no session.
+
+```json
+host to guest:  {"sample":{}}
+guest to host:  {"sampled":{"ipv4Address":"192.168.64.3","memoryAvailableBytes":1984000000,"memoryTotalBytes":2093694976}}
+```
+
+- **Memory.** `memoryTotalBytes` and `memoryAvailableBytes` are `MemTotal` and `MemAvailable`
+  from `/proc/meminfo`, converted from kB (KiB) to bytes. Memory in use is their difference,
+  which `free` in Ubuntu 24.04 reports as used. If either line is missing, the agent replies
+  `error` with code `sampleFailed` and does not invent a value.
+- **Address.** The agent reads `/proc/net/route`, takes the default route (destination and
+  mask 0, flag `RTF_UP`) with the lowest metric, and replies with the first IPv4 address of its
+  interface, from `getifaddrs`. Without a default route, or without an IPv4 address on its
+  interface, `ipv4Address` is absent.
+- The agent reads the two files and calls `getifaddrs` on the connection's thread. It starts
+  no process.
+- **The host decodes the reply strictly.** Both memory fields are required, the available
+  memory must not exceed the total, and `ipv4Address`, if present, must be four decimal
+  numbers from 0 to 255 separated by dots. Anything else is a protocol violation of that
+  connection. The host shows these values only, never logs them, and treats a failed sample
+  as figures that are not known (docs/daemon.md).
 
 ## Exec sessions
 
@@ -340,8 +371,8 @@ design and the alternatives.
   bytes, so it may block from 6145 bytes on. `SO_RCVBUF` on the host's descriptor is accepted
   but does not change this, in the daemon and in a process that the descriptor was handed to
   alike (`scripts/measure-vsock-buffer.sh`). The host's own connections therefore carry only
-  `info`, `shutdown`, and `dialBack`, whose replies are a few hundred bytes at most, and the
-  host reads each reply in full at once and then closes the connection; it never hands such a
+  `info`, `sample`, `shutdown`, and `dialBack`, whose replies are a few hundred bytes at most,
+  and the host reads each reply in full at once and then closes the connection; it never hands such a
   connection to a client. On a connection that the guest opens to a `VZVirtioSocketListener`,
   the host's socket fills in the same way, but only the guest's writer blocks, after 256 KiB;
   the machine's other connections, new connections in both directions, and the console go on

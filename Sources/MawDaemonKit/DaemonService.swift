@@ -20,6 +20,8 @@
         /// The installed distributions, which resolve the names and the default.
         public let store: DistributionStore?
         public let installer: Installer?
+        /// Samples the figures for `watchDistributions`.
+        public let sampler: FigureSampler<C>?
         private let clock: C
         private let started: C.Instant
         private let info: DaemonInfo
@@ -34,9 +36,11 @@
         public init(
             clock: C, registry: MachineRegistry<C>, lifetime: DaemonLifetime<C>,
             canRunVirtualMachines: Bool, store: DistributionStore? = nil,
-            installer: Installer? = nil, log: DaemonLog = DaemonLog()
+            installer: Installer? = nil, sampler: FigureSampler<C>? = nil,
+            log: DaemonLog = DaemonLog()
         ) {
             self.clock = clock
+            self.sampler = sampler
             self.registry = registry
             self.lifetime = lifetime
             self.store = store
@@ -67,6 +71,10 @@
             var leases: [Lease] = []
             // This connection's installation; at most one at a time.
             var installation: (id: UUID, task: Task<Bool, Never>)?
+            // Whether this connection watches the distributions, and its outstanding request.
+            var watching = false
+            var watch: Task<Void, Never>?
+            let watchPending = OSAllocatedUnfairLock(initialState: false)
 
             for await event in peer.events {
                 guard case .message(let message) = event else {
@@ -141,6 +149,7 @@
                     case .setDefault(let requested):
                         let name = try installedName(requested)
                         try store?.setDefaultDistribution(name)
+                        await sampler?.distributionsChanged()
                         log.notice("process \(processID) made \(name) the default distribution")
                         reply = .defaultSet(name)
                     case .terminate(let requested):
@@ -148,6 +157,35 @@
                         log.notice("\(machine): terminate requested by process \(processID)")
                         reply = .terminated(
                             await registry.terminate(machine, reason: Self.terminateReason))
+                    case .watchDistributions(let after):
+                        guard let sampler else {
+                            throw .notImplemented(
+                                feature: "watching the distributions", phase: "11c")
+                        }
+                        guard !watchPending.withLock({ $0 }) else {
+                            throw .daemonProtocolError(
+                                reason: "this connection already waits for a distribution snapshot")
+                        }
+                        // A connection's first watch is answered at once: its `after` may come from
+                        // an earlier daemon process, whose sequence numbers this one does not know.
+                        let after = watching ? after : 0
+                        if !watching {
+                            watching = true
+                            log.notice("process \(processID) started watching the distributions")
+                            await sampler.addWatcher()
+                        }
+                        watchPending.withLock { $0 = true }
+                        // On a task of its own, so that this loop still sees the connection close.
+                        watch = Task {
+                            guard let snapshot = await sampler.snapshot(after: after) else {
+                                return
+                            }
+                            watchPending.withLock { $0 = false }
+                            self.send(
+                                .distributionSnapshot(snapshot), to: message, on: peer,
+                                descriptor: nil)
+                        }
+                        continue
                     }
                 } catch {
                     reply = .failure(error)
@@ -156,6 +194,11 @@
                 descriptor?.close()
             }
 
+            watch?.cancel()
+            if watching, let sampler {
+                await sampler.removeWatcher()
+                log.notice("process \(processID) stopped watching the distributions")
+            }
             if let installation, isRunning(installation.id) {
                 // The client went away: the installation stops and removes its traces.
                 log.notice(
@@ -206,12 +249,7 @@
             var states: [DistroName: DistributionState] = [:]
             for machine in await registry.status() {
                 guard case .distribution(let name) = machine.machine else { continue }
-                states[name] =
-                    switch machine.state {
-                    case .starting: .starting
-                    case .running: .running
-                    case .stopping: .stopping
-                    }
+                states[name] = DistributionState(machine.state)
             }
             let entries = store.installed().map {
                 DistributionEntry(name: $0.name, state: states[$0.name] ?? .stopped)
@@ -249,8 +287,9 @@
                     reply = .failure(error)
                 }
                 self.send(reply, to: request, on: peer, descriptor: nil)
-                if case .installed = reply { return true }
-                return false
+                guard case .installed = reply else { return false }
+                await self.sampler?.distributionsChanged()
+                return true
             }
             installations.withLock {
                 if $0.finished.remove(id) == nil {

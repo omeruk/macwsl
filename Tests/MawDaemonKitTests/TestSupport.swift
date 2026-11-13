@@ -30,7 +30,17 @@ final class TestClock: Clock, Sendable {
     }
 
     private let state = OSAllocatedUnfairLock(
-        initialState: (now: Instant(offset: .zero), sleepers: [UUID: Sleeper]()))
+        initialState: (
+            now: Instant(offset: .zero), sleepers: [UUID: Sleeper](),
+            whenCancelling: (@Sendable () -> Void)?.none
+        ))
+
+    /// Runs on the task that cancels a sleeping task, during the cancellation and before that
+    /// task goes on, so that a test can see what the cancelling task did before it cancelled.
+    var whenCancelling: (@Sendable () -> Void)? {
+        get { state.withLock { $0.whenCancelling } }
+        set { state.withLock { $0.whenCancelling = newValue } }
+    }
 
     var now: Instant { state.withLock { $0.now } }
     var minimumResolution: Duration { .zero }
@@ -57,8 +67,13 @@ final class TestClock: Clock, Sendable {
                 }
             }
         } onCancel: {
-            state.withLock { $0.sleepers.removeValue(forKey: id) }?
-                .continuation.resume(throwing: CancellationError())
+            let (sleeper, hook) = state.withLock {
+                ($0.sleepers.removeValue(forKey: id), $0.whenCancelling)
+            }
+            sleeper?.continuation.resume(throwing: CancellationError())
+            if sleeper != nil {
+                hook?()
+            }
         }
     }
 
@@ -102,6 +117,8 @@ final class FakeMachine: MachineHandle, @unchecked Sendable {
     let machine: MachineID
     let cpuCount = 2
     let memoryBytes: UInt64 = 1 << 30
+    let kernelRelease: String? = "6.18.57-maw"
+    let bootMilliseconds: UInt64? = 271
     let unexpectedStops: AsyncStream<String>
 
     private let lock = OSAllocatedUnfairLock(
@@ -169,6 +186,48 @@ final class FakeMachine: MachineHandle, @unchecked Sendable {
         close(fds[1])
         lock.withLock { $0.connections += 1 }
         return OwnedDescriptor(fds[0])
+    }
+
+    /// 412 MiB in use of 2 GiB.
+    static let defaultSample = GuestSample(
+        memoryTotalBytes: 2 << 30, memoryAvailableBytes: (2 << 30) - (412 << 20),
+        ipv4Address: "192.168.64.3")
+
+    /// What `sample()` returns.
+    let sampleResult = OSAllocatedUnfairLock(
+        initialState: Result<GuestSample, MawError>.success(defaultSample))
+
+    private let samples = OSAllocatedUnfairLock(
+        initialState: (calls: 0, holds: false, held: [CheckedContinuation<Void, Never>]()))
+
+    var sampleCalls: Int { samples.withLock { $0.calls } }
+
+    /// Makes every `sample()` wait until `releaseSamples()`.
+    func holdSamples() {
+        samples.withLock { $0.holds = true }
+    }
+
+    func releaseSamples() {
+        let held = samples.withLock { state in
+            defer { state = (state.calls, false, []) }
+            return state.held
+        }
+        for continuation in held {
+            continuation.resume()
+        }
+    }
+
+    func sample() async throws(MawError) -> GuestSample {
+        await withCheckedContinuation { continuation in
+            let resumeNow = samples.withLock { state -> Bool in
+                state.calls += 1
+                if !state.holds { return true }
+                state.held.append(continuation)
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+        return try sampleResult.withLock { $0 }.get()
     }
 
     func stop() async -> String {
@@ -244,5 +303,20 @@ final class EndedLeases: Sendable {
 
     var handler: @Sendable (Lease, String) -> Void {
         { [ended] lease, reason in ended.withLock { $0.append((lease, reason)) } }
+    }
+}
+
+/// Collects the daemon's log lines.
+final class LogLines: Sendable {
+    private let lines = OSAllocatedUnfairLock(initialState: [String]())
+
+    var all: [String] { lines.withLock { $0 } }
+
+    var log: DaemonLog {
+        DaemonLog { [lines] line in lines.withLock { $0.append(line) } }
+    }
+
+    func count(containing text: String) -> Int {
+        all.filter { $0.contains(text) }.count
     }
 }

@@ -11,12 +11,23 @@
         var cpuCount: Int { get }
         var memoryBytes: UInt64 { get }
 
+        /// The kernel release that the guest agent reported when the machine started, made
+        /// safe to show (`ForegroundAnswer.displayableName`); `nil` before it has.
+        var kernelRelease: String? { get }
+        /// The time from the start of the machine to its agent's answer, as `start()` logs it;
+        /// `nil` before the agent has answered.
+        var bootMilliseconds: UInt64? { get }
+
         /// Boots the machine and returns once its guest agent answers.
         func start() async throws(MawError)
 
         /// Opens a new session's connection to the guest agent, which the caller owns. The
         /// agent dials it in reply to a `dialBack` request (docs/protocol.md).
         func openSessionConnection() async throws(MawError) -> OwnedDescriptor
+
+        /// Asks the guest agent for the guest's figures (docs/protocol.md, "Sample"), on a
+        /// connection of its own, within about a second. Takes no lease and starts nothing.
+        func sample() async throws(MawError) -> GuestSample
 
         /// Stops the machine cleanly, or forcibly if the guest does not power off in time.
         /// Returns once it has stopped, with a description of how for the log.

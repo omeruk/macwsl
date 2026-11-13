@@ -4,6 +4,12 @@
 // the identifier dev.maw.maw, and it refuses to run against any daemon but the test daemon.
 //
 // Usage: maw-integration-probe <distribution>
+//        maw-integration-probe --watch
+//
+// With --watch, it opens no session: it prints `watching <time>` just before it connects, then
+// repeats `watchDistributions` and prints each snapshot as `snapshot <time> <JSON>`, where <time> is `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)` when the
+// snapshot arrived, which the test runner can compare with its own readings. It exits at the end
+// of standard input, and prints `failed <message>` and exits with status 1 if a request fails.
 //
 // It opens a session in <distribution> through the session core (`DistributionSession` in
 // MawClient), which the terminal app uses, with a pseudo-terminal of 24 rows and 80 columns,
@@ -153,12 +159,46 @@
         }
     }
 
-    let arguments = CommandLine.arguments.dropFirst()
-    guard arguments.count == 1, let distribution = try? DistroName(arguments.first ?? "") else {
-        fail("usage: maw-integration-probe <distribution>")
+    /// `--watch`: prints every snapshot until the end of standard input.
+    func watch() async -> Never {
+        respond("watching \(clock_gettime_nsec_np(CLOCK_UPTIME_RAW))")
+        let client: DaemonClient
+        do {
+            client = try await DaemonClient.connect(label: testDaemonLabel)
+        } catch {
+            fail(error.errorDescription ?? error.description)
+        }
+        Task {
+            _ = try? await FileHandle.standardInput.bytes.lines.reduce(0) { count, _ in count + 1 }
+            client.close()
+            exit(0)
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        var after: UInt64 = 0
+        while true {
+            do {
+                let snapshot = try await client.watchDistributions(after: after)
+                let time = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+                after = snapshot.sequence
+                respond(
+                    "snapshot \(time) \(String(decoding: try encoder.encode(snapshot), as: UTF8.self))"
+                )
+            } catch {
+                fail("\(error)")
+            }
+        }
     }
+
     guard ProcessInfo.processInfo.environment["MAW_DAEMON_LABEL"] == testDaemonLabel else {
         fail("MAW_DAEMON_LABEL must be \(testDaemonLabel); the probe talks only to the test daemon")
+    }
+    let arguments = CommandLine.arguments.dropFirst()
+    if arguments == ["--watch"] {
+        await watch()
+    }
+    guard arguments.count == 1, let distribution = try? DistroName(arguments.first ?? "") else {
+        fail("usage: maw-integration-probe <distribution> | --watch")
     }
     // The session's connection may close before a write; that must not end the probe.
     signal(SIGPIPE, SIG_IGN)

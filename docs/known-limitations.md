@@ -35,6 +35,15 @@ from `main`.
   - **Evidence:** `Sources/maw/Maw.swift:45`; pull request #22, "Known limitations and
     follow-up work".
   - **Phase:** 06b, which implements `--export` and gives the example an installed name.
+- **A watcher does not notice a distribution removed by hand while no machine runs.**
+  - **Seen:** A distribution whose directory is deleted by hand stays in the snapshots of
+    `watchDistributions` until the next snapshot: a sample of a running machine, a state change,
+    an installation, or a new default.
+  - **Evidence:** `FigureSampler.snapshot(after:)` reads the installed distributions only when
+    the sequence number has grown (`Sources/MawDaemonKit/FigureSampler.swift`); nothing watches
+    the distributions directory.
+  - **Phase:** 06b, whose `maw --unregister` removes a distribution through the daemon and can
+    publish a new snapshot.
 
 ## Phase 07: File sharing and paths
 
@@ -122,9 +131,39 @@ from `main`.
     (`Sources/MawVirtualization/VMConfiguration+Virtualization.swift:51`), but no code sets its
     target size. [Decision record 0013](decisions/0013-systemd-and-the-agent.md), item 5.
   - **Phase:** 12.
+  - **Related:** The distribution figures' host memory, the footprint of the machine's process,
+    does not fall when the guest frees memory, while MEMORY, from the guest, does. [Decision
+    record 0020](decisions/0020-distribution-figures.md), "Evidence".
+- **The distribution figures name the default user from `distro.json` only.**
+  - **Seen:** `watchDistributions` reports the user that the installation recorded, even when
+    `/etc/maw.conf` in the distribution names another.
+  - **Evidence:** `FigureSampler.figures(_:)` reads `DistroMetadata.defaultUser`
+    (`Sources/MawDaemonKit/FigureSampler.swift`).
+  - **Phase:** 12, which reads `/etc/maw.conf`'s setting.
 
 ## Phase 12b: Hardening
 
+- **Two of phase 11c's speed targets are missed: each sample opens a connection of its own and
+  reads the guest's figures.**
+  - **Seen:** In the owner's official measurements, while a client watches one running
+    distribution, the guest agent's CPU time per sample was 1.473 ms (95th percentile 1.687 ms)
+    against a target of 0.5 ms, and the machine's process cost 0.357 % of one core (95th
+    percentile 0.431 %) above its unwatched cost over 60 seconds against a target of 0.2 %. Of a
+    sample, the fixed cost of a request on a host-opened connection, measured with `info`, is
+    0.569 ms of the agent and 2.900 ms of the machine's process; reading `/proc` and calling
+    `getifaddrs` add 0.90 ms and 1.2 ms. The development measurements gave 1.155 ms and 0.372 %,
+    with a fixed cost of 0.821 ms and 3.20 ms. The owner accepted both misses on 2026-11-12 and
+    kept this item on 2026-11-13 after the official measurements: the cost is a fraction of one
+    percent of one core, only while a distributions screen is visible, and zero otherwise.
+  - **Evidence:** [Decision record 0020](decisions/0020-distribution-figures.md), "What it
+    costs": the official measurements of 2026-11-13 at `6829e27` and `694eb11`, after a restart
+    and with only Terminal open, and the development measurements of 2026-11-12 at load averages
+    from 2.1 to 6.6.
+  - **Phase:** 12b. Reusing one connection per run, about 80 to 100 lines, would remove most of
+    the fixed cost; it changes the protocol and needs new guest files. By the official figures
+    that is 71 % of the machine's process's time per sample but only 39 % of the agent's, whose
+    larger part is the reading of the figures. Where that time goes in the agent is not
+    measured.
 - **The dial-back exchange costs about 1.8 ms per session.**
   - **Seen:** Warm `maw -e true` measured 33 ms against 31 ms with host-opened sessions, within
     the target of 50 ms.
@@ -133,6 +172,16 @@ from `main`.
   - **Phase:** 12b. Two options, neither built or measured: a persistent request connection
     per machine, estimated to save 0.7 ms and requiring a protocol change; or reused threads in
     the daemon and the agent, estimated to save 0.1 to 0.3 ms without a protocol change.
+- **The warm prompt runs close to its limit of 150 ms.**
+  - **Seen:** `DistributionIntegrationTests.measuresWarmPrompt`, added in phase 05, checks the
+    median of five warm starts of `maw` to a prompt against the limit of 150 ms that
+    `prompts/05-distro-install.md` sets. In the full integration run at `8dc2d12` (pull request
+    #29) it measured a median of 155 ms (165, 120, 155, 141, 167 ms) and failed; the run's load
+    average was 4.28 at its start and 3.87 at its end. Run alone twice afterwards, it passed
+    with medians of 147 and 142 ms, at load averages of 3.51 and 3.66 at their starts.
+  - **Evidence:** Pull request #29, "Verification". The limit is unchanged.
+  - **Phase:** 12b. Where the time to the prompt goes on a warm machine is not measured; the
+    dial-back exchange above is one known part of it.
 - **Virtualization.framework can end the host's side of a guest-opened connection.**
   - **Seen:** Rarely, a running session ends with `sessionConnectionEnded`, and in bursts of
     64 sessions an accepted connection is reset. The command may keep running in the guest
@@ -319,6 +368,24 @@ from `main`.
 
 ## No phase yet
 
+- **`maw` shows no distribution figures.**
+  - **Seen:** `maw --list --verbose` keeps the columns of `wsl.exe --list --verbose`, and
+    `maw --status` shows no memory, CPU, or disk per distribution. Only the terminal app's
+    distributions screen asks for them.
+  - **Evidence:** [Decision record 0020](decisions/0020-distribution-figures.md);
+    `prompts/11c-distribution-figures.md`, "Out of scope".
+  - **Phase:** None yet; figures would go into `maw --status`, maw's own command.
+- **The daemon builds a snapshot more often than needed with several distributions or
+  watchers.**
+  - **Seen:** Each sampled distribution publishes a snapshot of its own, so one interval with
+    three running distributions wakes each watcher three times. Watchers that a change wakes
+    together each build the same snapshot once. Each build reads every `distro.json` and the
+    manifest and `stat`s every disk image. Sampling stays once per machine per interval.
+  - **Evidence:** `FigureSampler.finish` and `FigureSampler.snapshot(after:)` in
+    `Sources/MawDaemonKit/FigureSampler.swift`; pull request #29, code review. Not measured with
+    more than one distribution; the terminal app holds one watch.
+  - **Phase:** None yet. Publishing one snapshot per interval, and building it once per change,
+    would remove the repetition.
 - **`maw` suggests `--create-disk` when an installed distribution's disk image is missing.**
   - **Seen:** `maw -d <name>` reports `diskImageNotFound` with the suggestion "Pass
     --create-disk <size> to create it as a sparse image.", an option of `mawd debug-boot` that
@@ -543,6 +610,12 @@ from `main`.
 
 Deliberate choices that a decision record explains and that no phase plans to change.
 
+- **CPU and host memory depend on an undocumented process.** The daemon finds a machine's
+  `com.apple.Virtualization.VirtualMachine` process by the disk image it has open. If Apple
+  changes the process model, the lookup finds nothing and the two figures stay empty; they are
+  never wrong, and the integration tests fail.
+  [Decision record 0020](decisions/0020-distribution-figures.md), "Evidence".
+
 - **Full disk synchronization by default.** `.full` makes `apt-get install build-essential`
   4.2 times slower than `.fsync` (17.58 s against 4.20 s), in exchange for data that survives
   a crash or power loss of the Mac.
@@ -569,7 +642,7 @@ Deliberate choices that a decision record explains and that no phase plans to ch
   [Decision record 0016](decisions/0016-input-window.md). The repeat of the measurement on an
   idle Mac is listed under "No phase yet".
 - **Guest files and the host must come from the same build.** A host and guest files from
-  different builds fail at session open with `guestAgentVersionMismatch` (protocol version 4,
+  different builds fail at session open with `guestAgentVersionMismatch` (protocol version 5,
   `Sources/MawProtocol/ProtocolVersion.swift:7`). `scripts/fetch-guest.sh` installs guest
   files built from the same commit. [Decision record 0016](decisions/0016-input-window.md),
   "Consequences".

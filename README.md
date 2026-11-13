@@ -87,6 +87,34 @@ swift test -Xswiftc -F -Xswiftc $DEV/Frameworks \
     -Xlinker -rpath -Xlinker $DEV/Frameworks -Xlinker -rpath -Xlinker $DEV/usr/lib
 ```
 
+### After a change of the guest protocol or the daemon interface
+
+`maw`, `mawd`, the guest files, and the app refuse each other when they come from builds with a
+different guest protocol (`guestAgentVersionMismatch`, `docs/protocol.md`) or daemon interface
+(`daemonVersionMismatch`, `docs/daemon.md`). The installed daemon is the `mawd` in this working
+tree, so every `swift build` replaces the program that launchd starts next. After pulling such a
+change, with the app closed and from the repository's root:
+
+```sh
+.build/out/Products/Debug/maw --shutdown          # 1. stop every machine with the old build
+git pull --ff-only                                # 2. the new sources
+scripts/fetch-guest.sh <branch>                   # 3. guest files that CI built for the branch
+./scripts/sign-dev.sh                             # 4. build and sign maw and mawd
+.build/out/Products/Debug/mawd install            # 5. restart the daemon from the new build
+(cd App && xcodegen && xcodebuild build -project maw.xcodeproj -scheme maw \
+    -configuration Debug -skipPackagePluginValidation)   # 6. rebuild the app
+.build/out/Products/Debug/maw -- uname -r         # 7. check: prints the guest kernel's release
+```
+
+- `scripts/fetch-guest.sh` installs the newest successful Guest workflow run on the branch, and
+  names that run's commit in its first line. Check that it is the commit of the newest change to
+  a path that `.github/workflows/guest.yml` watches, or a later one; without a branch it uses
+  `main`.
+- Step 1 matters because `fetch-guest.sh` replaces the guest files without stopping any
+  machine. `maw --shutdown` does nothing when the daemon does not run.
+- Run `scripts/sign-dev.sh` after every later `swift build` or `swift test`, which remove the
+  signature that the daemon needs.
+
 ## Using maw
 
 `maw` runs Linux distributions through the maw daemon, `mawd`, which launchd starts when `maw`

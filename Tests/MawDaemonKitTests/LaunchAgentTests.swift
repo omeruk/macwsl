@@ -53,6 +53,19 @@ import Testing
         #expect(agent.propertyList["StandardErrorPath"] as? String == "/tmp/logs/mawd.log")
     }
 
+    /// `--sample-interval-ms` and `--sample-with-info` are for the measurements only; no plist
+    /// that `mawd install` writes carries them.
+    @Test func neverPassesTheMeasurementOptions() {
+        let agent = LaunchAgent(
+            label: "dev.maw.mawd.integration-test", program: "/tmp/mawd",
+            logDirectory: URL(filePath: "/tmp/logs", directoryHint: .isDirectory),
+            machineIdleTimeout: 3, daemonIdleTimeout: 30,
+            imageCacheDirectory: URL(filePath: "/tmp/images", directoryHint: .isDirectory))
+        let arguments = agent.propertyList["ProgramArguments"] as? [String]
+        #expect(arguments == agent.arguments)
+        #expect(arguments?.contains { $0.hasPrefix("--sample") } == false)
+    }
+
     @Test func neitherRunsAtLoadNorStaysAlive() {
         let list = LaunchAgent(program: "/tmp/mawd").propertyList
         #expect(list["RunAtLoad"] == nil)

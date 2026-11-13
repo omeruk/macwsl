@@ -99,6 +99,31 @@ import Testing
         }
     }
 
+    /// An agent of version 4, which has no `sample`, answers with its version and an error
+    /// naming both versions, before it reads the request.
+    @Test func sampleReportsAnAgentOfVersion4() async throws {
+        let (host, peer) = try Self.socketPair()
+        let client = GuestAgentClient { () throws(MawError) in host }
+        startDetachedThread {
+            guard let connection = try? FrameConnection(peer) else { return }
+            connection.enqueue(.version(4))
+            connection.enqueue(
+                .control(
+                    .error(
+                        AgentError(
+                            .versionMismatch, "mismatch", hostVersion: ProtocolVersion.current,
+                            guestVersion: 4))))
+            try? connection.flush(until: .now + .seconds(5))
+            _ = try? connection.receiveFrame(until: .now + .seconds(5))
+            peer.close()
+        }
+        await #expect(
+            throws: MawError.guestAgentVersionMismatch(host: ProtocolVersion.current, guest: 4)
+        ) {
+            _ = try await client.sample()
+        }
+    }
+
     /// An agent from a build before version 3, as it answers a newer host: its version, then
     /// an error naming both versions.
     @Test func clientReportsAnAgentFromAnEarlierBuild() async throws {

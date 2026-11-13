@@ -8,7 +8,7 @@
     /// (see `InterfaceCoding`). The client's first request on every connection is `hello`.
     public enum DaemonInterface {
         /// Incremented on every change to the messages below, their fields, or their meaning.
-        public static let version: UInt32 = 3
+        public static let version: UInt32 = 4
 
         /// The LaunchAgent label, which is also the name of the daemon's Mach service.
         public static let defaultLabel = "dev.maw.mawd"
@@ -62,6 +62,11 @@
         /// regard to case, and ends its sessions. Replied to once the machine has stopped. A
         /// machine that is starting finishes its start first.
         case terminate(DistroName)
+        /// Replied to with the first snapshot whose sequence is greater than `after`: at once if
+        /// there is one, otherwise after the next sample or change. The first such request makes
+        /// the connection a watcher until it closes. A connection has at most one outstanding.
+        /// It starts no machine and takes no lease.
+        case watchDistributions(after: UInt64)
 
         /// How the request is named in error messages.
         public var displayName: String {
@@ -76,6 +81,7 @@
             case .listDistributions: "listing the distributions"
             case .setDefault: "setting the default distribution"
             case .terminate: "terminating the distribution"
+            case .watchDistributions: "watching the distributions"
             }
         }
     }
@@ -218,6 +224,8 @@
         case defaultSet(DistroName)
         /// The reply to `terminate`, once the machine has stopped.
         case terminated(TerminateSummary)
+        /// The reply to `watchDistributions`.
+        case distributionSnapshot(DistributionSnapshot)
         case failure(MawError)
     }
 
@@ -360,6 +368,64 @@
         public init(wasRunning: Bool, endedSessions: Int) {
             self.wasRunning = wasRunning
             self.endedSessions = endedSessions
+        }
+    }
+
+    /// The reply to `watchDistributions`: every installed distribution, sorted by name, with its
+    /// state and figures (docs/daemon.md, "Watching the distributions").
+    public struct DistributionSnapshot: Codable, Equatable, Sendable {
+        /// Greater for every newer snapshot of the same daemon process.
+        public var sequence: UInt64
+        public var distributions: [DistributionFigures]
+        /// As in `DistributionList`.
+        public var defaultDistribution: DistroName?
+
+        public init(
+            sequence: UInt64, distributions: [DistributionFigures], defaultDistribution: DistroName?
+        ) {
+            self.sequence = sequence
+            self.distributions = distributions
+            self.defaultDistribution = defaultDistribution
+        }
+    }
+
+    /// One distribution in a snapshot. A figure that is not known is `nil`; the figures from
+    /// `run` on exist only while the machine runs.
+    public struct DistributionFigures: Codable, Equatable, Sendable {
+        public var name: DistroName
+        public var state: DistributionState
+        /// The default user from `distro.json`.
+        public var defaultUser: String
+        public var diskImagePath: String
+        /// The space the disk image takes on the Mac, and its size.
+        public var diskAllocatedBytes: UInt64?
+        public var diskSizeBytes: UInt64?
+        /// Running: the release the guest agent reported. Otherwise: the installed guest files'.
+        public var kernelRelease: String?
+        /// Identifies the machine's run; it changes when the machine starts again.
+        public var run: UInt64?
+        public var uptimeMilliseconds: UInt64?
+        /// From the start of the machine to its agent's answer.
+        public var bootMilliseconds: UInt64?
+        /// The machine's memory size.
+        public var memoryLimitBytes: UInt64?
+        /// Memory in use inside the guest: `MemTotal` minus `MemAvailable`.
+        public var memoryUsedBytes: UInt64?
+        public var ipv4Address: String?
+        /// The CPU time of the machine's process over the last interval, in percent of one core.
+        public var cpuPercent: Double?
+        /// The memory footprint of the machine's process.
+        public var hostMemoryBytes: UInt64?
+        /// Diagnostic only: the last guest sample's time from the request to the reply.
+        public var lastSampleMicroseconds: UInt64?
+
+        public init(
+            name: DistroName, state: DistributionState, defaultUser: String, diskImagePath: String
+        ) {
+            self.name = name
+            self.state = state
+            self.defaultUser = defaultUser
+            self.diskImagePath = diskImagePath
         }
     }
 #endif

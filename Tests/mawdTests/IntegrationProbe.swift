@@ -11,12 +11,13 @@ final class IntegrationProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var commands = 1
 
-    init(maw: MawIntegration) throws {
+    /// `arguments` are the probe's; by default the test distribution, for a session.
+    init(maw: MawIntegration, arguments: [String]? = nil) throws {
         let path = try #require(
             MawIntegration.environment["MAW_INTEGRATION_PROBE_PATH"],
             "MAW_INTEGRATION_PROBE_PATH must point to the signed probe.")
         process = try DebugBootProcess(
-            executable: URL(filePath: path), arguments: [maw.distribution],
+            executable: URL(filePath: path), arguments: arguments ?? [maw.distribution],
             standardInputPipe: input, separateStandardError: true,
             environment: maw.mawEnvironment)
     }

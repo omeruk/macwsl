@@ -63,6 +63,27 @@
             }
         }
 
+        /// The space a disk image takes on its volume, and its size, which is the most it can
+        /// take.
+        public struct Usage: Equatable, Sendable {
+            /// The allocated blocks, which fall when the guest discards blocks.
+            public var allocatedBytes: UInt64
+            public var sizeBytes: UInt64
+        }
+
+        /// The usage of the disk image at `url`, from `stat`, or `nil` if it cannot be read.
+        public static func usage(_ url: URL) -> Usage? {
+            var status = stat()
+            guard stat(url.path(percentEncoded: false), &status) == 0, status.st_size >= 0,
+                status.st_blocks >= 0
+            else {
+                return nil
+            }
+            // `st_blocks` counts 512-byte blocks whatever the volume's block size (stat(2)).
+            return Usage(
+                allocatedBytes: UInt64(status.st_blocks) * 512, sizeBytes: UInt64(status.st_size))
+        }
+
         /// Whether another process holds a lock on the disk image, as Virtualization.framework
         /// does while a virtual machine uses it. Asks with `F_GETLK`, which takes no lock.
         public static func isLocked(_ url: URL) -> Bool {

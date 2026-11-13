@@ -22,6 +22,8 @@ public enum ControlMessage: Equatable, Sendable {
     /// connection as a new one: its first request may be `exec`, `info`, or `shutdown`.
     /// Accepted only on a connection that the host opened.
     case dialBack(DialBackNonce)
+    /// Asks for `sampled`: the guest's memory figures and its IPv4 address.
+    case sample
 
     // During an exec session, host to guest.
 
@@ -54,6 +56,8 @@ public enum ControlMessage: Equatable, Sendable {
     /// other than the session's shell is in the foreground, which is always the case in pipe
     /// mode and after the process has exited.
     case foregroundProgram(id: UInt32, program: ForegroundProcess?)
+    /// The reply to `sample`.
+    case sampled(GuestSample)
     /// A request failed, or the connection is being closed because of a protocol error.
     case error(AgentError)
 
@@ -64,6 +68,7 @@ public enum ControlMessage: Equatable, Sendable {
         case .info: "info"
         case .shutdown: "shutdown"
         case .dialBack: "dialBack"
+        case .sample: "sample"
         case .stdinEOF: "stdinEOF"
         case .signal: "signal"
         case .resize: "resize"
@@ -74,6 +79,7 @@ public enum ControlMessage: Equatable, Sendable {
         case .shutdownAcknowledged: "shutdownAcknowledged"
         case .dialedBack: "dialedBack"
         case .foregroundProgram: "foregroundProgram"
+        case .sampled: "sampled"
         case .error: "error"
         }
     }
@@ -268,6 +274,38 @@ public struct AgentInfo: Codable, Equatable, Sendable {
     }
 }
 
+/// What `sample` returns: figures that only the guest knows. They come from the guest, which
+/// can report anything for its own machine, so they are only displayed.
+public struct GuestSample: Equatable, Sendable {
+    /// `MemTotal` from `/proc/meminfo`.
+    public var memoryTotalBytes: UInt64
+    /// `MemAvailable` from `/proc/meminfo`; never more than `memoryTotalBytes`.
+    public var memoryAvailableBytes: UInt64
+    /// The IPv4 address of the interface of the default route, in dotted decimal, or `nil`
+    /// without a default route or an address on its interface.
+    public var ipv4Address: String?
+
+    public init(memoryTotalBytes: UInt64, memoryAvailableBytes: UInt64, ipv4Address: String?) {
+        self.memoryTotalBytes = memoryTotalBytes
+        self.memoryAvailableBytes = memoryAvailableBytes
+        self.ipv4Address = ipv4Address
+    }
+
+    /// Memory in use: `MemTotal` minus `MemAvailable`, which `free` reports as used.
+    public var memoryUsedBytes: UInt64 { memoryTotalBytes - memoryAvailableBytes }
+
+    /// Whether `text` is an IPv4 address in dotted decimal: four numbers from 0 to 255, each
+    /// of one to three digits.
+    public static func isIPv4Address(_ text: String) -> Bool {
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 4
+            && parts.allSatisfy { part in
+                (1...3).contains(part.count) && part.allSatisfy { $0.isASCII && $0.isNumber }
+                    && Int(part).map { $0 <= 255 } == true
+            }
+    }
+}
+
 /// An error the agent reports.
 public struct AgentError: Codable, Equatable, Sendable, CustomStringConvertible {
     public enum Code: String, Codable, Equatable, Sendable {
@@ -292,6 +330,9 @@ public struct AgentError: Codable, Equatable, Sendable, CustomStringConvertible 
         /// The agent could not connect to the host in reply to `dialBack`: no source port
         /// below 1024 was free, or the connection failed or timed out.
         case dialBackFailed
+        /// The agent could not read its memory figures for `sample`, for example because
+        /// `/proc/meminfo` has no `MemAvailable`.
+        case sampleFailed
     }
 
     public var code: Code
@@ -441,13 +482,19 @@ extension ControlMessage: Codable {
         var name: String?
     }
 
+    private struct SampledFields: Codable {
+        var memoryTotalBytes: UInt64
+        var memoryAvailableBytes: UInt64
+        var ipv4Address: String?
+    }
+
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: Key.self)
         let key = Key(name)
         switch self {
         case .exec(let request):
             try container.encode(request, forKey: key)
-        case .info, .shutdown, .stdinEOF, .shutdownAcknowledged, .dialedBack:
+        case .info, .shutdown, .sample, .stdinEOF, .shutdownAcknowledged, .dialedBack:
             try container.encode(Empty(), forKey: key)
         case .dialBack(let nonce):
             try container.encode(DialBackFields(nonce: nonce.hexadecimal), forKey: key)
@@ -470,6 +517,13 @@ extension ControlMessage: Codable {
             try container.encode(ExitedFields(signal: signal), forKey: key)
         case .agentInfo(let info):
             try container.encode(info, forKey: key)
+        case .sampled(let sample):
+            try container.encode(
+                SampledFields(
+                    memoryTotalBytes: sample.memoryTotalBytes,
+                    memoryAvailableBytes: sample.memoryAvailableBytes,
+                    ipv4Address: sample.ipv4Address),
+                forKey: key)
         case .error(let error):
             try container.encode(error, forKey: key)
         }
@@ -506,6 +560,11 @@ extension ControlMessage: Codable {
         case "dialedBack":
             _ = try container.decode(Empty.self, forKey: key)
             self = .dialedBack
+        case "sample":
+            _ = try container.decode(Empty.self, forKey: key)
+            self = .sample
+        case "sampled":
+            self = .sampled(try Self.sample(container.decode(SampledFields.self, forKey: key)))
         case "stdinEOF":
             _ = try container.decode(Empty.self, forKey: key)
             self = .stdinEOF
@@ -558,6 +617,26 @@ extension ControlMessage: Codable {
                     codingPath: decoder.codingPath,
                     debugDescription: "unknown control message '\(key.stringValue)'"))
         }
+    }
+
+    /// Checks a `sampled` reply, which comes from the guest: available memory within the total,
+    /// and an address only in dotted decimal.
+    private static func sample(_ fields: SampledFields) throws -> GuestSample {
+        guard fields.memoryAvailableBytes <= fields.memoryTotalBytes else {
+            throw DecodingError.dataCorrupted(
+                .init(
+                    codingPath: [Key("sampled")],
+                    debugDescription: "sampled has more available memory than its total"))
+        }
+        if let address = fields.ipv4Address, !GuestSample.isIPv4Address(address) {
+            throw DecodingError.dataCorrupted(
+                .init(
+                    codingPath: [Key("sampled")],
+                    debugDescription: "sampled has an ipv4Address that is not an IPv4 address"))
+        }
+        return GuestSample(
+            memoryTotalBytes: fields.memoryTotalBytes,
+            memoryAvailableBytes: fields.memoryAvailableBytes, ipv4Address: fields.ipv4Address)
     }
 
     /// The message as JSON with sorted keys.

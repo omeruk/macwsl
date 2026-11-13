@@ -27,6 +27,40 @@ import Testing
         #expect((attributes[.posixPermissions] as? Int) == 0o600)
     }
 
+    /// The usage follows the allocated blocks: up when data is written, down when a range is
+    /// discarded, as the guest's `fstrim` does through Virtualization.framework.
+    @Test func reportsTheAllocatedSizeOfASparseImage() throws {
+        let directory = try TemporaryDirectory()
+        let image = directory.file("disk.img")
+        try DiskImage.createSparse(at: image, size: .mebibytes(64))
+        let empty = try #require(DiskImage.usage(image))
+        #expect(empty.sizeBytes == ByteSize.mebibytes(64).bytes)
+        #expect(empty.allocatedBytes < 1 << 20)
+
+        let descriptor = open(image.path(percentEncoded: false), O_RDWR | O_CLOEXEC)
+        try #require(descriptor >= 0)
+        defer { close(descriptor) }
+        let data = [UInt8](repeating: 0xA5, count: 8 << 20)
+        try #require(pwrite(descriptor, data, data.count, 16 << 20) == data.count)
+        try #require(fsync(descriptor) == 0)
+        let written = try #require(DiskImage.usage(image))
+        #expect(written.sizeBytes == ByteSize.mebibytes(64).bytes)
+        #expect(written.allocatedBytes >= 8 << 20 && written.allocatedBytes < 10 << 20)
+        #expect(Int64(written.allocatedBytes) == (try allocatedBytes(image)))
+
+        var hole = fpunchhole_t(fp_flags: 0, reserved: 0, fp_offset: 16 << 20, fp_length: 8 << 20)
+        try #require(fcntl(descriptor, F_PUNCHHOLE, &hole) == 0)
+        try #require(fsync(descriptor) == 0)
+        let punched = try #require(DiskImage.usage(image))
+        #expect(punched.sizeBytes == ByteSize.mebibytes(64).bytes)
+        #expect(punched.allocatedBytes < 1 << 20)
+    }
+
+    @Test func reportsNoUsageForAMissingImage() throws {
+        let directory = try TemporaryDirectory()
+        #expect(DiskImage.usage(directory.file("missing.img")) == nil)
+    }
+
     @Test func seesALockThatAnotherProcessHolds() async throws {
         let directory = try TemporaryDirectory()
         let image = directory.file("disk.img")

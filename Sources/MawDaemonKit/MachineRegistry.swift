@@ -3,6 +3,14 @@
     import MawProtocol
     import MawXPC
 
+    /// A machine that is not stopped. `run` is the registry's generation of its handle, which
+    /// changes when the machine starts again.
+    public struct RegisteredMachine: Sendable {
+        public let status: MachineStatus
+        public let run: UInt64
+        public let handle: any MachineHandle
+    }
+
     /// A session's claim on a running machine. While a machine has a lease, it keeps running.
     public struct Lease: Hashable, Sendable {
         public let id: UInt64
@@ -55,6 +63,7 @@
         private let factory: MachineFactory
         private let log: DaemonLog
         private let activityChanged: @Sendable (Bool) -> Void
+        private let stateChanged: @Sendable () -> Void
         private var slots: [MachineID: Slot] = [:]
         private var nextLeaseID: UInt64 = 1
         /// Leases whose agent connection is being opened. If their machine stops meanwhile,
@@ -64,17 +73,20 @@
         /// - Parameters:
         ///   - activityChanged: Called with whether any machine is starting, running, or
         ///     stopping, whenever that may have changed.
+        ///   - stateChanged: Called after every change of a machine's state.
         public init(
             clock: C, idleTimeout: Duration = DaemonTimeouts.machineIdle,
             log: DaemonLog = DaemonLog(),
             factory: @escaping MachineFactory,
-            activityChanged: @escaping @Sendable (Bool) -> Void = { _ in }
+            activityChanged: @escaping @Sendable (Bool) -> Void = { _ in },
+            stateChanged: @escaping @Sendable () -> Void = {}
         ) {
             self.clock = clock
             self.idleTimeout = idleTimeout
             self.factory = factory
             self.log = log
             self.activityChanged = activityChanged
+            self.stateChanged = stateChanged
         }
 
         // MARK: Sessions
@@ -174,6 +186,7 @@
                 })
             slots[machine] = slot
             activityChanged(true)
+            stateChanged()
         }
 
         private func didFinishStart(
@@ -195,6 +208,7 @@
                 }
                 // A start that nobody uses, because its requester failed or left, still stops.
                 scheduleIdleStopIfUnused(machine)
+                stateChanged()
             case .failure(let error):
                 log.error("\(machine): failed to start: \(error.description)")
                 slots[machine]?.state = .stopped
@@ -285,6 +299,7 @@
                     }
                     slot.state = .stopping(handle, task)
                     slots[machine] = slot
+                    stateChanged()
                     end(ended, on: machine, reason: reason)
                     await task.value
                     return ended.count
@@ -325,7 +340,12 @@
 
         /// Every machine that is not stopped, by name.
         public func status() -> [MachineStatus] {
-            slots.compactMap { machine, slot -> MachineStatus? in
+            machines().map(\.status)
+        }
+
+        /// Every machine that is not stopped, by name, with its run and its handle.
+        public func machines() -> [RegisteredMachine] {
+            slots.compactMap { machine, slot -> RegisteredMachine? in
                 let state: MachineStatus.State
                 var uptime: UInt64?
                 switch slot.state {
@@ -339,13 +359,14 @@
                 case .stopping:
                     state = .stopping
                 }
-                let handle = slot.state.handle
-                return MachineStatus(
+                guard let handle = slot.state.handle else { return nil }
+                let status = MachineStatus(
                     machine: machine, state: state, uptimeMilliseconds: uptime,
-                    cpuCount: handle?.cpuCount ?? 0, memoryBytes: handle?.memoryBytes ?? 0,
+                    cpuCount: handle.cpuCount, memoryBytes: handle.memoryBytes,
                     sessionCount: slot.leases.count)
+                return RegisteredMachine(status: status, run: slot.generation, handle: handle)
             }
-            .sorted { $0.machine.name < $1.machine.name }
+            .sorted { $0.status.machine.name < $1.status.machine.name }
         }
 
         /// Whether any machine is starting, running, or stopping.
@@ -355,8 +376,10 @@
             }
         }
 
+        /// Reports a machine that has stopped.
         private func reportActivity() {
             activityChanged(isActive)
+            stateChanged()
         }
     }
 #endif

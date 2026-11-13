@@ -54,6 +54,25 @@ public struct GuestAgentClient: Sendable {
         }
     }
 
+    /// Asks the agent for the guest's memory figures and IPv4 address. The reply is one small
+    /// message, read in full at once, as the host's own connections require
+    /// (docs/protocol.md, "Flow control and ordering").
+    public func sample() async throws(MawError) -> GuestSample {
+        let descriptor = try await connect()
+        let timeout = replyTimeout
+        return try await runOnDedicatedThread { () throws(MawError) -> GuestSample in
+            try Self.mapErrors(during: "sample") { () throws(ConnectionError) -> GuestSample in
+                let connection = try Self.open(descriptor, sending: .sample, timeout: timeout)
+                switch try Self.reply(on: connection, timeout: timeout, to: "sample") {
+                case .sampled(let sample):
+                    return sample
+                case let other:
+                    throw .unexpectedMessage("expected sampled, received \(other.name)")
+                }
+            }
+        }
+    }
+
     /// Asks the guest to power off. Returns once the agent has acknowledged; the virtual
     /// machine stops shortly after.
     public func shutdown() async throws(MawError) {
@@ -206,7 +225,7 @@ public struct GuestAgentClient: Sendable {
                 return .userNotFound(agentError.user ?? "", distribution: guestName)
             case .dialBackFailed:
                 return .sessionDialBackFailed(reason: agentError.message)
-            case .protocolViolation, .shutdownFailed, .busy:
+            case .protocolViolation, .shutdownFailed, .busy, .sampleFailed:
                 return .guestAgentFailed(reason: "\(request): \(agentError.message)")
             }
         case .timedOut(let what):
