@@ -77,6 +77,29 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     /// for it, although the connection stayed open, so the installation may still be ending.
     case installationCancellationUnconfirmed(DistroName)
 
+    // MARK: Removal and export
+
+    /// A request names a distribution that `operation` holds, such as `maw --export`.
+    case distributionBusy(DistroName, operation: DistributionOperation)
+    /// `maw --export` names a distribution whose machine is not stopped.
+    case distributionRunning(DistroName)
+    /// `maw --unregister` asked whether to delete the distribution, and the answer was not yes.
+    case unregisterDeclined(DistroName)
+    /// `maw --unregister` could not move the distribution's directory away, so nothing was
+    /// deleted. `reason` says why.
+    case removalFailed(DistroName, reason: String)
+    /// `maw --export` names a file that exists already; it never replaces one.
+    case exportFileExists(path: String)
+    /// `maw --export <distro> -` was run with standard output on a terminal.
+    case exportToTerminal
+    /// A step of an export failed. `step` names it.
+    case exportFailed(DistroName, step: String, reason: String)
+    /// The reader of an export's archive closed its end before the archive was complete, as
+    /// `maw --export <distro> - | head -c 1` does.
+    case exportOutputClosed(DistroName)
+    /// The export was cancelled, because its client went away or the daemon stopped.
+    case exportCancelled(DistroName)
+
     // MARK: Daemon
 
     /// The LaunchAgent that runs `mawd` is not registered with launchd. `label` names it.
@@ -244,6 +267,25 @@ extension MawError: LocalizedError {
         case .installationCancellationUnconfirmed(let name):
             "The daemon has not yet confirmed the cancellation of the installation of\n"
                 + "\(name). The installation may still be ending."
+        case .distributionBusy(let name, let operation):
+            "\(name) is being \(operation.participle) by \(operation.command)."
+        case .distributionRunning(let name):
+            "\(name) runs, and a running distribution cannot be exported."
+        case .unregisterDeclined(let name):
+            "\(name) was not deleted, because the answer was not yes."
+        case .removalFailed(let name, let reason):
+            "\(name) could not be removed: \(reason)."
+        case .exportFileExists(let path):
+            "\(path) already exists.\nmaw --export never replaces a file."
+        case .exportToTerminal:
+            "maw --export - would write the archive to a terminal."
+        case .exportFailed(let name, let step, let reason):
+            "The export of \(name) failed while \(step):\n\(reason)."
+        case .exportOutputClosed(let name):
+            "The export of \(name) stopped, because the program that reads the\n"
+                + "archive closed its end of the pipe before the archive was complete."
+        case .exportCancelled(let name):
+            "The export of \(name) was cancelled."
         case .daemonNotInstalled(let label):
             "The maw daemon is not installed: launchd has no LaunchAgent named \(label)."
         case .daemonUnreachable(let reason):
@@ -422,6 +464,27 @@ extension MawError: LocalizedError {
         case .installationCancellationUnconfirmed(let name):
             "Wait a moment, then run maw --list. It lists \(name) if the installation\n"
                 + "finished after all."
+        case .distributionBusy(_, let operation):
+            "Wait until \(operation.command) has finished, then run the command again."
+        case .distributionRunning(let name):
+            "Stop it with maw --terminate \(name), which ends its sessions,\n"
+                + "then run maw --export again."
+        case .unregisterDeclined:
+            nil
+        case .removalFailed(let name, _):
+            "Nothing was deleted, and \(name) is still installed. Check the\n"
+                + "permissions of ~/Library/Application Support/maw/distros."
+        case .exportFileExists:
+            "Choose another file name, or move the existing file away first."
+        case .exportToTerminal:
+            "Redirect standard output to a file or a pipe, or give a file name instead of -."
+        case .exportFailed(let name, _, _):
+            "The export's console log, ~/Library/Logs/maw/export/\(name).log,\n"
+                + "may have details."
+        case .exportOutputClosed:
+            "Run maw --export again with a reader that reads the whole archive."
+        case .exportCancelled:
+            "Run maw --export again to start over."
         case .daemonNotInstalled:
             "Register the daemon with mawd install."
         case .daemonUnreachable, .daemonConnectionLost, .daemonProtocolError:
