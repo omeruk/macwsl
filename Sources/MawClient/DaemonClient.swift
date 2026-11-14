@@ -16,7 +16,7 @@
         public enum Event: Sendable, Equatable {
             /// A session's machine stopped.
             case sessionEnded(SessionEnded)
-            /// This connection's installation moved on.
+            /// This connection's installation or export moved on.
             case installProgress(InstallProgress)
             /// The daemon exited or closed the connection.
             case connectionLost
@@ -175,7 +175,7 @@
         }
 
         /// Installs a distribution and returns when it is installed. `events` carries its
-        /// progress meanwhile. Closing the client, or `cancelInstall()`, cancels it.
+        /// progress meanwhile. Closing the client, or `cancel()`, cancels it.
         public func install(_ request: InstallRequest) async throws(MawError) -> InstallSummary {
             guard case .installed(let summary) = try await send(.install(request)).reply else {
                 throw .daemonProtocolError(reason: "the reply to install is not installed")
@@ -196,14 +196,12 @@
             }
         }
 
-        /// Cancels this client's installation and returns once the daemon has removed its
-        /// traces. Returns whether one was running.
+        /// Cancels this client's installation or export and returns once the daemon has removed
+        /// its traces. Returns whether one was running.
         @discardableResult
-        public func cancelInstall() async throws(MawError) -> Bool {
-            guard case .installCancelled(let wasRunning) = try await send(.cancelInstall).reply
-            else {
-                throw .daemonProtocolError(
-                    reason: "the reply to cancelInstall is not installCancelled")
+        public func cancel() async throws(MawError) -> Bool {
+            guard case .cancelled(let wasRunning) = try await send(.cancel).reply else {
+                throw .daemonProtocolError(reason: "the reply to cancel is not cancelled")
             }
             return wasRunning
         }
@@ -256,16 +254,64 @@
             return snapshot
         }
 
+        /// Checks that `name` names an installed distribution that no other operation holds, and
+        /// returns its stored spelling. Throws the error that `unregister` would throw for it.
+        public func checkUnregister(_ name: DistroName) async throws(MawError) -> DistroName {
+            guard
+                case .unregisterPossible(let stored) = try await send(.checkUnregister(name)).reply
+            else {
+                throw .daemonProtocolError(
+                    reason: "the reply to checkUnregister is not unregisterPossible")
+            }
+            return stored
+        }
+
+        /// Stops the distribution that `name` names, without regard to case, and deletes it.
+        /// Returns once it is deleted.
+        public func unregister(_ name: DistroName) async throws(MawError) -> UnregisterSummary {
+            guard case .unregistered(let summary) = try await send(.unregister(name)).reply else {
+                throw .daemonProtocolError(reason: "the reply to unregister is not unregistered")
+            }
+            return summary
+        }
+
+        /// Checks that `name` names an installed, stopped distribution that no other operation
+        /// holds, and returns its stored spelling. Throws the error that `export` would throw.
+        public func checkExport(_ name: DistroName) async throws(MawError) -> DistroName {
+            guard case .exportPossible(let stored) = try await send(.checkExport(name)).reply else {
+                throw .daemonProtocolError(reason: "the reply to checkExport is not exportPossible")
+            }
+            return stored
+        }
+
+        /// Exports a distribution's root file system to `descriptor`, which this process opened
+        /// for writing and still owns, and returns when the archive is complete. `events` carries
+        /// the progress meanwhile. Closing the client, or `cancel()`, cancels it.
+        public func export(_ request: ExportRequest, to descriptor: Int32) async throws(MawError)
+            -> ExportSummary
+        {
+            guard
+                case .exported(let summary) = try await send(
+                    .export(request), descriptor: descriptor
+                ).reply
+            else {
+                throw .daemonProtocolError(reason: "the reply to export is not exported")
+            }
+            return summary
+        }
+
         /// Closes the connection, which ends its sessions.
         public func close() {
             state.withLock { $0.isClosed = true }
             connection.cancel()
         }
 
-        private func send(_ request: DaemonRequest) async throws(MawError) -> (
-            reply: DaemonReply, object: XPCObject
-        ) {
-            let message = try InterfaceCoding.encode(request)
+        /// Sends `request`, with a duplicate of `descriptor` if one is given, and returns the
+        /// reply. The caller keeps `descriptor`.
+        private func send(_ request: DaemonRequest, descriptor: Int32? = nil) async throws(MawError)
+            -> (reply: DaemonReply, object: XPCObject)
+        {
+            let message = try InterfaceCoding.encode(request, descriptor: descriptor)
             guard !state.withLock({ $0.isLost || $0.isClosed }),
                 case .success(let object) = await connection.request(message)
             else {

@@ -23,12 +23,15 @@ struct InstallProgressText {
         case .configure: "Configuring \(name)"
         case .finish: "Writing the disk"
         case .start: "Starting \(name)"
+        case .check: "Checking the file system"
+        case .archive: "Writing the archive"
         }
     }
 
-    /// The width every label is padded to: the longest label and two spaces.
+    /// The width every label is padded to: the longest label of an installation's steps and
+    /// two spaces.
     var labelWidth: Int {
-        InstallStep.allCases.map { label(for: $0).count }.max()! + 2
+        InstallStep.installation.map { label(for: $0).count }.max()! + 2
     }
 
     func padded(_ step: InstallStep) -> String {

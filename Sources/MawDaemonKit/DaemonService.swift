@@ -133,7 +133,7 @@
                         }
                         try await installer.check(distribution: distribution, name: name)
                         reply = .installPossible
-                    case .cancelInstall:
+                    case .cancel:
                         var wasCancelled = false
                         if let installation, isRunning(installation.id) {
                             log.notice("process \(processID) cancelled its installation")
@@ -143,7 +143,7 @@
                             wasCancelled = !(await installation.task.value)
                         }
                         installation = nil
-                        reply = .installCancelled(wasRunning: wasCancelled)
+                        reply = .cancelled(wasRunning: wasCancelled)
                     case .listDistributions:
                         reply = .distributions(await distributions())
                     case .setDefault(let requested):
@@ -186,6 +186,10 @@
                                 descriptor: nil)
                         }
                         continue
+                    case .checkUnregister, .unregister:
+                        throw .notImplemented(feature: "--unregister", phase: "06b")
+                    case .checkExport, .export:
+                        throw .notImplemented(feature: "--export", phase: "06b")
                     }
                 } catch {
                     reply = .failure(error)

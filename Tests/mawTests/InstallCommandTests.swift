@@ -164,7 +164,7 @@ import os
             throw .notImplemented(feature: "install", phase: "test")
         }
 
-        func cancelInstall() async throws(MawError) -> Bool { false }
+        func cancel() async throws(MawError) -> Bool { false }
 
         func close() {
             calls.withLock { $0.append("close") }
@@ -253,7 +253,7 @@ import os
             throw .installationCancelled(try! DistroName("Ubuntu-24.04"))
         }
 
-        func cancelInstall() async throws(MawError) -> Bool {
+        func cancel() async throws(MawError) -> Bool {
             cancelled.withLock { $0 = true }
             return true
         }
@@ -342,10 +342,10 @@ extension InstallCancellationTests {
     }
 }
 
-/// Ctrl-C as the installation ends: the daemon answers `cancelInstall` that nothing was running
+/// Ctrl-C as the installation ends: the daemon answers `cancel` that nothing was running
 /// any more, and maw reports how the installation ended, as the installation's own reply says.
 @Suite struct InstallEndedBeforeTheCancellationTests {
-    /// When the installation's reply arrives, compared with the answer to `cancelInstall`.
+    /// When the installation's reply arrives, compared with the answer to `cancel`.
     enum ReplyOrder: Sendable {
         case beforeTheAnswer
         case afterTheAnswer
@@ -379,7 +379,7 @@ extension InstallCancellationTests {
             case .beforeTheAnswer:
                 break
             case .afterTheAnswer:
-                // The answer to cancelInstall is on its way; this reply follows it.
+                // The answer to cancel is on its way; this reply follows it.
                 try? await Task.sleep(for: .milliseconds(100))
             case .never:
                 await wait { $0.released }
@@ -393,7 +393,7 @@ extension InstallCancellationTests {
                 defaultUser: "ayse", isDefault: true, milliseconds: 1)
         }
 
-        func cancelInstall() async throws(MawError) -> Bool {
+        func cancel() async throws(MawError) -> Bool {
             state.withLock { $0.cancelRequested = true }
             if order == .beforeTheAnswer {
                 // The installation's reply is on its way first.
@@ -570,7 +570,7 @@ extension InstallEndedBeforeTheCancellationTests {
                 defaultUser: "ayse", isDefault: true, milliseconds: 2_500)
         }
 
-        func cancelInstall() async throws(MawError) -> Bool { false }
+        func cancel() async throws(MawError) -> Bool { false }
         func close() {}
     }
 
@@ -699,7 +699,7 @@ extension InstallPromptTests {
 /// After Ctrl-C, a cancellation that the daemon cannot be asked for, and one that it has not
 /// answered in time, are told apart.
 @Suite struct InstallCancellationOutcomeTests {
-    /// Answers `cancelInstall` as `behavior` says.
+    /// Answers `cancel` as `behavior` says.
     final class CancellingDaemon: InstallDaemon, @unchecked Sendable {
         enum Behavior {
             /// The request fails, as when the connection is lost.
@@ -723,10 +723,10 @@ extension InstallPromptTests {
             throw .installationCancelled(try! DistroName("Ubuntu-24.04"))
         }
 
-        func cancelInstall() async throws(MawError) -> Bool {
+        func cancel() async throws(MawError) -> Bool {
             switch behavior {
             case .fails:
-                throw .daemonConnectionLost(during: "cancelInstall")
+                throw .daemonConnectionLost(during: "the cancellation")
             case .neverAnswers:
                 while !released.withLock({ $0 }) {
                     try? await Task.sleep(for: .milliseconds(10))

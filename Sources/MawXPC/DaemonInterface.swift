@@ -8,7 +8,7 @@
     /// (see `InterfaceCoding`). The client's first request on every connection is `hello`.
     public enum DaemonInterface {
         /// Incremented on every change to the messages below, their fields, or their meaning.
-        public static let version: UInt32 = 5
+        public static let version: UInt32 = 6
 
         /// The LaunchAgent label, which is also the name of the daemon's Mach service.
         public static let defaultLabel = "dev.maw.mawd"
@@ -49,9 +49,10 @@
         /// that nobody types a password for an installation that cannot start; `install`
         /// checks the same again.
         case checkInstall(distribution: String?, name: DistroName?)
-        /// Cancels this connection's installation. Replied to once its traces are removed, or once
-        /// it has finished if it had already registered the distribution.
-        case cancelInstall
+        /// Cancels this connection's installation or export. Replied to once its traces are
+        /// removed, or once it has finished if it could no longer be cancelled: an installation
+        /// that had already registered the distribution.
+        case cancel
         /// Lists every installed distribution with its machine's state, and the default. It
         /// starts no machine.
         case listDistributions
@@ -67,6 +68,23 @@
         /// the connection a watcher until it closes. A connection has at most one outstanding.
         /// It starts no machine and takes no lease.
         case watchDistributions(after: UInt64)
+        /// Checks that `name` names an installed distribution, matched without regard to case,
+        /// that no other operation holds. `maw --unregister` asks before its question, so that
+        /// the question names the stored spelling and is never asked in vain.
+        case checkUnregister(DistroName)
+        /// Stops the distribution's machine if it runs, ending its sessions, and deletes the
+        /// distribution: its directory, with the disk image and `distro.json`, and its logs.
+        /// Replied to once everything is deleted.
+        case unregister(DistroName)
+        /// Checks that `name` names an installed, stopped distribution that no other operation
+        /// holds. `maw --export` asks before it creates its file, so that a refused export
+        /// creates none.
+        case checkExport(DistroName)
+        /// Writes the distribution's root file system as an archive to the descriptor that the
+        /// message carries, which the client opened for writing. The daemon sends
+        /// `installProgress` events while it works and replies when the export has finished,
+        /// failed, or been cancelled. It cancels the export if this XPC connection closes.
+        case export(ExportRequest)
 
         /// How the request is named in error messages.
         public var displayName: String {
@@ -77,11 +95,15 @@
             case .shutdown: "the shutdown request"
             case .install: "the installation"
             case .checkInstall: "checking the installation"
-            case .cancelInstall: "cancelling the installation"
+            case .cancel: "the cancellation"
             case .listDistributions: "listing the distributions"
             case .setDefault: "setting the default distribution"
             case .terminate: "terminating the distribution"
             case .watchDistributions: "watching the distributions"
+            case .checkUnregister: "checking the removal"
+            case .unregister: "the removal"
+            case .checkExport: "checking the export"
+            case .export: "the export"
             }
         }
     }
@@ -145,19 +167,35 @@
             reason: "it is longer than sudo's limit of \(maximumPasswordBytes) bytes")
     }
 
-    /// The steps of an installation, in order. `download` and `verify` are the only ones
-    /// that a cached image skips; `verify` runs for every installation.
+    /// The steps of an installation and of an export. Each operation's steps, in order, are in
+    /// `installation` and `export`.
     public enum InstallStep: String, Codable, Equatable, Sendable, CaseIterable {
         case download
         case verify
+        /// Installation: the new disk and the provisioning machine. Export: the provisioning
+        /// machine with the distribution's disk attached.
         case prepare
         case format
         case extract
         case configure
+        /// Installation: writing the disk. Export: stopping the provisioning machine.
         case finish
         case start
+        /// Export: the root file system's check, as at a start, and its read-only mount.
+        case check
+        /// Export: writing the archive.
+        case archive
+
+        /// An installation's steps, in order. `download` and `verify` are the only ones that a
+        /// cached image skips; `verify` runs for every installation.
+        public static let installation: [InstallStep] = [
+            .download, .verify, .prepare, .format, .extract, .configure, .finish, .start,
+        ]
+        /// An export's steps, in order.
+        public static let export: [InstallStep] = [.prepare, .check, .archive, .finish]
     }
 
+    /// The progress of an installation or an export.
     public enum InstallProgress: Codable, Equatable, Sendable {
         case started(InstallStep)
         case finished(InstallStep, milliseconds: UInt64)
@@ -214,10 +252,10 @@
         case installed(InstallSummary)
         /// The reply to `checkInstall`: nothing known prevents the installation.
         case installPossible
-        /// The reply to `cancelInstall`. `wasRunning` is true if an installation was stopped and
-        /// its traces removed, and false if nothing was being installed or the installation had
+        /// The reply to `cancel`. `wasRunning` is true if an installation or an export was stopped
+        /// and its traces removed, and false if nothing was running or the installation had
         /// already registered the distribution and finished.
-        case installCancelled(wasRunning: Bool)
+        case cancelled(wasRunning: Bool)
         /// The reply to `listDistributions`.
         case distributions(DistributionList)
         /// The reply to `setDefault`, with the stored spelling of the name.
@@ -226,6 +264,14 @@
         case terminated(TerminateSummary)
         /// The reply to `watchDistributions`.
         case distributionSnapshot(DistributionSnapshot)
+        /// The reply to `checkUnregister`, with the stored spelling of the name.
+        case unregisterPossible(DistroName)
+        /// The reply to `unregister`, once the distribution is deleted.
+        case unregistered(UnregisterSummary)
+        /// The reply to `checkExport`, with the stored spelling of the name.
+        case exportPossible(DistroName)
+        /// The reply to `export`, once the archive is complete.
+        case exported(ExportSummary)
         case failure(MawError)
     }
 
@@ -233,7 +279,7 @@
     public enum DaemonEvent: Codable, Equatable, Sendable {
         /// The session's machine stopped. The guest agent connection closes with it.
         case sessionEnded(SessionEnded)
-        /// The installation that this connection requested moved on.
+        /// The installation or the export that this connection requested moved on.
         case installProgress(InstallProgress)
     }
 
@@ -431,6 +477,52 @@
             self.state = state
             self.defaultUser = defaultUser
             self.diskImagePath = diskImagePath
+        }
+    }
+
+    /// The reply to `unregister`.
+    public struct UnregisterSummary: Codable, Equatable, Sendable {
+        /// The stored spelling of the removed distribution.
+        public var name: DistroName
+        /// The new default distribution, when the removed one was the default and another is
+        /// installed; `nil` when the default did not change or nothing is installed any more.
+        public var newDefault: DistroName?
+        /// The sessions that ended with the machine.
+        public var endedSessions: Int
+
+        public init(name: DistroName, newDefault: DistroName?, endedSessions: Int) {
+            self.name = name
+            self.newDefault = newDefault
+            self.endedSessions = endedSessions
+        }
+    }
+
+    /// What `export` exports. The archive's descriptor travels next to the body.
+    public struct ExportRequest: Codable, Equatable, Sendable {
+        /// The distribution, matched without regard to case.
+        public var name: DistroName
+        public var format: ArchiveFormat
+
+        public init(name: DistroName, format: ArchiveFormat) {
+            self.name = name
+            self.format = format
+        }
+    }
+
+    /// The reply to `export`.
+    public struct ExportSummary: Codable, Equatable, Sendable {
+        /// The stored spelling of the exported distribution.
+        public var name: DistroName
+        public var format: ArchiveFormat
+        /// The bytes written to the descriptor: the archive's size.
+        public var bytes: UInt64
+        public var milliseconds: UInt64
+
+        public init(name: DistroName, format: ArchiveFormat, bytes: UInt64, milliseconds: UInt64) {
+            self.name = name
+            self.format = format
+            self.bytes = bytes
+            self.milliseconds = milliseconds
         }
     }
 #endif

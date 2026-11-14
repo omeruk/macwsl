@@ -23,12 +23,18 @@ import XPC
             InstallRequest(distribution: nil, user: "ayse", password: Secret("x"), locale: nil)),
         .checkInstall(distribution: "Ubuntu", name: try! DistroName("Work")),
         .checkInstall(distribution: nil, name: nil),
-        .cancelInstall,
+        .cancel,
         .listDistributions,
         .setDefault(try! DistroName("ubuntu-24.04")),
         .terminate(try! DistroName("Ubuntu-24.04")),
         .watchDistributions(after: 0),
         .watchDistributions(after: .max),
+        .checkUnregister(try! DistroName("copy")),
+        .unregister(try! DistroName("Copy")),
+        .checkExport(try! DistroName("ubuntu-24.04")),
+        .export(ExportRequest(name: try! DistroName("Ubuntu-24.04"), format: .tar)),
+        .export(ExportRequest(name: try! DistroName("Ubuntu-24.04"), format: .tarGzip)),
+        .export(ExportRequest(name: try! DistroName("Ubuntu-24.04"), format: .tarXz)),
     ]
 
     static let replies: [DaemonReply] = [
@@ -51,7 +57,7 @@ import XPC
                 name: try! DistroName("Ubuntu-24.04"), displayName: "Ubuntu 24.04 LTS",
                 defaultUser: "ayse", isDefault: true, milliseconds: 15_000)),
         .installPossible,
-        .installCancelled(wasRunning: true),
+        .cancelled(wasRunning: true),
         .shutdownComplete(ShutdownSummary(stoppedMachines: [.initramfs], endedSessions: 2)),
         .distributions(
             DistributionList(
@@ -69,6 +75,20 @@ import XPC
             DistributionSnapshot(
                 sequence: 8, distributions: [InterfaceCodingTests.runningFigures],
                 defaultDistribution: try! DistroName("Ubuntu-24.04"))),
+        .unregisterPossible(try! DistroName("Copy")),
+        .unregistered(
+            UnregisterSummary(
+                name: try! DistroName("Copy"), newDefault: try! DistroName("Ubuntu-24.04"),
+                endedSessions: 1)),
+        .unregistered(
+            UnregisterSummary(name: try! DistroName("Copy"), newDefault: nil, endedSessions: 0)),
+        .exportPossible(try! DistroName("Ubuntu-24.04")),
+        .exported(
+            ExportSummary(
+                name: try! DistroName("Ubuntu-24.04"), format: .tarXz, bytes: 1_300_000_000,
+                milliseconds: 9_800)),
+        .failure(.distributionBusy(try! DistroName("Copy"), operation: .removal)),
+        .failure(.distributionRunning(try! DistroName("Ubuntu-24.04"))),
         .failure(.virtualizationEntitlementMissing),
         .failure(.distributionNotInstalled(try! DistroName("Ubuntu"))),
     ]
@@ -78,6 +98,8 @@ import XPC
             SessionEnded(sessionID: 7, machine: .initramfs, reason: "maw --shutdown was run")),
         .installProgress(.started(.extract)),
         .installProgress(.finished(.extract, milliseconds: 5_512)),
+        .installProgress(.started(.check)),
+        .installProgress(.finished(.archive, milliseconds: 9_100)),
         .installProgress(
             .download(
                 DownloadProgress(
@@ -120,8 +142,19 @@ import XPC
         #expect(try InterfaceCoding.decode(DaemonEvent.self, from: message, as: .client) == event)
     }
 
-    @Test func isInterfaceVersion5() {
-        #expect(DaemonInterface.version == 5)
+    @Test func isInterfaceVersion6() {
+        #expect(DaemonInterface.version == 6)
+    }
+
+    /// The installation's steps are unchanged, and an export has steps of its own.
+    @Test func ordersEachOperationsSteps() {
+        #expect(
+            InstallStep.installation.map(\.rawValue) == [
+                "download", "verify", "prepare", "format", "extract", "configure", "finish",
+                "start",
+            ])
+        #expect(InstallStep.export == [.prepare, .check, .archive, .finish])
+        #expect(Set(InstallStep.installation + InstallStep.export) == Set(InstallStep.allCases))
     }
 
     /// A running distribution with every figure.
@@ -153,6 +186,13 @@ import XPC
         #expect(DaemonRequest.terminate(name).displayName == "terminating the distribution")
         #expect(
             DaemonRequest.watchDistributions(after: 0).displayName == "watching the distributions")
+        #expect(DaemonRequest.checkUnregister(name).displayName == "checking the removal")
+        #expect(DaemonRequest.unregister(name).displayName == "the removal")
+        #expect(DaemonRequest.checkExport(name).displayName == "checking the export")
+        #expect(
+            DaemonRequest.export(ExportRequest(name: name, format: .tar)).displayName
+                == "the export")
+        #expect(DaemonRequest.cancel.displayName == "the cancellation")
     }
 
     /// The states travel as their names, so that the terminal app and later versions can read
@@ -237,6 +277,32 @@ import XPC
         byte = 0
         #expect(read(fds[0], &byte, 1) == 1)
         #expect(byte == 42)
+    }
+
+    /// An export request carries the client's descriptor of the archive, which the daemon
+    /// writes: the duplicate it receives writes into the client's file.
+    @Test func carriesTheArchiveDescriptorOfAnExport() throws {
+        var fds: [Int32] = [-1, -1]
+        try #require(pipe(&fds) == 0)
+        defer {
+            close(fds[0])
+            close(fds[1])
+        }
+        let request = DaemonRequest.export(
+            ExportRequest(name: try DistroName("Ubuntu-24.04"), format: .tarGzip))
+        let message = try InterfaceCoding.encode(request, descriptor: fds[1])
+        #expect(
+            try InterfaceCoding.decode(DaemonRequest.self, from: message, as: .daemon) == request)
+        let received = try #require(try InterfaceCoding.descriptor(in: message))
+        #expect(received.rawValue != fds[1], "The message must hold a duplicate.")
+        #expect(fcntl(received.rawValue, F_GETFD) & FD_CLOEXEC != 0)
+        #expect(fcntl(received.rawValue, F_GETFL) & O_ACCMODE == O_WRONLY)
+
+        var byte: UInt8 = 7
+        #expect(write(received.rawValue, &byte, 1) == 1)
+        byte = 0
+        #expect(read(fds[0], &byte, 1) == 1)
+        #expect(byte == 7)
     }
 
     @Test func hasNoDescriptorUnlessOneWasAdded() throws {
