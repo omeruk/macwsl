@@ -64,6 +64,9 @@
         private let log: DaemonLog
         private let activityChanged: @Sendable (Bool) -> Void
         private let stateChanged: @Sendable () -> Void
+        /// The names that installations, exports, and removals hold. A distribution whose name an
+        /// export or a removal holds does not start.
+        private let operations: DistributionOperations?
         private var slots: [MachineID: Slot] = [:]
         private var nextLeaseID: UInt64 = 1
         /// Leases whose agent connection is being opened. If their machine stops meanwhile,
@@ -74,13 +77,16 @@
         ///   - activityChanged: Called with whether any machine is starting, running, or
         ///     stopping, whenever that may have changed.
         ///   - stateChanged: Called after every change of a machine's state.
+        ///   - operations: The names that other operations hold.
         public init(
             clock: C, idleTimeout: Duration = DaemonTimeouts.machineIdle,
             log: DaemonLog = DaemonLog(),
             factory: @escaping MachineFactory,
             activityChanged: @escaping @Sendable (Bool) -> Void = { _ in },
-            stateChanged: @escaping @Sendable () -> Void = {}
+            stateChanged: @escaping @Sendable () -> Void = {},
+            operations: DistributionOperations? = nil
         ) {
+            self.operations = operations
             self.clock = clock
             self.idleTimeout = idleTimeout
             self.factory = factory
@@ -127,8 +133,19 @@
         /// Starts `machine` if it is not running, and returns once it runs. Without a session,
         /// it stops after the idle timeout as usual. The installer uses this for a new
         /// distribution's first boot.
+        ///
+        /// While an export or a removal holds the distribution's name, it throws
+        /// `distributionBusy`, also for a machine that runs, so that no new session reaches a
+        /// distribution being removed. The check and a start that it allows happen in one turn of
+        /// the actor, so that an operation that claims the name and then finds the machine
+        /// stopped knows that no start can follow.
         public func start(_ machine: MachineID) async throws(MawError) {
             while true {
+                if case .distribution(let name) = machine,
+                    let operation = operations?.operation(on: name), operation != .install
+                {
+                    throw .distributionBusy(name, operation: operation)
+                }
                 switch slots[machine, default: Slot()].state {
                 case .stopped:
                     try beginStart(machine)
@@ -337,6 +354,11 @@
         }
 
         // MARK: Status
+
+        /// Whether `machine` is stopped: not starting, running, or stopping.
+        public func isStopped(_ machine: MachineID) -> Bool {
+            if case .stopped = slots[machine]?.state ?? .stopped { true } else { false }
+        }
 
         /// Every machine that is not stopped, by name.
         public func status() -> [MachineStatus] {

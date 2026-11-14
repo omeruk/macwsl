@@ -85,9 +85,9 @@
         private let startMachine: @Sendable (MachineID) async throws(MawError) -> Void
         private let makeMACAddress: @Sendable () -> String
         private let log: DaemonLog
-        /// The names of the installations in progress, in lowercase: APFS ignores case, so
-        /// `Twin` and `twin` would end in the same directory.
-        private var active: Set<String> = []
+        /// The names that installations, exports, and removals hold, compared in lowercase:
+        /// APFS ignores case, so `Twin` and `twin` would end in the same directory.
+        private let operations: DistributionOperations
         /// The SHA-256 of every image being downloaded.
         private var downloadingImages: Set<String> = []
 
@@ -97,8 +97,10 @@
             freeSpace: @escaping FreeSpaceProbe,
             startMachine: @escaping @Sendable (MachineID) async throws(MawError) -> Void,
             makeMACAddress: @escaping @Sendable () -> String,
+            operations: DistributionOperations = DistributionOperations(),
             log: DaemonLog = DaemonLog()
         ) {
+            self.operations = operations
             self.catalog = catalog
             self.store = store
             self.images = images
@@ -119,10 +121,9 @@
             let user = try UserName(request.user, reservedNames: entry.reservedNames)
             try Self.checkPassword(request.password)
 
-            let key = name.rawValue.lowercased()
             let staging = store.stagingDirectory(for: name)
-            active.insert(key)
-            defer { active.remove(key) }
+            let claim = try operations.claim(name, for: .install)
+            defer { operations.release(claim) }
             log.notice("\(name): installation started for user \(user)")
 
             let isDefault: Bool
@@ -193,9 +194,8 @@
             guard !store.isInstalled(name) else {
                 throw .distributionAlreadyInstalled(name)
             }
-            guard !active.contains(name.rawValue.lowercased()) else {
-                throw .installationInProgress(name)
-            }
+            // Another installation of the name, or a removal that has not finished.
+            try operations.check(name, for: .install)
             if let leftover = store.leftoverEntry(for: name) {
                 throw .distributionDirectoryExists(path: leftover.path(percentEncoded: false))
             }
