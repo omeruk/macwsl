@@ -67,7 +67,8 @@ import Testing
         let error = MawError.distributionRunning(Self.name)
         #expect(
             error.errorDescription
-                == "Ubuntu-24.04 runs, and a running distribution cannot be exported.")
+                == "Ubuntu-24.04 is not stopped; only a stopped distribution can be exported."
+        )
         #expect(error.recoverySuggestion?.contains("maw --terminate Ubuntu-24.04") == true)
     }
 

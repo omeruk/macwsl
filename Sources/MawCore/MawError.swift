@@ -81,7 +81,8 @@ public enum MawError: Error, Equatable, Sendable, Codable {
 
     /// A request names a distribution that `operation` holds, such as `maw --export`.
     case distributionBusy(DistroName, operation: DistributionOperation)
-    /// `maw --export` names a distribution whose machine is not stopped.
+    /// `maw --export` names a distribution whose machine is not stopped: it runs, starts, or
+    /// stops.
     case distributionRunning(DistroName)
     /// `maw --unregister` asked whether to delete the distribution, and the answer was not yes.
     case unregisterDeclined(DistroName)
@@ -270,7 +271,7 @@ extension MawError: LocalizedError {
         case .distributionBusy(let name, let operation):
             "\(name) is being \(operation.participle) by \(operation.command)."
         case .distributionRunning(let name):
-            "\(name) runs, and a running distribution cannot be exported."
+            "\(name) is not stopped; only a stopped distribution can be exported."
         case .unregisterDeclined(let name):
             "\(name) was not deleted, because the answer was not yes."
         case .removalFailed(let name, let reason):
@@ -467,8 +468,8 @@ extension MawError: LocalizedError {
         case .distributionBusy(_, let operation):
             "Wait until \(operation.command) has finished, then run the command again."
         case .distributionRunning(let name):
-            "Stop it with maw --terminate \(name), which ends its sessions,\n"
-                + "then run maw --export again."
+            "Stop it with maw --terminate \(name), which ends its sessions and\n"
+                + "waits for its stop, then run maw --export again."
         case .unregisterDeclined:
             nil
         case .removalFailed(let name, _):
