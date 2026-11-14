@@ -97,6 +97,10 @@ public struct MawPaths: Sendable, Equatable {
     /// have a directory of their own, so that no installation's log has the name of another
     /// file: a distribution named `install-foo` writes its console to `install-foo.log`.
     public static let installLogDirectoryName = "install"
+    /// The directory, in a logs directory, of the console logs of the machines that export
+    /// distributions. It is separate from `install`, so that an export never replaces the log
+    /// of a distribution's installation.
+    public static let exportLogDirectoryName = "export"
 
     /// `<log directory>/<machine>.log`, the console log of the machine named `machine`: a
     /// distribution's, or `initramfs`. A machine must not be named after another file in the
@@ -112,6 +116,24 @@ public struct MawPaths: Sendable, Equatable {
     public static func installLogFile(for name: DistroName, in logDirectory: URL) -> URL {
         logDirectory.appending(path: installLogDirectoryName, directoryHint: .isDirectory)
             .appending(path: "\(name.rawValue).log", directoryHint: .notDirectory)
+    }
+
+    /// `<log directory>/export/<name>.log`, the console of the machine that exported the
+    /// distribution `name` last.
+    public static func exportLogFile(for name: DistroName, in logDirectory: URL) -> URL {
+        logDirectory.appending(path: exportLogDirectoryName, directoryHint: .isDirectory)
+            .appending(path: "\(name.rawValue).log", directoryHint: .notDirectory)
+    }
+
+    /// Every log that belongs to the distribution `name` alone, which `maw --unregister`
+    /// deletes: its console log, its provisioning log, and the console log of its last
+    /// export. `Installer.reservedNames` keeps the first from being one of maw's own logs.
+    public static func distributionLogFiles(for name: DistroName, in logDirectory: URL) -> [URL] {
+        [
+            consoleLogFile(forMachineNamed: name.rawValue, in: logDirectory),
+            installLogFile(for: name, in: logDirectory),
+            exportLogFile(for: name, in: logDirectory),
+        ]
     }
 
     /// `~/Library/Application Support/maw/kernel`, holding the guest kernel and initramfs.
