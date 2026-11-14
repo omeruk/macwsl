@@ -140,6 +140,25 @@
         public func setDefaultDistribution(_ name: DistroName) throws(MawError) {
             var state = readState()
             state.defaultDistribution = name
+            try writeState(state)
+        }
+
+        /// Clears the default that `state.json` records if it names `name`, compared without
+        /// regard to case, so that a later distribution of that name does not become the default
+        /// by accident. Returns whether it did.
+        @discardableResult
+        public func clearDefaultDistribution(ifItNames name: DistroName) throws(MawError) -> Bool {
+            var state = readState()
+            guard let recorded = state.defaultDistribution,
+                recorded.rawValue.lowercased() == name.rawValue.lowercased()
+            else { return false }
+            state.defaultDistribution = nil
+            try writeState(state)
+            return true
+        }
+
+        /// Writes `state.json` atomically.
+        private func writeState(_ state: State) throws(MawError) {
             do {
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

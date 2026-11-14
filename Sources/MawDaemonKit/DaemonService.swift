@@ -14,6 +14,8 @@
         static var shutdownReason: String { "maw --shutdown was run" }
         /// Why sessions end on `terminate`; shown to their clients.
         static var terminateReason: String { "maw --terminate was run" }
+        /// Why sessions end on `unregister`; shown to their clients.
+        static var unregisterReason: String { "maw --unregister was run" }
 
         public let registry: MachineRegistry<C>
         public let lifetime: DaemonLifetime<C>
@@ -22,6 +24,12 @@
         public let installer: Installer?
         /// Samples the figures for `watchDistributions`.
         public let sampler: FigureSampler<C>?
+        /// The names that installations, exports, and removals hold, shared with the installer
+        /// and the registry.
+        public let operations: DistributionOperations
+        /// Where the machines' console logs are, whose distribution logs a removal deletes.
+        /// `nil` in unit tests that have none.
+        private let logDirectory: URL?
         private let clock: C
         private let started: C.Instant
         private let info: DaemonInfo
@@ -37,9 +45,12 @@
             clock: C, registry: MachineRegistry<C>, lifetime: DaemonLifetime<C>,
             canRunVirtualMachines: Bool, store: DistributionStore? = nil,
             installer: Installer? = nil, sampler: FigureSampler<C>? = nil,
-            log: DaemonLog = DaemonLog()
+            operations: DistributionOperations = DistributionOperations(),
+            logDirectory: URL? = nil, log: DaemonLog = DaemonLog()
         ) {
             self.clock = clock
+            self.operations = operations
+            self.logDirectory = logDirectory
             self.sampler = sampler
             self.registry = registry
             self.lifetime = lifetime
@@ -148,12 +159,15 @@
                         reply = .distributions(await distributions())
                     case .setDefault(let requested):
                         let name = try installedName(requested)
+                        try refuseDuringRemoval(name)
                         try store?.setDefaultDistribution(name)
                         await sampler?.distributionsChanged()
                         log.notice("process \(processID) made \(name) the default distribution")
                         reply = .defaultSet(name)
                     case .terminate(let requested):
-                        let machine = MachineID.distribution(try installedName(requested))
+                        let name = try installedName(requested)
+                        try refuseDuringRemoval(name)
+                        let machine = MachineID.distribution(name)
                         log.notice("\(machine): terminate requested by process \(processID)")
                         reply = .terminated(
                             await registry.terminate(machine, reason: Self.terminateReason))
@@ -186,8 +200,12 @@
                                 descriptor: nil)
                         }
                         continue
-                    case .checkUnregister, .unregister:
-                        throw .notImplemented(feature: "--unregister", phase: "06b")
+                    case .checkUnregister(let requested):
+                        let name = try installedName(requested)
+                        try operations.check(name, for: .removal)
+                        reply = .unregisterPossible(name)
+                    case .unregister(let requested):
+                        reply = .unregistered(try await unregister(requested, for: processID))
                     case .checkExport, .export:
                         throw .notImplemented(feature: "--export", phase: "06b")
                     }
@@ -243,6 +261,83 @@
                 throw .distributionNotInstalled(name)
             }
             return metadata.name
+        }
+
+        /// Throws `distributionBusy` while a removal holds `name`: every request that names a
+        /// distribution being removed fails until the removal is done.
+        private func refuseDuringRemoval(_ name: DistroName) throws(MawError) {
+            if operations.operation(on: name) == .removal {
+                throw .distributionBusy(name, operation: .removal)
+            }
+        }
+
+        // MARK: Removal
+
+        /// Removes the installed distribution that `requested` names (docs/daemon.md,
+        /// "Removing a distribution"): stops its machine, ending its sessions with
+        /// `unregisterReason`, moves its directory into the staging directory, which is the
+        /// moment it stops being installed, clears the default if `state.json` names it,
+        /// deletes its logs, and then the moved directory. Nothing after the move is undone or
+        /// interrupted; a directory that the daemon could not delete is removed at its next
+        /// start.
+        func unregister(_ requested: DistroName, for processID: Int32) async throws(MawError)
+            -> UnregisterSummary
+        {
+            let name = try installedName(requested)
+            guard let store else { throw .distributionNotInstalled(requested) }
+            let claim = try operations.claim(name, for: .removal)
+            defer { operations.release(claim) }
+            log.notice("\(name): removal requested by process \(processID)")
+            let defaultBefore = store.defaultDistribution()
+
+            let machine = MachineID.distribution(name)
+            let stopped = await registry.terminate(machine, reason: Self.unregisterReason)
+            let moved: URL
+            do throws(MawError) {
+                moved = try store.moveForRemoval(name)
+            } catch {
+                log.error("\(name): removal for process \(processID) failed: \(error.description)")
+                throw error
+            }
+            // From here on the distribution is not installed.
+            do throws(MawError) {
+                try store.clearDefaultDistribution(ifItNames: name)
+            } catch {
+                log.error("\(name): the default could not be cleared: \(error.description)")
+            }
+            if let logDirectory {
+                for file in MawPaths.distributionLogFiles(for: name, in: logDirectory) {
+                    removeLog(file, of: name)
+                }
+            }
+            store.removeStagingDirectory(moved)
+            let leftOver = FileManager.default.fileExists(atPath: moved.path(percentEncoded: false))
+            await sampler?.distributionsChanged()
+
+            let defaultAfter = store.defaultDistribution()
+            let newDefault = defaultBefore == name ? defaultAfter : nil
+            log.notice(
+                "\(name): removed for process \(processID); "
+                    + (stopped.wasRunning
+                        ? "its machine was stopped and \(stopped.endedSessions) "
+                            + (stopped.endedSessions == 1 ? "session" : "sessions") + " ended"
+                        : "its machine was not running")
+                    + (leftOver ? "; \(moved.lastPathComponent) is removed at the next start" : "")
+                    + (newDefault.map { "; \($0) is now the default" } ?? ""))
+            return UnregisterSummary(
+                name: name, newDefault: newDefault, endedSessions: stopped.endedSessions)
+        }
+
+        /// Deletes one of a removed distribution's logs. A log that does not exist is not an
+        /// error; one that cannot be deleted is logged and left.
+        private func removeLog(_ file: URL, of name: DistroName) {
+            let path = file.path(percentEncoded: false)
+            guard unlink(path) == 0 || errno == ENOENT else {
+                log.error(
+                    "\(name): \(file.lastPathComponent) could not be deleted: "
+                        + SystemError("unlink").description)
+                return
+            }
         }
 
         /// Every installed distribution with its machine's state, and the default.

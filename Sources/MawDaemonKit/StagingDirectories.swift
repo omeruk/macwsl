@@ -57,9 +57,47 @@
             _ = Self.removeEntry(leaf, in: directory.descriptor)
         }
 
-        /// Removes this daemon's staging directories that an interrupted installation left
-        /// behind, and nothing of any other label's. Returns their names. Call it only while
-        /// this daemon's lock is held, before any installation starts.
+        /// The ending of the name under which a removal moves a distribution's directory into the
+        /// staging directory: `<name>-<id>.removed`.
+        public static let removalSuffix = ".removed"
+
+        /// Moves `distros/<name>` into this daemon's staging directory, as
+        /// `<name>-<id>.removed`, and returns its new place. From then on the distribution is not
+        /// installed, and what remains is a staging directory, which
+        /// `removeStagingDirectory(_:)` deletes, or `removeStagingLeftovers()` at the daemon's
+        /// next start if the daemon stops first.
+        ///
+        /// The rename stays within `distros/`, one volume, so it happens at once or not at all.
+        /// It does not follow a symbolic link at `distros/<name>`: such a link is moved, and
+        /// later deleted, as a link, and what it points to stays. Throws `removalFailed` with
+        /// nothing moved.
+        public func moveForRemoval(_ name: DistroName, id: UUID = UUID()) throws(MawError) -> URL {
+            let leaf = "\(name.rawValue)-\(id.uuidString)\(Self.removalSuffix)"
+            let distros = Self.openDistros(paths)
+            guard distros >= 0 else {
+                throw .removalFailed(
+                    name,
+                    reason: SystemError(
+                        "open \(paths.distrosDirectory.path(percentEncoded: false))"
+                    )
+                    .description)
+            }
+            defer { close(distros) }
+            let directory = openLabelDirectory(create: true)
+            guard directory.descriptor >= 0 else {
+                throw .removalFailed(name, reason: directory.reason)
+            }
+            defer { close(directory.descriptor) }
+            guard renameat(distros, name.rawValue, directory.descriptor, leaf) == 0 else {
+                throw .removalFailed(name, reason: SystemError("rename").description)
+            }
+            return paths.stagingDirectory(label: daemonLabel).appending(
+                path: leaf, directoryHint: .isDirectory)
+        }
+
+        /// Removes this daemon's staging directories that an interrupted installation or
+        /// removal left behind, and nothing of any other label's. Returns their names. Call it
+        /// only while this daemon's lock is held, before any installation or removal starts.
         @discardableResult
         public func removeStagingLeftovers() -> [String] {
             let directory = openLabelDirectory(create: false)

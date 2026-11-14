@@ -20,18 +20,26 @@ import Testing
         private let task: Task<Void, Never>
         private let follower: Task<Void, Never>
 
-        init(factory: FakeFactory = FakeFactory(), store: DistributionStore? = nil) {
+        let operations: DistributionOperations
+
+        init(
+            factory: FakeFactory = FakeFactory(), store: DistributionStore? = nil,
+            operations: DistributionOperations = DistributionOperations(),
+            logDirectory: URL? = nil
+        ) {
             self.factory = factory
+            self.operations = operations
             let (changes, continuation) = AsyncStream.makeStream(of: Void.self)
             registry = MachineRegistry(
                 clock: clock, log: lines.log, factory: factory.factory,
-                stateChanged: { continuation.yield() })
+                stateChanged: { continuation.yield() }, operations: operations)
             sampler = FigureSampler(
                 clock: clock, registry: registry, store: store, processes: FakeProcessTable([]))
             service = DaemonService(
                 clock: clock, registry: registry,
                 lifetime: DaemonLifetime(clock: clock) {}, canRunVirtualMachines: true,
-                store: store, sampler: sampler, log: lines.log)
+                store: store, sampler: sampler, operations: operations,
+                logDirectory: logDirectory, log: lines.log)
             task = Task { [service, listener] in await service.serve(listener) }
             follower = Task { [sampler] in
                 for await _ in changes {
