@@ -237,7 +237,8 @@ struct RemovalAndExportIntegrationTests {
     }
 
     /// The format follows the extension as `tar -a` does, and `--format` wins over it; each
-    /// archive is read back by `/usr/bin/tar` with the same entries as the uncompressed one.
+    /// archive is listed by `/usr/bin/tar` with the same entries, modes, owners, sizes, and link
+    /// targets as the uncompressed one.
     @Test func exportsEachFormat() async throws {
         let name = maw.distribution
         try expectQuietSuccess(try await maw.run(["--terminate", name]))
@@ -424,20 +425,34 @@ struct RemovalAndExportIntegrationTests {
         chmod 4755 "$d/setuid"
         printf 'linked\\n' > "$d/first"
         ln "$d/first" "$d/second"
-        printf 'non-ASCII\\n' > "$d/\(nonASCIIName)"
         ln -s owned "$d/symlink"
         mkfifo "$d/fifo"
         printf 'xattr\\n' > "$d/xattr"
         python3 - <<'PYTHON'
         import os
-        os.setxattr("/srv/maw-export/xattr", "user.maw", "çğı".encode())
+        # Escapes, not the characters themselves: Foundation's Process passes the command line
+        # in decomposed form (NFD), and the archive must be checked byte for byte.
+        with open("/srv/maw-export/\(nonASCIIEscaped)", "w") as f:
+            f.write("non-ASCII\\n")
+        os.setxattr("/srv/maw-export/xattr", "user.maw", "\(valueEscaped)".encode())
         os.setxattr("/srv/maw-export/xattr", "trusted.maw", bytes([0, 1, 2, 255]))
         PYTHON
         sync
         echo 'fixtures ready'
         """
 
+    /// A name with Turkish letters, composed (NFC), and the value of `user.maw`.
     static let nonASCIIName = "çğıöşü ÇĞİÖŞÜ.txt"
+    static let value = "çğı"
+
+    /// `text` with every non-ASCII scalar as a Python `\\uXXXX` escape.
+    static func pythonEscaped(_ text: String) -> String {
+        text.unicodeScalars.map {
+            $0.isASCII ? String($0) : String(format: "\\u%04x", $0.value)
+        }.joined()
+    }
+    static let nonASCIIEscaped = pythonEscaped(nonASCIIName)
+    static let valueEscaped = pythonEscaped(value)
 
     /// An access ACL on a file and a default ACL on a directory, each granting user 1234, in
     /// the kernel's `posix_acl_xattr` encoding, and a user attribute beside each.
@@ -485,13 +500,18 @@ struct RemovalAndExportIntegrationTests {
         #expect(link.linkPath.replacing(/^\.\//, with: "") == target.path, "\(link)")
         #expect(try PaxArchiveEntry.contents(of: target, in: archive) == Data("linked\n".utf8))
 
-        let nonASCII = try #require(entries["\(d)/\(Self.nonASCIIName)"], "the non-ASCII name")
+        // Byte for byte: String's equality would also match the decomposed spelling.
+        let nonASCII = try #require(
+            entries.values.first {
+                Array($0.path.utf8) == Array("\(d)/\(Self.nonASCIIName)".utf8)
+            }, "the non-ASCII name, composed")
         #expect(try PaxArchiveEntry.contents(of: nonASCII, in: archive) == Data("non-ASCII\n".utf8))
         let symlink = try #require(entries["\(d)/symlink"])
         #expect(symlink.isSymbolicLink && symlink.linkPath == "owned", "\(symlink)")
         #expect(entries["\(d)/fifo"]?.isFIFO == true)
         let xattr = try #require(entries["\(d)/xattr"])
-        #expect(xattr.extendedAttribute("user.maw") == Data("çğı".utf8), "\(xattr.records.keys)")
+        #expect(
+            xattr.extendedAttribute("user.maw") == Data(Self.value.utf8), "\(xattr.records.keys)")
         #expect(
             xattr.extendedAttribute("trusted.maw") == Data([0, 1, 2, 255]), "\(xattr.records.keys)")
     }
@@ -567,11 +587,12 @@ struct RemovalAndExportIntegrationTests {
         return (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
     }
 
-    /// The entries' names that `/usr/bin/tar -t` lists, which detects the compression itself.
+    /// The lines of `/usr/bin/tar -t -v --numeric-owner`, which detects the compression itself:
+    /// each entry's mode, owner, group, size, time, name, and link target.
     private func listedNames(of archive: URL) async throws -> [String] {
         let list = try DebugBootProcess(
             executable: URL(filePath: "/usr/bin/tar"),
-            arguments: ["-t", "-f", archive.path(percentEncoded: false)],
+            arguments: ["-t", "-v", "--numeric-owner", "-f", archive.path(percentEncoded: false)],
             separateStandardError: true)
         let result = await list.waitForExit(timeout: .seconds(900))
         try #require(result.status == 0, "\(result.standardError)")
