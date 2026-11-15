@@ -266,6 +266,34 @@ final class FakeExportingMachine: ExportingMachine, @unchecked Sendable {
         #expect(operations.operation(on: Self.copy) == nil)
     }
 
+    /// Once the archive is complete, a machine that does not stop cleanly, or a cancellation
+    /// while it stops, does not fail the export: the client keeps its complete file.
+    @Test(arguments: ["fails", "cancelled"])
+    func keepsACompleteArchiveWhenTheLastStepFails(_ how: String) async throws {
+        let pipe = try DrainedPipe()
+        let destination = OwnedDescriptor(dup(pipe.writer.rawValue))
+        pipe.writer.close()
+        if how == "fails" {
+            machine.failingStep = "finish"
+        } else {
+            machine.heldStep = "finish"
+        }
+        let exporter = self.exporter
+        let task = Task {
+            try await exporter.export(
+                ExportRequest(name: Self.copy, format: .tar), to: destination, for: 1
+            ) { _ in }
+        }
+        if how == "cancelled" {
+            try await eventually("the last step") { machine.calls.contains("finish") }
+            task.cancel()
+        }
+        #expect(try await task.value.bytes == 12)
+        #expect(try await pipe.bytes() == Array("first second".utf8))
+        #expect(machine.calls.last == "discard")
+        #expect(operations.operation(on: Self.copy) == nil)
+    }
+
     @Test func reportsAReaderThatClosedThePipe() async throws {
         ignoreSIGPIPE()
         var fds: [Int32] = [-1, -1]

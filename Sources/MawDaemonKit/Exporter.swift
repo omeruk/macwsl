@@ -173,15 +173,24 @@
                     }
                     return outcome.bytes
                 }
-                try checkCancellation(name)
-                try await timed(.finish, progress: progress) { () throws(MawError) in
-                    try await machine.finish()
-                }
             } catch {
                 output.abort()
                 _ = await output.finish()
                 await machine.discard()
                 throw error
+            }
+            // The archive is complete and its descriptor closed. A cancellation from here on, or a
+            // machine that does not stop cleanly, does not undo it: the disk was mounted
+            // read-only, so stopping the machine at once loses nothing.
+            do throws(MawError) {
+                try await timed(.finish, progress: progress) { () throws(MawError) in
+                    try await machine.finish()
+                }
+            } catch {
+                log.error(
+                    "\(name): the export's machine did not stop cleanly, and was stopped at once: "
+                        + error.description)
+                await machine.discard()
             }
             return bytes
         }
