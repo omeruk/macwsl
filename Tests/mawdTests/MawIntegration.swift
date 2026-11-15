@@ -4,6 +4,7 @@ import MawCore
 import MawProtocol
 import MawTestSupport
 import Testing
+import os
 
 /// What scripts/integration-test.sh sets up for the tests that run `maw`: a daemon of its own,
 /// an image cache of its own, and a test distribution installed from the cached image.
@@ -19,6 +20,7 @@ import Testing
 /// | `MAW_TEST_USER`, `MAW_TEST_PASSWORD` | its user and that user's password |
 /// | `MAW_TEST_IMAGE_CACHE` | the test daemon's image cache |
 /// | `MAW_TEST_PREFIX` | the prefix of every distribution this run may create; the script removes them all at the end |
+/// | `MAW_TEST_EXPORT_DIRECTORY` | where the tests write archives; each test deletes its own, and the script fails the run if any is left |
 struct MawIntegration: Sendable {
     static let environment = ProcessInfo.processInfo.environment
     static let isEnabled = environment["MAW_INTEGRATION"] == "1"
@@ -32,6 +34,7 @@ struct MawIntegration: Sendable {
     let password: String
     let imageCache: URL
     let prefix: String
+    let exportDirectory: URL
     let paths = MawPaths()
 
     init() throws {
@@ -53,6 +56,13 @@ struct MawIntegration: Sendable {
             filePath: try #require(environment["MAW_TEST_IMAGE_CACHE"]), directoryHint: .isDirectory
         )
         prefix = try #require(environment["MAW_TEST_PREFIX"])
+        try #require(
+            Self.isRunPrefix(prefix), "MAW_TEST_PREFIX must have the form maw-it-<seconds>.")
+        exportDirectory = URL(
+            filePath: try #require(environment["MAW_TEST_EXPORT_DIRECTORY"]),
+            directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: exportDirectory, withIntermediateDirectories: true)
     }
 
     /// The host name the distribution has, as the installer derives it from its name.
@@ -109,23 +119,156 @@ struct MawIntegration: Sendable {
             columns: columns, collectsOutput: collectsOutput)
     }
 
-    /// Installs a distribution under `name` for the test user, without a terminal.
+    /// Installs a distribution under `name` for the test user, without a terminal. A name under
+    /// `prefix` that is not installed yet becomes one that this process created, which
+    /// `unregister` may remove.
     func install(_ name: String) throws -> DebugBootProcess {
-        try start(
+        let directory = paths.distroDirectory(for: try DistroName(name))
+        if name.hasPrefix("\(prefix)-"), name != distribution,
+            !FileManager.default.fileExists(atPath: directory.path(percentEncoded: false))
+        {
+            Self.created.insert(name)
+        }
+        return try start(
             ["--install", "--name", name, "-u", user], standardInput: Data("\(password)\n".utf8))
     }
 
-    /// Removes a distribution that a test created: stops its machine with `maw --terminate`, which
-    /// leaves every other machine running, and deletes its directory, as the README describes for
-    /// users until phase 06b.
+    // MARK: Removing distributions
+
+    /// The names that this process installed under `prefix`, the only ones that `unregister`
+    /// and `remove` act on. The test daemon shares the owner's `distros/` directory, so a wrong
+    /// name in an `--unregister` would delete one of the owner's distributions.
+    static let created = CreatedNames()
+
+    final class CreatedNames: Sendable {
+        private let names = OSAllocatedUnfairLock(initialState: Set<String>())
+
+        func insert(_ name: String) {
+            names.withLock { _ = $0.insert(name) }
+        }
+
+        var all: Set<String> { names.withLock { $0 } }
+    }
+
+    /// Whether `prefix` has the form that scripts/integration-test.sh gives it,
+    /// `maw-it-<seconds>`, which no name the owner chose is expected to start with.
+    static func isRunPrefix(_ prefix: String) -> Bool {
+        prefix.wholeMatch(of: /maw-it-[0-9]+/) != nil
+    }
+
+    /// Why `name` may not be unregistered, or `nil` if it may: it must start with `prefix` and
+    /// a hyphen, exactly, and be one of `created`. The shared test distribution, which the
+    /// script installs, is not one of them.
+    static func unregisterRefusal(
+        of name: String, prefix: String, created: Set<String>
+    ) -> String? {
+        guard isRunPrefix(prefix) else {
+            return "the run's prefix \(prefix) does not have the form maw-it-<seconds>"
+        }
+        guard name.hasPrefix("\(prefix)-"), name.count > prefix.count + 1 else {
+            return "\(name) does not start with the run's prefix \(prefix)-"
+        }
+        guard created.contains(name) else {
+            return "\(name) was not installed by this test process"
+        }
+        return nil
+    }
+
+    /// Fails the test, without running anything, unless this process created `name`.
+    func requireMayUnregister(
+        _ name: String, sourceLocation: SourceLocation = #_sourceLocation
+    ) throws {
+        let refusal = Self.unregisterRefusal(of: name, prefix: prefix, created: Self.created.all)
+        try #require(
+            refusal == nil, "Refused to unregister: \(refusal ?? "")",
+            sourceLocation: sourceLocation)
+    }
+
+    /// `maw --unregister <name>`, with `--yes` if `yes`, for a distribution that this process
+    /// created, and nothing for any other name. Its console logs are copied first into
+    /// `unregistered/` in the log directory, where scripts/integration-test.sh still counts the
+    /// agent's starts, because the removal deletes them.
+    func unregister(
+        _ name: String, yes: Bool = false, sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws -> DebugBootProcess.Result {
+        try requireMayUnregister(name, sourceLocation: sourceLocation)
+        try keepConsoleLogs(of: name)
+        return try await run(["--unregister", name] + (yes ? ["--yes"] : []))
+    }
+
+    /// `unregister`, timed as `timed` times a command.
+    func timedUnregister(_ name: String) async throws -> (status: Int32, milliseconds: Double) {
+        try requireMayUnregister(name)
+        try keepConsoleLogs(of: name)
+        return try await timed(["--unregister", name, "--yes"])
+    }
+
+    /// Copies the distribution's console logs, those that exist, into `unregistered/`.
+    private func keepConsoleLogs(of name: String) throws {
+        let kept = logDirectory.appending(path: "unregistered", directoryHint: .isDirectory)
+        for log in MawPaths.distributionLogFiles(for: try DistroName(name), in: logDirectory) {
+            guard FileManager.default.fileExists(atPath: log.path(percentEncoded: false)) else {
+                continue
+            }
+            let relative = String(
+                log.path(percentEncoded: false).dropFirst(
+                    logDirectory.path(percentEncoded: false).count))
+            let copy = kept.appending(path: relative)
+            try FileManager.default.createDirectory(
+                at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? FileManager.default.removeItem(at: copy)
+            try FileManager.default.copyItem(at: log, to: copy)
+        }
+    }
+
+    /// Removes a distribution that this process created, with `maw --unregister --yes`. If that
+    /// fails, the failure is recorded as an issue and the distribution is removed the old way:
+    /// `maw --terminate`, and then only its directory in `distros/`. Its logs stay where the test
+    /// daemon wrote them, in the run's log directory, which the script keeps after a failure.
     func remove(_ name: String) async throws {
         let directory = paths.distroDirectory(for: try DistroName(name))
         guard FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)) else {
             return
         }
+        try requireMayUnregister(name)
+        let result = try await unregister(name, yes: true)
+        guard result.status != 0 else { return }
+        let failure =
+            "maw --unregister \(name) failed with status \(result.status): "
+            + "\(result.standardError)Removing its directory instead."
+        Issue.record(Comment(rawValue: failure))
         let terminate = try await run(["--terminate", name])
         try #require(terminate.status == 0, "\(terminate.standardError)")
-        try FileManager.default.removeItem(at: directory)
+        // Checked again right before the deletion, which is the step that cannot be undone.
+        try requireMayUnregister(name)
+        try #require(directory.lastPathComponent == name)
+        if FileManager.default.fileExists(atPath: directory.path(percentEncoded: false)) {
+            try FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    /// Installs `\(prefix)-<suffix>` and requires the installation to succeed.
+    func installed(
+        _ suffix: String, sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws -> String {
+        let name = "\(prefix)-\(suffix)"
+        let install = await (try install(name)).waitForExit(timeout: .seconds(300))
+        try #require(
+            install.status == 0, "\(install.output)\(install.standardError)",
+            sourceLocation: sourceLocation)
+        return name
+    }
+
+    // MARK: Export files
+
+    /// Runs `body` with a new directory under `exportDirectory` for its archives, and deletes
+    /// the directory and everything in it afterwards, also when `body` throws.
+    func withExportDirectory<T>(_ body: (_ directory: URL) async throws -> T) async throws -> T {
+        let directory = exportDirectory.appending(
+            path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        return try await body(directory)
     }
 
     /// Installs `\(prefix)-<suffix>` from the cached image, runs `body` with its name, and
