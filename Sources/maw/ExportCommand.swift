@@ -28,6 +28,11 @@ struct ExportCommand {
     }
     /// Whether standard output and standard error are terminals. The tests replace them.
     var outputIsTerminal: Bool = isatty(STDOUT_FILENO) == 1
+    /// Whether standard output is open for writing. The tests replace it.
+    var outputIsWritable: Bool = {
+        let flags = fcntl(STDOUT_FILENO, F_GETFL)
+        return flags >= 0 && flags & O_ACCMODE != O_RDONLY
+    }()
     var errorIsTerminal: Bool = isatty(STDERR_FILENO) == 1
     /// Where the text goes. The tests replace it.
     var output = OutputQueue()
@@ -44,6 +49,9 @@ struct ExportCommand {
     func run(signals: AsyncStream<Int32>) async throws -> Int32 {
         if file == "-", outputIsTerminal {
             throw MawError.exportToTerminal
+        }
+        if file == "-", !outputIsWritable {
+            throw MawError.exportOutputNotWritable
         }
         let client = try await connect()
         defer { client.close() }

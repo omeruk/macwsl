@@ -97,6 +97,8 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case exportFileExists(path: String)
     /// `maw --export <distro> -` was run with standard output on a terminal.
     case exportToTerminal
+    /// `maw --export <distro> -` was run with standard output closed or open only for reading.
+    case exportOutputNotWritable
     /// A step of an export failed. `step` names it.
     case exportFailed(DistroName, step: String, reason: String)
     /// The reader of an export's archive closed its end before the archive was complete, as
@@ -285,6 +287,8 @@ extension MawError: LocalizedError {
             "\(path) already exists.\nmaw --export never replaces a file."
         case .exportToTerminal:
             "maw --export - would write the archive to a terminal."
+        case .exportOutputNotWritable:
+            "Standard output is not open for writing, so maw --export - cannot use it."
         case .exportFailed(let name, let step, let reason):
             "The export of \(name) failed while \(step):\n\(reason)."
         case .exportOutputClosed(let name):
@@ -482,7 +486,7 @@ extension MawError: LocalizedError {
                 + "permissions of ~/Library/Application Support/maw/distros."
         case .exportFileExists:
             "Choose another file name, or move the existing file away first."
-        case .exportToTerminal:
+        case .exportToTerminal, .exportOutputNotWritable:
             "Redirect standard output to a file or a pipe, or give a file name instead of -."
         case .exportFailed(let name, _, _):
             "The export's console log, ~/Library/Logs/maw/export/\(name).log,\n"

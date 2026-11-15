@@ -110,6 +110,7 @@ import os
         var command = ExportCommand(name: try! DistroName("copy"), file: file, format: format)
         command.connect = { () async throws(MawError) -> any ExportDaemon in daemon }
         command.outputIsTerminal = outputIsTerminal
+        command.outputIsWritable = true
         command.errorIsTerminal = false
         command.output = OutputQueue(
             standardOutput: open("/dev/null", O_WRONLY), standardError: open(errors.path, O_WRONLY))
@@ -230,6 +231,22 @@ import os
         #expect(
             try await self.command(FakeDaemon(), file: path("u.tar"), outputIsTerminal: true)
                 .run(signals: noSignals) == 0)
+    }
+
+    /// `-` with standard output closed or open only for reading is refused before the daemon
+    /// is asked, rather than as the daemon's protocol error.
+    @Test func refusesAStandardOutputThatIsNotWritable() async throws {
+        let connected = OSAllocatedUnfairLock(initialState: false)
+        var command = command(FakeDaemon(), file: "-")
+        command.outputIsWritable = false
+        command.connect = { () async throws(MawError) -> any ExportDaemon in
+            connected.withLock { $0 = true }
+            return FakeDaemon()
+        }
+        await #expect(throws: MawError.exportOutputNotWritable) {
+            try await command.run(signals: noSignals)
+        }
+        #expect(!connected.withLock { $0 })
     }
 
     /// Ctrl-C asks the daemon to cancel, removes the file, and exits as a signal does.

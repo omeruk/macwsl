@@ -17,6 +17,7 @@ import Testing
         .removalFailed(name, reason: "Operation not permitted"),
         .exportFileExists(path: "ubuntu.tar"),
         .exportToTerminal,
+        .exportOutputNotWritable,
         .exportFailed(name, step: "checking the disk", reason: "e2fsck could not start"),
         .exportOutputClosed(name),
         .exportCancelled(name),
