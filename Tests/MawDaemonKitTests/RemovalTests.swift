@@ -65,8 +65,8 @@ extension DaemonServiceTests {
         #expect(daemon.lines.count(containing: "its machine was stopped and 1 session ended") == 1)
     }
 
-    /// The default that `state.json` records is cleared, and the reply names the new effective
-    /// default.
+    /// The default that `state.json` records is replaced by the first installed distribution,
+    /// which the reply names, so that a later installation does not take its place.
     @Test func namesTheNewDefaultWhenTheDefaultIsRemoved() async throws {
         let distros = try TemporaryStore()
         try distros.install("Alpha")
@@ -77,8 +77,14 @@ extension DaemonServiceTests {
         defer { client.close() }
 
         #expect(try await client.unregister(Self.name("zeta")).newDefault == Self.name("Alpha"))
+        #expect(try distros.recordedDefault() == "Alpha")
+        // An installation that sorts first does not become the default.
+        try distros.install("Aardvark")
+        #expect(
+            try await client.listDistributions().defaultDistribution == Self.name("Alpha"))
+        #expect(try await client.unregister(Self.name("Alpha")).newDefault == Self.name("Aardvark"))
+        #expect(try await client.unregister(Self.name("Aardvark")).newDefault == nil)
         #expect(try distros.recordedDefault() == nil)
-        #expect(try await client.unregister(Self.name("Alpha")).newDefault == nil)
         #expect(
             try await client.listDistributions()
                 == DistributionList(distributions: [], defaultDistribution: nil))
@@ -95,8 +101,9 @@ extension DaemonServiceTests {
         let client = try await daemon.connect()
         defer { client.close() }
         #expect(try await client.unregister(Self.name("Beta")).newDefault == nil)
-        #expect(try await client.unregister(Self.name("Alpha")).newDefault == Self.name("Gamma"))
         #expect(try distros.recordedDefault() == nil)
+        #expect(try await client.unregister(Self.name("Alpha")).newDefault == Self.name("Gamma"))
+        #expect(try distros.recordedDefault() == "Gamma")
     }
 
     /// The distribution's three logs go, and every other log stays, the daemon's own and
@@ -274,12 +281,29 @@ extension TemporaryStore {
         #expect(FileManager.default.fileExists(atPath: target.appending(path: "disk.img").path))
     }
 
-    @Test func clearsTheDefaultOnlyWhenItNamesTheDistribution() throws {
+    @Test func replacesTheDefaultOnlyWhenItNamesTheDistribution() throws {
         let distros = try TemporaryStore()
+        try distros.install("Beta")
         try distros.store.setDefaultDistribution(try DistroName("Alpha"))
-        #expect(try !distros.store.clearDefaultDistribution(ifItNames: try DistroName("Zeta")))
+        #expect(
+            try !distros.store.replaceDefaultDistribution(
+                removed: try DistroName("Zeta"), wasDefault: false))
         #expect(try distros.recordedDefault() == "Alpha")
-        #expect(try distros.store.clearDefaultDistribution(ifItNames: try DistroName("ALPHA")))
-        #expect(try distros.recordedDefault() == nil)
+        #expect(
+            try distros.store.replaceDefaultDistribution(
+                removed: try DistroName("ALPHA"), wasDefault: true))
+        #expect(try distros.recordedDefault() == "Beta")
+    }
+
+    /// `setDefault` checks that the distribution is installed in the same step as its write.
+    @Test func recordsOnlyAnInstalledDefault() throws {
+        let distros = try TemporaryStore()
+        try distros.install("Beta")
+        try distros.store.setInstalledDefaultDistribution(try DistroName("Beta"))
+        #expect(try distros.recordedDefault() == "Beta")
+        #expect(throws: MawError.distributionNotInstalled(try DistroName("Gone"))) {
+            try distros.store.setInstalledDefaultDistribution(try DistroName("Gone"))
+        }
+        #expect(try distros.recordedDefault() == "Beta")
     }
 }

@@ -166,7 +166,7 @@
                     case .setDefault(let requested):
                         let name = try installedName(requested)
                         try refuseDuringRemoval(name)
-                        try store?.setDefaultDistribution(name)
+                        try store?.setInstalledDefaultDistribution(name)
                         await sampler?.distributionsChanged()
                         log.notice("process \(processID) made \(name) the default distribution")
                         reply = .defaultSet(name)
@@ -301,8 +301,8 @@
         /// Removes the installed distribution that `requested` names (docs/daemon.md,
         /// "Removing a distribution"): stops its machine, ending its sessions with
         /// `unregisterReason`, moves its directory into the staging directory, which is the
-        /// moment it stops being installed, clears the default if `state.json` names it,
-        /// deletes its logs, and then the moved directory. Nothing after the move is undone or
+        /// moment it stops being installed, records the first installed distribution as the default
+        /// if the removed one was the default, deletes its logs, and then the moved directory. Nothing after the move is undone or
         /// interrupted; a directory that the daemon could not delete is removed at its next
         /// start.
         func unregister(_ requested: DistroName, for processID: Int32) async throws(MawError)
@@ -326,9 +326,10 @@
             }
             // From here on the distribution is not installed.
             do throws(MawError) {
-                try store.clearDefaultDistribution(ifItNames: name)
+                try store.replaceDefaultDistribution(
+                    removed: name, wasDefault: defaultBefore == name)
             } catch {
-                log.error("\(name): the default could not be cleared: \(error.description)")
+                log.error("\(name): the default could not be recorded: \(error.description)")
             }
             if let logDirectory {
                 for file in MawPaths.distributionLogFiles(for: name, in: logDirectory) {

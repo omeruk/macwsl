@@ -366,7 +366,8 @@ end an installation or an export, which run on provisioning machines of their ow
 2. renames `distros/<name>` to `distros/.staging/<label>/<name>-<UUID>.removed`, which is the
    moment the distribution stops being installed; a failed rename fails the request with
    `removalFailed`, and nothing is changed;
-3. clears the default in `state.json` if it names the distribution;
+3. if the distribution was the default, records the first installed distribution as the
+   default in `state.json`, or none if nothing is left;
 4. deletes `<name>.log`, `install/<name>.log`, and `export/<name>.log` in the log directory;
 5. deletes the renamed directory, and publishes a snapshot to the watchers.
 

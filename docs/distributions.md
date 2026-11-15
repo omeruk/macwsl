@@ -159,8 +159,8 @@ and [docs/protocol.md](protocol.md) specifies the environment a session gets.
 | `~/Library/Logs/maw/install/<name>.log` | The console of the machine that provisioned the distribution. |
 | `~/Library/Logs/maw/export/<name>.log` | The console of the machine that ran the distribution's last export. |
 
-`maw --unregister` deletes the distribution's directory and its three logs. `state.json` loses
-the default when it named the removed distribution. The image cache is kept.
+`maw --unregister` deletes the distribution's directory and its three logs. When it removes the
+default, `state.json` records the new default instead. The image cache is kept.
 
 ## Removing a distribution
 
@@ -179,9 +179,9 @@ The daemon then:
 3. renames its directory into the daemon's staging directory,
    `distros/.staging/<label>/<name>-<UUID>.removed`, which is the moment it stops being
    installed;
-4. clears the default in `state.json` if it named the distribution, so that the first
-   distribution that `maw --list` shows becomes the default, which maw names on standard
-   error;
+4. if the distribution was the default, records the first distribution that `maw --list`
+   shows as the default in `state.json`, which maw names on standard error, so that a later
+   installation does not take its place;
 5. deletes the distribution's logs, and then the renamed directory.
 
 Nothing after the rename is undone or interrupted, by Ctrl-C or by the daemon's exit. A
