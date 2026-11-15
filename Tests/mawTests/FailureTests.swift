@@ -88,11 +88,13 @@ import Testing
 
     // MARK: Runtime errors
 
+    /// `--import` fails before it connects to any daemon: a test must never reach the
+    /// installed one.
     @Test func reportsARuntimeErrorWithoutUsage() async throws {
         #expect(
-            try await failure(["--unregister", "Ubuntu"])
+            try await failure(["--import", "Ubuntu", "u.tar"])
                 == CommandFailure(
-                    output: "maw: --unregister is not implemented yet; phase 06b adds it.\n",
+                    output: "maw: --import is not implemented yet; phase 06b adds it.\n",
                     exitCode: .failure))
     }
 

@@ -22,7 +22,8 @@ struct SessionPlan: Equatable, Sendable {
         self.workingDirectory = workingDirectory
     }
 
-    /// Maps `.shell`, `.run`, and `.exec`; other actions have no session.
+    /// Maps `.shell`, `.run`, and `.exec`, the only actions that `Maw.run()` passes; the others
+    /// have no session.
     init(_ action: Action) throws(MawError) {
         let session: Session
         switch action {
@@ -36,7 +37,7 @@ struct SessionPlan: Equatable, Sendable {
             session = selected
             program = .argv(command)
         default:
-            throw .notImplemented(feature: action.displayName, phase: action.phase)
+            preconditionFailure("\(action.displayName) has no session")
         }
         user = session.user
         workingDirectory = try Self.workingDirectory(session.directory)

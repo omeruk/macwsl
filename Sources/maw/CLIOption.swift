@@ -67,6 +67,9 @@ extension CLIOption {
     static let export = CLIOption(long: "export", role: .action, takesValue: true)
     static let `import` = CLIOption(long: "import", role: .action, takesValue: true)
     static let unregister = CLIOption(long: "unregister", role: .action, takesValue: true)
+    static let format = CLIOption(long: "format", role: .modifier, takesValue: true)
+    // `--yes` has no short form: it skips the only question before data is deleted.
+    static let yes = CLIOption(long: "yes", role: .modifier)
 
     // General. `--version` is long-only in the parser because `-v` belongs to `--verbose`;
     // `ArgumentNormalizer` rewrites a `-v` that does not follow `--list` to `--version`.
@@ -81,7 +84,7 @@ extension CLIOption {
     static let all: [CLIOption] = [
         distribution, user, cd, exec,
         install, name, list, verbose, online, running, quiet, setDefault, terminate, shutdown,
-        export, `import`, unregister,
+        export, `import`, unregister, format, yes,
         status, version, help, generateCompletionScript,
     ]
 }

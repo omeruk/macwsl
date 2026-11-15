@@ -10,11 +10,39 @@ import MawXPC
 /// Extracting the root file system  5.5 s
 /// ```
 struct InstallProgressText {
+    /// What the steps belong to, which decides their labels.
+    enum Operation {
+        case installation
+        case export
+    }
+
     let name: DistroName
     let displayName: String
+    var operation: Operation = .installation
+
+    init(name: DistroName, displayName: String, operation: Operation = .installation) {
+        self.name = name
+        self.displayName = displayName
+        self.operation = operation
+    }
+
+    /// The steps of the operation, in order.
+    var steps: [InstallStep] {
+        switch operation {
+        case .installation: InstallStep.installation
+        case .export: InstallStep.export
+        }
+    }
 
     func label(for step: InstallStep) -> String {
-        switch step {
+        if operation == .export {
+            switch step {
+            case .prepare: return "Starting the virtual machine"
+            case .finish: return "Stopping the virtual machine"
+            default: break
+            }
+        }
+        return switch step {
         case .download: "Downloading \(displayName)"
         case .verify: "Verifying the image"
         case .prepare: "Creating the virtual disk"
@@ -28,10 +56,10 @@ struct InstallProgressText {
         }
     }
 
-    /// The width every label is padded to: the longest label of an installation's steps and
-    /// two spaces.
+    /// The width every label is padded to: the longest label of the operation's steps and two
+    /// spaces.
     var labelWidth: Int {
-        InstallStep.installation.map { label(for: $0).count }.max()! + 2
+        steps.map { label(for: $0).count }.max()! + 2
     }
 
     func padded(_ step: InstallStep) -> String {

@@ -174,8 +174,30 @@ func distro(_ name: String) throws -> DistroName {
     @Test func exports() throws {
         #expect(
             try action("--export", "Ubuntu", "ubuntu.tar")
-                == .export(distro("Ubuntu"), file: "ubuntu.tar"))
-        #expect(try action("--export", "Ubuntu", "-") == .export(distro("Ubuntu"), file: "-"))
+                == .export(distro("Ubuntu"), file: "ubuntu.tar", format: .tar))
+        #expect(
+            try action("--export", "Ubuntu", "-")
+                == .export(distro("Ubuntu"), file: "-", format: .tar))
+    }
+
+    /// Without --format, the file's name chooses, as tar -a does; a --format that is given wins,
+    /// before or after the operands.
+    @Test func choosesTheFormatOfAnExport() throws {
+        #expect(
+            try action("--export", "Ubuntu", "u.TGZ")
+                == .export(distro("Ubuntu"), file: "u.TGZ", format: .tarGzip))
+        #expect(
+            try action("--export", "Ubuntu", "u.xz")
+                == .export(distro("Ubuntu"), file: "u.xz", format: .tarXz))
+        #expect(
+            try action("--export", "Ubuntu", "u.tar.gz", "--format", "tar")
+                == .export(distro("Ubuntu"), file: "u.tar.gz", format: .tar))
+        #expect(
+            try action("--format", "tar.xz", "--export", "Ubuntu", "-")
+                == .export(distro("Ubuntu"), file: "-", format: .tarXz))
+        #expect(
+            try action("--export", "Ubuntu", "u.tar", "--format=tar.gz")
+                == .export(distro("Ubuntu"), file: "u.tar", format: .tarGzip))
     }
 
     @Test func imports() throws {
@@ -185,7 +207,13 @@ func distro(_ name: String) throws -> DistroName {
     }
 
     @Test func unregisters() throws {
-        #expect(try action("--unregister", "Ubuntu") == .unregister(distro("Ubuntu")))
+        #expect(try action("--unregister", "Ubuntu") == .unregister(distro("Ubuntu"), yes: false))
+        #expect(
+            try action("--unregister", "Ubuntu", "--yes")
+                == .unregister(distro("Ubuntu"), yes: true))
+        #expect(
+            try action("--yes", "--unregister", "Ubuntu")
+                == .unregister(distro("Ubuntu"), yes: true))
     }
 
     // MARK: General
@@ -201,9 +229,10 @@ func distro(_ name: String) throws -> DistroName {
 
     // MARK: Running a stub
 
-    @Test func everyActionReportsThatItIsNotImplemented() async throws {
-        let command = try Maw.parse(ArgumentNormalizer.normalize(["--unregister", "Ubuntu"]))
-        await #expect(throws: MawError.notImplemented(feature: "--unregister", phase: "06b")) {
+    /// `--import` arrives with phase 06b's second pull request.
+    @Test func importReportsThatItIsNotImplemented() async throws {
+        let command = try Maw.parse(ArgumentNormalizer.normalize(["--import", "Ubuntu", "u.tar"]))
+        await #expect(throws: MawError.notImplemented(feature: "--import", phase: "06b")) {
             try await command.run()
         }
     }
