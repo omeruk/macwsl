@@ -388,12 +388,15 @@ not replayed, and runs `bsdtar -c -f - --format pax --numeric-owner --xattrs -C 
 The archive's bytes arrive over the guest agent's vsock connection. `ArchiveOutput`
 (`Sources/MawDaemonKit/ArchiveOutput.swift`) writes them to the client's descriptor, or for
 `tar.gz` and `tar.xz` into a pipe to `/usr/bin/tar -c -f - --format pax --gzip @-` or `--xz`,
-whose output the daemon writes to the descriptor. Each write blocks until the descriptor or the
-pipe takes the bytes, and the daemon reads the next bytes from the agent's connection only after it, so
-vsock's flow control stops the guest's writes and a slow reader holds the guest's `bsdtar`
-back instead of making the daemon buffer. The descriptor has
-`F_SETNOSIGPIPE`, so a reader that closes its end gives `EPIPE`, never `SIGPIPE`: the export
-fails with `exportOutputClosed`, the machine stops, and the daemon keeps serving.
+whose output the daemon writes to the descriptor. A thread of its own writes to the descriptor,
+one chunk at a time; the next chunk waits until the previous one is written, and the daemon
+reads the next bytes from the agent's connection only after that, so vsock's flow control
+stops the guest's writes and a slow reader holds the guest's `bsdtar` back instead of making
+the daemon buffer. Cancelling ends the wait at once, even while a write waits for a reader that
+has stopped reading; that write's thread closes the descriptor when the write returns. The
+daemon ignores SIGPIPE and leaves the client's descriptor unchanged, so a reader that closes
+its end gives `EPIPE`: the export fails with `exportOutputClosed`, the machine stops, and the
+daemon keeps serving.
 
 The daemon checks the descriptor before it starts: one that is missing or not open for
 writing is a protocol error, and a terminal is refused with `exportToTerminal`. It never opens

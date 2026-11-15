@@ -66,9 +66,9 @@ code signing requirement
   daemon; `unregister` never touches a directory without a valid `distro.json`.
 - **The export's descriptor.** The daemon never opens a path for an export: `maw` opens the
   file and passes the descriptor in the message's `descriptor` field. The daemon accepts it only
-  if it is open for writing, refuses a terminal, sets `F_SETNOSIGPIPE` on it, so that a reader
-  that closes its end cannot end the daemon with `SIGPIPE`, and closes its copy before it
-  replies. A descriptor in any other request is ignored. Because the client opens the file,
+  if it is open for writing, refuses a terminal, and closes its copy before it replies. It
+  changes nothing about the descriptor's open file description, which the client's other
+  processes share; the daemon ignores SIGPIPE, so a reader that closes its end cannot end it. A descriptor in any other request is ignored. Because the client opens the file,
   the daemon, a LaunchAgent without the user's privacy permissions, needs no access to
   `~/Desktop` or `~/Documents`, and the privacy prompt never names it.
 - Every message carries the interface version, which is checked before the body is decoded.

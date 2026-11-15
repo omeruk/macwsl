@@ -267,6 +267,7 @@ final class FakeExportingMachine: ExportingMachine, @unchecked Sendable {
     }
 
     @Test func reportsAReaderThatClosedThePipe() async throws {
+        ignoreSIGPIPE()
         var fds: [Int32] = [-1, -1]
         try #require(pipe(&fds) == 0)
         close(fds[0])

@@ -16,11 +16,12 @@
     /// bsdtar ─▶ write(_:) ─▶ pipe ─▶ /usr/bin/tar -z|-J ─▶ ─▶ descriptor   tar.gz, tar.xz
     /// ```
     ///
-    /// Every write blocks while the reader does not read, which holds the guest's `bsdtar`
-    /// back (docs/daemon.md, "Exporting a distribution"), so nothing is buffered beyond the
-    /// pipes and one chunk. A reader that closes its end ends the export as `readerClosed`: the
-    /// daemon ignores SIGPIPE, and the descriptor does not raise it, so the write fails with
-    /// `EPIPE`.
+    /// A thread of its own writes to the descriptor, one chunk at a time; while the reader does
+    /// not read, the next chunk waits for it, which holds the guest's `bsdtar` back
+    /// (docs/daemon.md, "Exporting a distribution"), so nothing is buffered beyond the pipes and
+    /// two chunks. A reader that closes its end ends the export as `readerClosed`: the daemon
+    /// ignores SIGPIPE, so the write fails with `EPIPE`. `abort()` ends the export at once even
+    /// while a write waits for a reader that has stopped reading.
     final class ArchiveOutput: Sendable {
         enum Failure: Error, Equatable, Sendable {
             /// The reader of a pipe closed its end before the archive was complete.
@@ -37,12 +38,13 @@
             var failure: Failure?
         }
 
-        private let destination: OwnedDescriptor
+        /// Writes to the client's descriptor on a thread of its own.
+        private let writer: DescriptorWriter
         /// The write end of the pipe to `/usr/bin/tar`, for a compressed archive.
         private let compressorInput: OwnedDescriptor?
         private let compressor: Task<Result<StreamingProcess.Outcome, any Error>, Never>?
-        private let state = OSAllocatedUnfairLock(
-            initialState: (bytes: UInt64(0), failure: Failure?.none, aborted: false))
+        /// Whether `abort()` was called; `/usr/bin/tar` failing then is not the archive's failure.
+        private let aborted = OSAllocatedUnfairLock(initialState: false)
 
         /// The arguments of `/usr/bin/tar` that compress a pax archive from its standard input
         /// into its standard output.
@@ -57,13 +59,15 @@
         }
 
         /// Prepares the archive's way to `destination`, and starts `/usr/bin/tar` for a
-        /// compressed format. `destination` is the client's descriptor; it is closed when the
-        /// archive is complete or has failed. Throws `compressorFailed` if the pipe to
-        /// `/usr/bin/tar` cannot be made.
+        /// compressed format. `destination` is the client's descriptor, which this takes over
+        /// and closes once its last write has returned. Throws `compressorFailed` if the pipe
+        /// to `/usr/bin/tar` or the writing thread cannot be made.
+        ///
+        /// The descriptor's open file description is the client's, shared with every process
+        /// that inherited it, so nothing about it is changed here: the daemon ignores SIGPIPE,
+        /// and a write to a pipe whose reader has gone fails with `EPIPE`.
         init(format: ArchiveFormat, destination: OwnedDescriptor) throws(Failure) {
-            self.destination = destination
-            // A descriptor of a pipe or a socket that a client passes never raises SIGPIPE here.
-            _ = fcntl(destination.rawValue, F_SETNOSIGPIPE, 1)
+            writer = try DescriptorWriter(destination)
             guard let arguments = Self.compressorArguments(for: format) else {
                 compressorInput = nil
                 compressor = nil
@@ -71,22 +75,23 @@
             }
             var fds: [Int32] = [-1, -1]
             guard pipe(&fds) == 0 else {
+                writer.abort()
+                writer.end()
                 throw .compressorFailed(SystemError("pipe").description)
             }
             _ = fcntl(fds[0], F_SETFD, FD_CLOEXEC)
             _ = fcntl(fds[1], F_SETFD, FD_CLOEXEC)
+            // The daemon's own pipe: a write after /usr/bin/tar has gone fails with EPIPE.
             _ = fcntl(fds[1], F_SETNOSIGPIPE, 1)
             let reader = OwnedDescriptor(fds[0])
             compressorInput = OwnedDescriptor(fds[1])
-            // `self` cannot be captured before every property is set, so the compressor writes
-            // through a sink of its own that shares the state and the destination.
-            let sink = Sink(destination: destination, state: state)
+            let writer = self.writer
             compressor = Task {
                 await runOnDedicatedThread { () -> Result<StreamingProcess.Outcome, any Error> in
                     Result {
                         try StreamingProcess.run("/usr/bin/tar", arguments, input: reader) {
                             chunk in
-                            chunk.withUnsafeBytes { sink.write($0) }
+                            chunk.withUnsafeBytes { writer.write($0) }
                         }
                     }
                 }
@@ -97,70 +102,171 @@
         /// false once the archive cannot go on: its reader closed its end, a write failed, the
         /// compressor stopped, or `abort()` was called.
         func write(_ buffer: UnsafeRawBufferPointer) -> Bool {
-            if state.withLock({ $0.aborted || $0.failure != nil }) {
-                return false
-            }
             guard let compressorInput else {
-                return Sink(destination: destination, state: state).write(buffer)
+                return writer.write(buffer)
+            }
+            if aborted.withLock({ $0 }) || writer.hasStopped {
+                return false
             }
             // A failed write to the pipe means that /usr/bin/tar has stopped reading; `finish()`
             // reports why.
             return Self.writeAll(compressorInput.rawValue, buffer) == nil
         }
 
-        /// Stops the archive early: nothing more is written to the descriptor, and
-        /// `/usr/bin/tar` is ended at its next output. The pipe to it is closed by `finish()`,
-        /// once the guest's output has stopped, so that no write races with the close.
+        /// Stops the archive early: nothing more is handed to the descriptor's thread, a write
+        /// that waits for it returns at once, and `/usr/bin/tar` is ended at its next output.
+        /// The pipe to it is closed by `finish()`, once the guest's output has stopped, so that
+        /// no write races with the close.
         func abort() {
-            state.withLock { $0.aborted = true }
+            aborted.withLock { $0 = true }
+            writer.abort()
         }
 
-        /// Ends the archive's input, waits for `/usr/bin/tar` to have written the rest, closes
-        /// the descriptor, and returns what was written. Call it once `write(_:)` is no longer
-        /// called. After it returns, nothing writes to the descriptor any more, so that the
-        /// client may remove its file.
+        /// Ends the archive's input, waits for `/usr/bin/tar` to have written the rest and for
+        /// the descriptor's thread to have written everything, and returns what was written;
+        /// the descriptor is then closed, so that the client may remove its file. Call it once
+        /// `write(_:)` is no longer called.
+        ///
+        /// After `abort()` it does not wait for a write that the descriptor's reader holds up,
+        /// which may never return: that write's thread closes the descriptor when it does, and
+        /// writes nothing more.
         func finish() async -> Outcome {
             compressorInput?.close()
+            var compressorFailure: Failure?
             if let compressor {
-                let result = await compressor.value
-                state.withLock { state in
-                    guard state.failure == nil, !state.aborted else { return }
-                    switch result {
-                    case .failure(let error):
-                        state.failure = .compressorFailed(
-                            "/usr/bin/tar cannot start: \(error.localizedDescription)")
-                    case .success(let outcome) where outcome.status != 0:
-                        state.failure = .compressorFailed(
-                            "/usr/bin/tar exited with status \(outcome.status): \(outcome.errors)")
-                    case .success:
-                        break
+                switch await compressor.value {
+                case .failure(let error):
+                    compressorFailure = .compressorFailed(
+                        "/usr/bin/tar cannot start: \(error.localizedDescription)")
+                case .success(let outcome) where outcome.status != 0:
+                    compressorFailure = .compressorFailed(
+                        "/usr/bin/tar exited with status \(outcome.status): \(outcome.errors)")
+                case .success:
+                    break
+                }
+            }
+            let written = await writer.finish()
+            if written.failure == nil, !aborted.withLock({ $0 }), let compressorFailure {
+                return Outcome(bytes: written.bytes, failure: compressorFailure)
+            }
+            return written
+        }
+
+        /// Writes the archive to the client's descriptor on a detached thread of its own, one
+        /// chunk at a time, so that the threads that produce the archive wait on a condition
+        /// that `abort()` ends, never in a `write` that only the reader can end.
+        private final class DescriptorWriter: @unchecked Sendable {
+            private struct State {
+                /// The chunk that the thread is to write or is writing.
+                var pending: [UInt8]?
+                var bytes: UInt64 = 0
+                var failure: Failure?
+                var aborted = false
+                /// Set by `end()`: no chunk follows.
+                var ended = false
+                /// Set by the thread once it has closed the descriptor.
+                var closed = false
+            }
+
+            /// Guards `state`.
+            private let lock = ConditionLock()
+            private var state = State()
+
+            init(_ destination: OwnedDescriptor) throws(Failure) {
+                let started = startDetachedThread { [self] in
+                    run(destination)
+                }
+                guard started else {
+                    destination.close()
+                    throw .compressorFailed("the thread that writes the archive cannot start")
+                }
+            }
+
+            /// Whether nothing more will be written: a write failed, or `abort()` was called.
+            var hasStopped: Bool {
+                lock.withLock { state.failure != nil || state.aborted }
+            }
+
+            /// Hands a copy of `buffer` to the thread, once it has written the previous chunk.
+            /// Returns false if the archive cannot go on.
+            func write(_ buffer: UnsafeRawBufferPointer) -> Bool {
+                let chunk = [UInt8](buffer)
+                return lock.withLock {
+                    while state.pending != nil, state.failure == nil, !state.aborted {
+                        lock.wait()
+                    }
+                    guard state.failure == nil, !state.aborted else { return false }
+                    state.pending = chunk
+                    lock.broadcast()
+                    return true
+                }
+            }
+
+            func abort() {
+                lock.withLock {
+                    state.aborted = true
+                    lock.broadcast()
+                }
+            }
+
+            /// Tells the thread that no chunk follows.
+            func end() {
+                lock.withLock {
+                    state.ended = true
+                    lock.broadcast()
+                }
+            }
+
+            /// Ends the input and waits until the thread has written everything and closed the
+            /// descriptor, or, after `abort()`, not at all.
+            func finish() async -> Outcome {
+                end()
+                return await runOnDedicatedThread { [self] in
+                    lock.withLock {
+                        // After `abort()`, a chunk in progress is the thread's to finish.
+                        while !state.closed, !state.aborted {
+                            lock.wait()
+                        }
+                        return Outcome(bytes: state.bytes, failure: state.failure)
                     }
                 }
             }
-            destination.close()
-            return state.withLock { Outcome(bytes: $0.bytes, failure: $0.failure) }
-        }
 
-        /// Writes to the client's descriptor and counts what it wrote.
-        private struct Sink: Sendable {
-            let destination: OwnedDescriptor
-            let state: OSAllocatedUnfairLock<(bytes: UInt64, failure: Failure?, aborted: Bool)>
-
-            func write(_ buffer: UnsafeRawBufferPointer) -> Bool {
-                if state.withLock({ $0.aborted || $0.failure != nil }) {
-                    return false
-                }
-                if let code = ArchiveOutput.writeAll(destination.rawValue, buffer) {
-                    state.withLock {
-                        $0.failure =
-                            code == EPIPE
-                            ? .readerClosed : .writeFailed(SystemError.message(for: code))
+            /// The thread: writes each chunk, and closes the descriptor once the input has ended
+            /// or the archive cannot go on.
+            private func run(_ destination: OwnedDescriptor) {
+                while true {
+                    let chunk: [UInt8]? = lock.withLock {
+                        while state.pending == nil, !state.ended, !state.aborted,
+                            state.failure == nil
+                        {
+                            lock.wait()
+                        }
+                        if state.aborted || state.failure != nil { return nil }
+                        return state.pending
                     }
-                    return false
+                    guard let chunk else { break }
+                    let code = chunk.withUnsafeBytes {
+                        ArchiveOutput.writeAll(destination.rawValue, $0)
+                    }
+                    lock.withLock {
+                        state.pending = nil
+                        if let code {
+                            state.failure =
+                                code == EPIPE
+                                ? .readerClosed : .writeFailed(SystemError.message(for: code))
+                        } else {
+                            state.bytes += UInt64(chunk.count)
+                        }
+                        lock.broadcast()
+                    }
                 }
-                let count = UInt64(buffer.count)
-                state.withLock { $0.bytes += count }
-                return true
+                destination.close()
+                lock.withLock {
+                    state.pending = nil
+                    state.closed = true
+                    lock.broadcast()
+                }
             }
         }
 

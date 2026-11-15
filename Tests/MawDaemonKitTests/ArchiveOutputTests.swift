@@ -47,6 +47,13 @@ final class DrainedPipe: Sendable {
     }
 }
 
+/// Ignores SIGPIPE in the test process, as the daemon does (`Serve`), so that a write to a pipe
+/// whose reader has gone fails with `EPIPE`; `ArchiveOutput` leaves the client's descriptor as it
+/// is.
+func ignoreSIGPIPE() {
+    signal(SIGPIPE, SIG_IGN)
+}
+
 /// A small pax archive with one file, made by the Mac's tar, as the guest's bsdtar would make
 /// it.
 func paxArchive(holding text: String) throws -> [UInt8] {
@@ -141,6 +148,7 @@ func listed(_ archive: [UInt8]) throws -> [String] {
     /// end this test process.
     @Test(arguments: [ArchiveFormat.tar, .tarGzip])
     func reportsAReaderThatClosedItsEnd(_ format: ArchiveFormat) async throws {
+        ignoreSIGPIPE()
         var fds: [Int32] = [-1, -1]
         try #require(pipe(&fds) == 0)
         close(fds[0])
@@ -155,6 +163,45 @@ func listed(_ archive: [UInt8]) throws -> [String] {
         #expect(outcome.failure == .readerClosed)
     }
 
+    /// A reader that stops reading without closing its end holds a write up; `abort()` still
+    /// ends the archive at once, and the producer's next write returns false without waiting.
+    @Test(arguments: [ArchiveFormat.tar, .tarGzip])
+    func endsAtOnceWhenAbortedWhileTheReaderDoesNotRead(_ format: ArchiveFormat) async throws {
+        ignoreSIGPIPE()
+        var fds: [Int32] = [-1, -1]
+        try #require(pipe(&fds) == 0)
+        let reader = OwnedDescriptor(fds[0])
+        defer { reader.close() }
+        let output = try ArchiveOutput(format: format, destination: OwnedDescriptor(fds[1]))
+        // Letters that gzip cannot shrink below a pipe's 64 KiB.
+        let text = String(
+            (0..<2_000_000).map { _ in "abcdefghijklmnopqrstuvwxyz".randomElement()! })
+        let archive = try paxArchive(holding: text)
+        let producer = Task {
+            await runOnDedicatedThread { () -> Int in
+                var chunks = 0
+                for start in stride(from: 0, to: archive.count, by: 65536) {
+                    let accepted = Array(archive[start..<min(start + 65536, archive.count)])
+                        .withUnsafeBytes { output.write($0) }
+                    guard accepted else { break }
+                    chunks += 1
+                }
+                return chunks
+            }
+        }
+        // The pipe fills, and the producer waits.
+        try await Task.sleep(for: .milliseconds(500))
+        let aborted = ContinuousClock.now
+        output.abort()
+        let chunks = await producer.value
+        let outcome = await output.finish()
+        #expect(ContinuousClock.now - aborted < .seconds(2))
+        #expect(chunks < (archive.count + 65535) / 65536, "The producer was never held up.")
+        #expect(outcome.failure == nil)
+    }
+
+    /// The thread that writes reports the failure; the next chunk is refused, and `finish()`
+    /// returns it.
     @Test func reportsAWriteThatFails() async throws {
         let file = FileManager.default.temporaryDirectory.appending(
             path: "maw-ro-\(UUID().uuidString)")
@@ -162,7 +209,8 @@ func listed(_ archive: [UInt8]) throws -> [String] {
         defer { try? FileManager.default.removeItem(at: file) }
         let output = try ArchiveOutput(
             format: .tar, destination: OwnedDescriptor(open(file.path, O_RDONLY)))
-        #expect(!Array("x".utf8).withUnsafeBytes { output.write($0) })
+        _ = Array("x".utf8).withUnsafeBytes { output.write($0) }
+        #expect(!Array("y".utf8).withUnsafeBytes { output.write($0) })
         #expect(
             await output.finish()
                 == ArchiveOutput.Outcome(bytes: 0, failure: .writeFailed("Bad file descriptor")))
