@@ -15,7 +15,7 @@ from `main`.
 - **No `maw --import`.**
   - **Seen:** `maw --import` fails with `notImplemented`: "--import is not implemented yet;
     phase 06b adds it." An archive from `maw --export` cannot yet become a distribution.
-  - **Evidence:** `Sources/maw/Maw.swift:126`; phase 06b is split into two pull requests, and
+  - **Evidence:** `Sources/maw/Maw.swift:131`; phase 06b is split into two pull requests, and
     the first adds only `--unregister` and `--export`.
   - **Phase:** 06b, its second pull request.
 - **CR-7: An imported root file system whose `/sbin/init` is not systemd.**
@@ -399,7 +399,7 @@ from `main`.
   - **Seen:** maw removes the file of a failed or cancelled export, on Ctrl-C, SIGTERM, and
     SIGHUP as well, but a SIGKILL ends it before it can. The partial file, of mode 600, stays
     at the path that was given, and the daemon ends the export when the connection closes.
-  - **Evidence:** `ArchiveFile.remove()` in `Sources/maw/ExportCommand.swift:239` runs in maw's
+  - **Evidence:** `ArchiveFile.remove()` in `Sources/maw/ExportCommand.swift:221` runs in maw's
     process; the daemon never opens the path, by design (docs/security.md, "The export's
     descriptor").
   - **Phase:** None yet. Writing to a temporary name and renaming it at the end would leave a
