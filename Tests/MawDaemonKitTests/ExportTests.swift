@@ -191,9 +191,7 @@ final class FakeExportingMachine: ExportingMachine, @unchecked Sendable {
     /// until it has ended.
     @Test func holdsTheNameWhileItRuns() async throws {
         let removal = try operations.claim(Self.copy, for: .removal)
-        await #expect(throws: MawError.distributionBusy(Self.copy, operation: .removal)) {
-            try await exporter.check(Self.copy)
-        }
+        await expectBusy(.removal, checking: exporter)
         operations.release(removal)
 
         machine.heldStep = "archive"
@@ -208,14 +206,31 @@ final class FakeExportingMachine: ExportingMachine, @unchecked Sendable {
         }
         try await eventually("the archive step") { machine.calls.contains("archive") }
         #expect(operations.operation(on: Self.copy) == .export)
-        await #expect(throws: MawError.distributionBusy(Self.copy, operation: .export)) {
+        await expectBusy(.export, exporting: exporter)
+        machine.release()
+        #expect(try await first.value.bytes == 12)
+        #expect(operations.operation(on: Self.copy) == nil)
+    }
+
+    // Swift 6.3.3's ClosureLifetimeFixup pass does not finish on holdsTheNameWhileItRuns when
+    // both expectations are in its body with the Task's closure, which stalled CI's test build;
+    // in functions of their own, they compile at once with 6.3.3 and 6.4.2.
+
+    /// Expects `check` to fail because `operation` holds the name.
+    private func expectBusy(_ operation: DistributionOperation, checking exporter: Exporter) async {
+        await #expect(throws: MawError.distributionBusy(Self.copy, operation: operation)) {
+            try await exporter.check(Self.copy)
+        }
+    }
+
+    /// Expects a second `export` to fail because `operation` holds the name.
+    private func expectBusy(_ operation: DistributionOperation, exporting exporter: Exporter) async
+    {
+        await #expect(throws: MawError.distributionBusy(Self.copy, operation: operation)) {
             try await exporter.export(
                 ExportRequest(name: Self.copy, format: .tar), to: OwnedDescriptor(-1), for: 2
             ) { _ in }
         }
-        machine.release()
-        #expect(try await first.value.bytes == 12)
-        #expect(operations.operation(on: Self.copy) == nil)
     }
 
     @Test func refusesADiskThatFailsItsCheck() async throws {
