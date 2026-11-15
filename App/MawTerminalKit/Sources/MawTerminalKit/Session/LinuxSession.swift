@@ -294,7 +294,7 @@ public final class LinuxSession: TerminalSession {
                 + "as root through maw -d <name> -u root."
         case .diskImageNotFound:
             "Restore the distribution's disk image from a backup, or remove the distribution "
-                + "as the README explains and install it again with maw --install."
+                + "with maw --unregister and install it again with maw --install."
         default: error.recoverySuggestion
         }
     }

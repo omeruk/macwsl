@@ -242,7 +242,7 @@ import Testing
                 + "e2fsck -p may have repaired parts of it before it stopped. Copy the image to "
                 + "a safe place before you try any repair by hand. maw has no command to repair "
                 + "a file system yet; a later phase adds one. If you do not need the "
-                + "distribution's files, the README explains how to remove it, after which "
+                + "distribution's files, maw --unregister Ubuntu removes it, after which "
                 + "maw --install can install it again.")
     }
 

@@ -414,17 +414,17 @@ extension MawError: LocalizedError {
             "Install Ubuntu with maw --install."
         case .userNotFound:
             "Check the name, or create the user in the distribution with sudo adduser."
-        case .rootFileSystemCheckFailed(_, _, let diskImage, _):
+        case .rootFileSystemCheckFailed(let name, _, let diskImage, _):
             "maw keeps the disk image \(diskImage) and has not written to it; only e2fsck -p "
                 + "may have repaired parts of it before it stopped. Copy the image to a safe "
                 + "place before you try any repair by hand. maw has no command to repair a "
                 + "file system yet; a later phase adds one. If you do not need the "
-                + "distribution's files, the README explains how to remove it, after which "
+                + "distribution's files, maw --unregister \(name) removes it, after which "
                 + "maw --install can install it again."
         case .unknownDistribution:
             "maw --list --online shows the distributions that can be installed."
         case .distributionAlreadyInstalled(let name):
-            "Use it with maw -d \(name). The README explains how to remove a distribution."
+            "Use it with maw -d \(name), or remove it with\nmaw --unregister \(name)."
         case .installationInProgress:
             "Wait for the other installation to finish."
         case .distributionDirectoryExists:
