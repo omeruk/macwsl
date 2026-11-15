@@ -22,6 +22,9 @@ import os
         var checkError: MawError?
         var exportError: MawError?
         var holdsUntilCancelled = false
+        /// With `holdsUntilCancelled`: the archive was complete, so the export succeeds although
+        /// the cancellation reached it, as while its machine stops.
+        var succeedsWhenCancelled = false
         /// Runs while the export writes, after the first bytes.
         var duringExport: (@Sendable () -> Void)?
 
@@ -57,7 +60,9 @@ import os
                     }
                     if resumeNow { waiter.resume() }
                 }
-                throw .exportCancelled(request.name)
+                if !succeedsWhenCancelled {
+                    throw .exportCancelled(request.name)
+                }
             }
             if let exportError { throw exportError }
             continuation.yield(.installProgress(.finished(.archive, milliseconds: 5)))
@@ -241,6 +246,23 @@ import os
         #expect(!FileManager.default.fileExists(atPath: file))
         #expect(standardError.contains("Cancelling the export..."))
         #expect(standardError.contains("maw: The export of Copy was cancelled."))
+    }
+
+    /// A cancellation that reaches an export whose archive is already complete keeps the file:
+    /// the export's own reply is a success.
+    @Test func keepsTheFileWhenTheExportSucceedsDespiteTheSignal() async throws {
+        let daemon = FakeDaemon()
+        daemon.holdsUntilCancelled = true
+        daemon.succeedsWhenCancelled = true
+        let file = path("ubuntu.tar")
+        let (signals, sender) = AsyncStream.makeStream(of: Int32.self)
+        let run = Task { try await command(daemon, file: file).run(signals: signals) }
+        try await waitFor { daemon.requests.contains("export Copy tar") }
+        sender.yield(SIGINT)
+        #expect(try await run.value == 0)
+        #expect(daemon.requests.last == "cancel")
+        #expect(try String(contentsOfFile: file, encoding: .utf8) == "archive")
+        #expect(standardError.hasSuffix("Copy was exported to \(file): 7 bytes.\n"))
     }
 
     /// Waits until `condition` holds, for at most 5 seconds.

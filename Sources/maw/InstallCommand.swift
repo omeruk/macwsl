@@ -184,8 +184,8 @@ struct InstallCommand {
                 error = .installationCancelled(name)
             case .alreadyFinished:
                 // The installation ended before the daemon received the cancellation. Its own
-                // reply says how (`reply(of:timeout:)`).
-                switch await reply(of: installation, timeout: installReplyTimeout) {
+                // reply says how (`OperationReply`).
+                switch await OperationReply.reply(of: installation, timeout: installReplyTimeout) {
                 case .success:
                     output.write(
                         "The installation had already finished. Run maw -d \(name) to use it.\n")
@@ -208,30 +208,6 @@ struct InstallCommand {
             output.writeError(Maw.failure(for: error)?.output ?? "")
             await output.waitUntilWritten(timeout: outputTimeout)
             return .status(128 + number)
-        }
-    }
-
-    /// The installation's reply, or `nil` if it has not arrived within `timeout`.
-    ///
-    /// When the daemon answers `cancel` that the installation was no longer running, it
-    /// has already sent the reply to `install`: the installation's task sends that reply before
-    /// it ends, and the daemon answers `cancel` only after the task has ended
-    /// (`DaemonService.serve`). The two replies resume tasks of their own here, though, which
-    /// can run in either order, so maw waits for the installation's reply instead of assuming
-    /// that it has arrived.
-    static func reply(
-        of installation: Task<Result<InstallSummary, MawError>, Never>, timeout: Duration
-    ) async -> Result<InstallSummary, MawError>? {
-        let first = FirstResult<Result<InstallSummary, MawError>?>()
-        return await withCheckedContinuation { continuation in
-            first.onResult { continuation.resume(returning: $0) }
-            Task {
-                first.settle(await installation.value)
-            }
-            Task {
-                try? await Task.sleep(for: timeout)
-                first.settle(nil)
-            }
         }
     }
 

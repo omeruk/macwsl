@@ -78,11 +78,13 @@ struct ExportCommand {
         case .signal(let number):
             view.interrupt()
             output.writeError("Cancelling the export...\n")
-            // An export that ended before the daemon received the cancellation reports how; its
-            // reply has been sent by then, but may still be on its way.
-            if await Self.cancel(on: client) == .alreadyFinished,
-                case .success(let summary) = await Self.reply(
-                    of: export, timeout: .milliseconds(500))
+            await Self.cancel(on: client)
+            // An export whose archive was complete before the cancellation reached it succeeds,
+            // also when the cancellation came while its machine stopped; its reply has been sent
+            // by then, but may still be on its way (`OperationReply`). The file is then complete,
+            // and maw keeps it.
+            if case .success(let summary) = await OperationReply.reply(
+                of: export, timeout: .milliseconds(500))
             {
                 archive.keep()
                 output.writeError(Self.summary(summary, file: file) + "\n")
@@ -153,47 +155,19 @@ struct ExportCommand {
         }
     }
 
-    enum Cancellation: Equatable {
-        /// The daemon stopped the export.
-        case cancelled
-        /// The export was no longer running: it had finished, or failed.
-        case alreadyFinished
-        /// The request failed, or the daemon did not answer within `cancelTimeout`.
-        case unconfirmed
-    }
-
-    /// Asks the daemon to cancel, and waits at most `cancelTimeout` for its answer.
-    static func cancel(on client: any ExportDaemon) async -> Cancellation {
-        let first = FirstResult<Cancellation>()
-        return await withCheckedContinuation { continuation in
-            first.onResult { continuation.resume(returning: $0) }
+    /// Asks the daemon to cancel, and waits at most `cancelTimeout` for its answer; the
+    /// export's own reply then says how it ended.
+    static func cancel(on client: any ExportDaemon) async {
+        let first = FirstResult<Void>()
+        await withCheckedContinuation { continuation in
+            first.onResult { continuation.resume() }
             Task {
-                switch try? await client.cancel() {
-                case true: first.settle(.cancelled)
-                case false: first.settle(.alreadyFinished)
-                case nil: first.settle(.unconfirmed)
-                }
+                _ = try? await client.cancel()
+                first.settle(())
             }
             Task {
                 try? await Task.sleep(for: cancelTimeout)
-                first.settle(.unconfirmed)
-            }
-        }
-    }
-
-    /// The export's reply, or `nil` if it has not arrived within `timeout`.
-    static func reply(
-        of export: Task<Result<ExportSummary, MawError>, Never>, timeout: Duration
-    ) async -> Result<ExportSummary, MawError>? {
-        let first = FirstResult<Result<ExportSummary, MawError>?>()
-        return await withCheckedContinuation { continuation in
-            first.onResult { continuation.resume(returning: $0) }
-            Task {
-                first.settle(await export.value)
-            }
-            Task {
-                try? await Task.sleep(for: timeout)
-                first.settle(nil)
+                first.settle(())
             }
         }
     }
