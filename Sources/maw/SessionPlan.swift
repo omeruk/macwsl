@@ -22,9 +22,9 @@ struct SessionPlan: Equatable, Sendable {
         self.workingDirectory = workingDirectory
     }
 
-    /// Maps `.shell`, `.run`, and `.exec`, the only actions that `Maw.run()` passes; the others
-    /// have no session.
-    init(_ action: Action) throws(MawError) {
+    /// Maps `.shell`, `.run`, and `.exec` to their sessions, and every other action, which has
+    /// no session, to `nil`.
+    init?(_ action: Action) throws(MawError) {
         let session: Session
         switch action {
         case .shell(let selected):
@@ -37,7 +37,7 @@ struct SessionPlan: Equatable, Sendable {
             session = selected
             program = .argv(command)
         default:
-            preconditionFailure("\(action.displayName) has no session")
+            return nil
         }
         user = session.user
         workingDirectory = try Self.workingDirectory(session.directory)

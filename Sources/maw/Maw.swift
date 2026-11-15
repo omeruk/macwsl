@@ -89,12 +89,17 @@ struct Maw: AsyncParsableCommand {
 
     func run() async throws {
         let action = try resolveAction()
-        switch action {
-        case .shell, .run, .exec:
-            let status = try await runSession(SessionPlan(action))
+        if let plan = try SessionPlan(action) {
+            let status = try await runSession(plan)
             if status != 0 {
                 throw ExitCode(status)
             }
+            return
+        }
+        switch action {
+        case .shell, .run, .exec:
+            // Each has a session, which ran above.
+            return
         case .status:
             try await Self.showStatus()
         case .shutdown:
