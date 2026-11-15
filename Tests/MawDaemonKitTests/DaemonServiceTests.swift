@@ -25,7 +25,11 @@ import Testing
         init(
             factory: FakeFactory = FakeFactory(), store: DistributionStore? = nil,
             operations: DistributionOperations = DistributionOperations(),
-            logDirectory: URL? = nil
+            logDirectory: URL? = nil,
+            makeExporter: (
+                @Sendable (MachineRegistry<TestClock>, DistributionOperations, DaemonLog) ->
+                    Exporter
+            )? = nil
         ) {
             self.factory = factory
             self.operations = operations
@@ -38,7 +42,9 @@ import Testing
             service = DaemonService(
                 clock: clock, registry: registry,
                 lifetime: DaemonLifetime(clock: clock) {}, canRunVirtualMachines: true,
-                store: store, sampler: sampler, operations: operations,
+                store: store, exporter: makeExporter?(registry, operations, lines.log),
+                sampler: sampler,
+                operations: operations,
                 logDirectory: logDirectory, log: lines.log)
             task = Task { [service, listener] in await service.serve(listener) }
             follower = Task { [sampler] in

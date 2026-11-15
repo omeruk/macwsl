@@ -114,17 +114,29 @@ struct Serve: AsyncParsableCommand {
             startMachine: { machine throws(MawError) in try await registry.start(machine) },
             makeMACAddress: { VZMACAddress.randomLocallyAdministered().string },
             operations: operations, log: log)
+        let exporter = Exporter(
+            store: store, operations: operations,
+            makeMachine: { (name: DistroName) throws(MawError) -> any ExportingMachine in
+                guard canRunVirtualMachines else { throw .virtualizationEntitlementMissing }
+                return VirtualProvisioningMachine(
+                    kernelDirectory: paths.kernelDirectory,
+                    consoleLog: MawPaths.exportLogFile(for: name, in: settings.logDirectoryURL),
+                    log: log)
+            },
+            isStopped: { machine in await registry.isStopped(machine) },
+            logDirectory: settings.logDirectoryURL, log: log)
         let service = DaemonService(
             clock: clock, registry: registry, lifetime: lifetime,
             canRunVirtualMachines: canRunVirtualMachines, store: store, installer: installer,
-            sampler: sampler, operations: operations, logDirectory: settings.logDirectoryURL,
+            exporter: exporter, sampler: sampler, operations: operations,
+            logDirectory: settings.logDirectoryURL,
             log: log)
 
         let signals = SignalMonitor([SIGTERM, SIGINT, SIGHUP])
         Task {
             for await number in signals.signals {
                 log.notice("received signal \(number); stopping every machine")
-                await service.cancelInstallations()
+                await service.cancelOperations()
                 let summary = await registry.shutdown(reason: "the maw daemon is stopping")
                 log.notice(
                     "stopped \(summary.stoppedMachines.count) machines and "
