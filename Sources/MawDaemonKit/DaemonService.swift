@@ -15,7 +15,7 @@
         /// Why sessions end on `terminate`; shown to their clients.
         static var terminateReason: String { "maw --terminate was run" }
         /// Why sessions end on `unregister`; shown to their clients.
-        static var unregisterReason: String { "maw --unregister was run" }
+        static var unregisterReason: String { MawError.unregisterReason }
 
         public let registry: MachineRegistry<C>
         public let lifetime: DaemonLifetime<C>

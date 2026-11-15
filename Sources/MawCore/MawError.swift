@@ -11,6 +11,10 @@
 ///
 /// `Codable`, so that the daemon can return an error to its clients unchanged.
 public enum MawError: Error, Equatable, Sendable, Codable {
+    /// The reason of `machineStopped` when `maw --unregister` stopped the machine, after which
+    /// running the command again cannot start it.
+    public static let unregisterReason = "maw --unregister was run"
+
     /// A distribution name failed validation. `reason` explains which rule it broke.
     case invalidDistroName(String, reason: String)
     /// The requested feature exists in the command surface but has no implementation yet.
@@ -116,7 +120,8 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     /// This executable's code signature does not satisfy the daemon's peer requirement, so the
     /// daemon would refuse its connection. `identifier` is the signature's identifier.
     case clientSignatureRejected(identifier: String)
-    /// The virtual machine that ran the session stopped. `reason` says why.
+    /// The virtual machine that ran the session stopped. `reason` says why; it is
+    /// `unregisterReason` when the distribution was deleted.
     case machineStopped(machine: String, reason: String)
     /// The LaunchAgent could not be installed or removed.
     case launchAgentFailed(reason: String)
@@ -494,6 +499,8 @@ extension MawError: LocalizedError {
             "Run mawd install again, so that launchd runs the daemon from this build."
         case .clientSignatureRejected:
             "Build and sign with scripts/sign-dev.sh; a plain swift build replaces the signature."
+        case .machineStopped(let machine, let reason) where reason == Self.unregisterReason:
+            "\(machine) was deleted; maw --list shows the installed distributions."
         case .machineStopped:
             "Run the command again to start a new virtual machine."
         case .launchAgentFailed:

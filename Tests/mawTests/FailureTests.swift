@@ -193,6 +193,18 @@ import Testing
                 """)
     }
 
+    /// A deleted distribution cannot be started again, so the suggestion points to the list.
+    @Test func fitsTheStopOfAnUnregisteredMachine() throws {
+        try expectWithinEightyColumns(
+            .machineStopped(machine: "Ubuntu-24.04", reason: MawError.unregisterReason),
+            printing: """
+                maw: The session ended because the virtual machine Ubuntu-24.04 stopped:
+                maw --unregister was run.
+                Ubuntu-24.04 was deleted; maw --list shows the installed distributions.
+
+                """)
+    }
+
     @Test func fitsTheStopOfAMachineThatWasShutDownOrIdle() throws {
         try expectWithinEightyColumns(
             .machineStopped(machine: "Ubuntu-24.04", reason: "maw --shutdown was run"),
