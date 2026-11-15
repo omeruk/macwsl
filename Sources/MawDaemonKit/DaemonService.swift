@@ -14,6 +14,11 @@
         static var shutdownReason: String { "maw --shutdown was run" }
         /// Why sessions end on `terminate`; shown to their clients.
         static var terminateReason: String { "maw --terminate was run" }
+        /// The answer to an export when the daemon has no exporter, as in unit tests that wire
+        /// none; `mawd serve` always has one.
+        static var noExporter: MawError {
+            .daemonProtocolError(reason: "this daemon was started without exports")
+        }
         /// Why sessions end on `unregister`; shown to their clients.
         static var unregisterReason: String { MawError.unregisterReason }
 
@@ -213,10 +218,10 @@
                     case .unregister(let requested):
                         reply = .unregistered(try await unregister(requested, for: processID))
                     case .checkExport(let requested):
-                        guard let exporter else { throw .distributionNotInstalled(requested) }
+                        guard let exporter else { throw Self.noExporter }
                         reply = .exportPossible(try await exporter.check(requested))
                     case .export(let request):
-                        guard let exporter else { throw .distributionNotInstalled(request.name) }
+                        guard let exporter else { throw Self.noExporter }
                         let destination = try Self.archiveDestination(in: message)
                         do throws(MawError) {
                             try refuseASecondOperation(running)

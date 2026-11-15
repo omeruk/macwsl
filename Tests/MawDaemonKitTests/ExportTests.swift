@@ -431,6 +431,22 @@ final class FakeExportingMachine: ExportingMachine, @unchecked Sendable {
         _ = try await other.checkExport(Self.copy)
     }
 
+    /// A daemon without an exporter, as some unit tests wire it, says so instead of calling an
+    /// installed distribution not installed.
+    @Test func reportsADaemonWithoutExports() async throws {
+        let distros = try TemporaryStore()
+        try distros.install("Copy")
+        let daemon = DaemonServiceTests.Daemon(store: distros.store)
+        let client = try await daemon.connect()
+        defer { client.close() }
+        let expected = MawError.daemonProtocolError(
+            reason: "this daemon was started without exports")
+        await #expect(throws: expected) { try await client.checkExport(Self.copy) }
+        await #expect(throws: expected) {
+            try await client.export(ExportRequest(name: Self.copy, format: .tar), to: STDOUT_FILENO)
+        }
+    }
+
     /// The descriptor must be open for writing and must not be a terminal.
     @Test func checksTheArchivesDescriptor() throws {
         let request = DaemonRequest.export(ExportRequest(name: Self.copy, format: .tar))
