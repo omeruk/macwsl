@@ -175,7 +175,8 @@ func feed(_ output: ArchiveOutput, _ bytes: [UInt8], size: Int = 65536) async ->
     }
 
     /// A reader that stops reading without closing its end holds a write up; `abort()` still
-    /// ends the archive at once, and the producer's next write returns false without waiting.
+    /// ends the archive at once, the producer's next write returns false without waiting, and
+    /// `finish()` reports the archive as aborted.
     @Test(arguments: [ArchiveFormat.tar, .tarGzip])
     func endsAtOnceWhenAbortedWhileTheReaderDoesNotRead(_ format: ArchiveFormat) async throws {
         ignoreSIGPIPE()
@@ -199,7 +200,22 @@ func feed(_ output: ArchiveOutput, _ bytes: [UInt8], size: Int = 65536) async ->
         let outcome = await output.finish()
         #expect(ContinuousClock.now - aborted < .seconds(2))
         #expect(chunks < (archive.count + 65535) / 65536, "The producer was never held up.")
-        #expect(outcome.failure == nil)
+        #expect(outcome.failure == .aborted)
+    }
+
+    /// An archive aborted after its last chunk is still reported as aborted, since the export
+    /// that aborted it was cancelled or failed.
+    @Test(arguments: [ArchiveFormat.tar, .tarGzip])
+    func reportsAnAbortAfterTheLastChunk(_ format: ArchiveFormat) async throws {
+        let archive = try paxArchive(holding: "hello from the guest\n")
+        let pipe = try DrainedPipe()
+        let output = try ArchiveOutput(
+            format: format, destination: OwnedDescriptor(dup(pipe.writer.rawValue)))
+        pipe.writer.close()
+        #expect(await feed(output, archive) == 1)
+        output.abort()
+        #expect(await output.finish().failure == .aborted)
+        _ = try await pipe.bytes()
     }
 
     /// The thread that writes reports the failure; the next chunk is refused, and `finish()`

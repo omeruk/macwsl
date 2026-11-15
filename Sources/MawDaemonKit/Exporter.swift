@@ -233,6 +233,8 @@
                 .exportFailed(name, step: "writing the archive", reason: reason)
             case .compressorFailed(let reason):
                 .exportFailed(name, step: "compressing the archive", reason: reason)
+            case .aborted:
+                .exportCancelled(name)
             }
         }
 

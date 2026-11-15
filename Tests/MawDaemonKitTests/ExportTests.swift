@@ -18,6 +18,7 @@ final class FakeExportingMachine: ExportingMachine, @unchecked Sendable {
     let checkStatus: Int
     private let released = OneTimeSignal()
     let discarded = OneTimeSignal()
+    private let quiet = OSAllocatedUnfairLock(initialState: false)
 
     init(chunks: [[UInt8]] = [Array("first ".utf8), Array("second".utf8)], checkStatus: Int = 0) {
         self.chunks = chunks
@@ -33,6 +34,14 @@ final class FakeExportingMachine: ExportingMachine, @unchecked Sendable {
     var heldStep: String? {
         get { state.withLock { $0.heldStep } }
         set { state.withLock { $0.heldStep = newValue } }
+    }
+
+    /// Whether a held archive goes on after `discard()` instead of failing, as the provisioning
+    /// machine's does: it hands over the next chunk, and returns without an error once the
+    /// output refuses it.
+    var archivesOnAfterDiscard: Bool {
+        get { quiet.withLock { $0 } }
+        set { quiet.withLock { $0 = newValue } }
     }
 
     func release() {
@@ -78,7 +87,7 @@ final class FakeExportingMachine: ExportingMachine, @unchecked Sendable {
             }
             if index == 0, heldStep == "archive" {
                 await released.wait()
-                if calls.contains("discard") {
+                if calls.contains("discard"), !archivesOnAfterDiscard {
                     throw .guestAgentFailed(reason: "the machine was stopped")
                 }
             }
@@ -324,6 +333,36 @@ final class FakeExportingMachine: ExportingMachine, @unchecked Sendable {
         await #expect(throws: MawError.exportCancelled(Self.copy)) { try await task.value }
         #expect(machine.calls.contains("discard"))
         #expect(!machine.calls.contains("finish"))
+        #expect(destination.rawValue == -1)
+        #expect(operations.operation(on: Self.copy) == nil)
+        _ = try await pipe.bytes()
+    }
+
+    /// The provisioning machine's archive returns without an error when the output refuses a
+    /// chunk, which it does once a cancellation has aborted it, and the machine's last step then
+    /// fails because the machine was discarded. The export still fails as cancelled, so that maw
+    /// removes the partial file, as integration run 7 found it did not.
+    @Test(arguments: [ArchiveFormat.tar, .tarGzip])
+    func reportsACancellationThatEndsTheArchiveWithoutAnError(_ format: ArchiveFormat)
+        async throws
+    {
+        machine.heldStep = "archive"
+        machine.archivesOnAfterDiscard = true
+        machine.failingStep = "finish"
+        let pipe = try DrainedPipe()
+        let destination = OwnedDescriptor(dup(pipe.writer.rawValue))
+        pipe.writer.close()
+        let exporter = self.exporter
+        let task = Task {
+            try await exporter.export(
+                ExportRequest(name: Self.copy, format: format), to: destination, for: 1
+            ) { _ in }
+        }
+        try await eventually("the archive step") { machine.calls.contains("archive") }
+        task.cancel()
+        await #expect(throws: MawError.exportCancelled(Self.copy)) { try await task.value }
+        #expect(machine.calls.contains("stopped"))
+        #expect(machine.calls.contains("discard"))
         #expect(destination.rawValue == -1)
         #expect(operations.operation(on: Self.copy) == nil)
         _ = try await pipe.bytes()

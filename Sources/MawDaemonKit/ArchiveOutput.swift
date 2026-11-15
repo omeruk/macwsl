@@ -30,6 +30,8 @@
             case writeFailed(String)
             /// `/usr/bin/tar` could not start, or exited with an error.
             case compressorFailed(String)
+            /// `abort()` was called, so the archive may be incomplete, whatever was written.
+            case aborted
         }
 
         /// What an export wrote, and why it stopped early if it did.
@@ -141,7 +143,8 @@
         ///
         /// After `abort()` it does not wait for a write that the descriptor's reader holds up,
         /// which may never return: that write's thread closes the descriptor when it does, and
-        /// writes nothing more.
+        /// writes nothing more. Its outcome's failure is then `aborted`, also when the guest's
+        /// output had already ended, because a chunk may not have been written.
         func finish() async -> Outcome {
             compressorInput?.close()
             var compressorFailure: Failure?
@@ -158,7 +161,10 @@
                 }
             }
             let written = await writer.finish()
-            if written.failure == nil, !aborted.withLock({ $0 }), let compressorFailure {
+            if aborted.withLock({ $0 }) {
+                return Outcome(bytes: written.bytes, failure: .aborted)
+            }
+            if written.failure == nil, let compressorFailure {
                 return Outcome(bytes: written.bytes, failure: compressorFailure)
             }
             return written
