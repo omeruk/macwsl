@@ -12,15 +12,12 @@ from `main`.
 
 ## Phase 06b: Distro removal and transfer
 
-- **No `maw --unregister`, `maw --export`, or `maw --import`.**
-  - **Seen:** The three commands fail with `notImplemented`: "--unregister is not implemented
-    yet; phase 06b adds it." A distribution is removed by hand: `maw --terminate <name>`, then
-    deleting its directory.
-  - **Evidence:** `Sources/maw/Action.swift:29`; pull request #19, "Known limitations and
-    follow-up work"; [docs/distributions.md, "Removing a distribution by
-    hand"](distributions.md#removing-a-distribution-by-hand) and `README.md`, "Removing a
-    distribution", describe the manual removal.
-  - **Phase:** 06b.
+- **No `maw --import`.**
+  - **Seen:** `maw --import` fails with `notImplemented`: "--import is not implemented yet;
+    phase 06b adds it." An archive from `maw --export` cannot yet become a distribution.
+  - **Evidence:** `Sources/maw/Maw.swift:126`; phase 06b is split into two pull requests, and
+    the first adds only `--unregister` and `--export`.
+  - **Phase:** 06b, its second pull request.
 - **CR-7: An imported root file system whose `/sbin/init` is not systemd.**
   - **Seen:** On a distribution's machine, only systemd starts the agent, through the unit
     that the initramfs writes. A distribution whose `/sbin/init` is not systemd would fail to
@@ -28,22 +25,6 @@ from `main`.
   - **Evidence:** `Guest/initramfs/init:78`; pull request #19, "Review results", CR-7.
     Installation from the catalog cannot produce such a distribution.
   - **Phase:** 06b. `--import` checks `/sbin/init` and refuses such a file system by name.
-- **The `maw --help` example of `--export` names the alias `Ubuntu`.**
-  - **Seen:** `maw --help` shows `maw --export Ubuntu ubuntu.tar`. `Ubuntu` is a catalog alias,
-    not an installed name, and phase 06a does not accept aliases where a command needs an
-    installed distribution.
-  - **Evidence:** `Sources/maw/Maw.swift:45`; pull request #22, "Known limitations and
-    follow-up work".
-  - **Phase:** 06b, which implements `--export` and gives the example an installed name.
-- **A watcher does not notice a distribution removed by hand while no machine runs.**
-  - **Seen:** A distribution whose directory is deleted by hand stays in the snapshots of
-    `watchDistributions` until the next snapshot: a sample of a running machine, a state change,
-    an installation, or a new default.
-  - **Evidence:** `FigureSampler.snapshot(after:)` reads the installed distributions only when
-    the sequence number has grown (`Sources/MawDaemonKit/FigureSampler.swift`); nothing watches
-    the distributions directory.
-  - **Phase:** 06b, whose `maw --unregister` removes a distribution through the daemon and can
-    publish a new snapshot.
 
 ## Phase 07: File sharing and paths
 
@@ -202,16 +183,16 @@ from `main`.
 - **Many messages are wider than 80 columns.**
   - **Seen:** Messages and suggestions are single lines, many longer than 80 columns, and
     some contain text of unknown length from Foundation or paths. Examples: the account prompt
-    (90 columns), the message of `installationOutcomeUnknown` (184 columns with
-    `Ubuntu-24.04`), and, with the name `maw-capture`, the suggestion of
-    `distributionAlreadyInstalled` (81).
+    (90 columns) and the message of `installationOutcomeUnknown` (184 columns with
+    `Ubuntu-24.04`).
   - **Evidence:** `Sources/maw/InstallCommand.swift:372`, `Sources/MawCore/MawError.swift:383`;
     pull request #19, "Known limitations and follow-up work". Seven messages have an 80-column
     test, wrapped by hand where needed: the cancellation, the password with a control
     character, the unconfirmed cancellation, `machineStopped` with the daemon's own reasons,
     `distributionNotInstalled`, and the suggestion of `installationOutcomeUnknown`
     (`Tests/mawTests/FailureTests.swift`), and `sessionConnectionEnded`
-    (`Tests/MawCoreTests/MawErrorTests.swift:275`).
+    (`Tests/MawCoreTests/MawErrorTests.swift:275`). Since phase 06b, the errors of
+    `--unregister` and `--export` have one as well (`Tests/MawCoreTests/RemovalAndExportErrorTests.swift`).
   - **Phase:** 12b. Proposed: `CommandFailure` wraps its output at spaces to the terminal's
     width when standard error is a terminal, and leaves it unchanged otherwise.
 - **CR-3: A resumed download does not check `Content-Range`.**
@@ -259,7 +240,7 @@ from `main`.
 - **The integration tests' waits count time asleep.**
   - **Seen:** A Mac that sleeps during an integration run fails waits such as
     `waitForPrompt` at once on waking. The final runs of phase 05 used `caffeinate -dims`.
-  - **Evidence:** `Tests/mawdTests/MawIntegration.swift:281`; pull request #19, "Known
+  - **Evidence:** `Tests/mawdTests/MawIntegration.swift:447`; pull request #19, "Known
     limitations and follow-up work".
   - **Phase:** 12b. Measure the waits with `SuspendingClock`, as `Launchctl.waitUntilRemoved`
     does.
@@ -389,6 +370,41 @@ from `main`.
   - **Phase:** 13, with the app bundle.
 
 ## No phase yet
+
+- **A watcher does not notice a distribution removed by hand while no machine runs.**
+  - **Seen:** `maw --unregister` is the supported way to remove a distribution, and the
+    terminal app's distributions screen drops it at once. A distribution whose directory is
+    deleted by hand instead stays in the snapshots of `watchDistributions` until the next
+    snapshot: a sample of a running machine, a state change, an installation, a removal, or a
+    new default.
+  - **Evidence:** `FigureSampler.snapshot(after:)` reads the installed distributions only when
+    the sequence number has grown (`Sources/MawDaemonKit/FigureSampler.swift`); nothing watches
+    the distributions directory. `DaemonService.unregister` publishes a snapshot after each
+    removal.
+  - **Phase:** None yet; a watch of the distributions directory, or no change, since the
+    supported removal publishes.
+- **`maw --export` does not keep POSIX ACLs.**
+  - **Seen:** Access and default ACLs of files in a distribution are missing from its archive;
+    the files keep their mode, whose group bits are the ACL's mask, and their other extended
+    attributes.
+  - **Evidence:** The guest's `bsdtar` is built with `--disable-acl`
+    (`Guest/initramfs/build.sh:120`), and libarchive does not archive the kernel's
+    `system.posix_acl_access` and `system.posix_acl_default` attributes as extended attributes
+    either. `RemovalAndExportIntegrationTests.recordsWhatAnExportKeepsOfPOSIXACLs` sets both
+    kinds and prints which ACL records reach the archive: none, as its run in the pull request
+    records.
+  - **Phase:** None yet. Building `bsdtar` with ACL support needs libacl in the guest build;
+    the import would need the same to restore them.
+- **A `maw --export` killed with SIGKILL leaves its file.**
+  - **Seen:** maw removes the file of a failed or cancelled export, on Ctrl-C, SIGTERM, and
+    SIGHUP as well, but a SIGKILL ends it before it can. The partial file, of mode 600, stays
+    at the path that was given, and the daemon ends the export when the connection closes.
+  - **Evidence:** `ArchiveFile.remove()` in `Sources/maw/ExportCommand.swift:239` runs in maw's
+    process; the daemon never opens the path, by design (docs/security.md, "The export's
+    descriptor").
+  - **Phase:** None yet. Writing to a temporary name and renaming it at the end would leave a
+    differently named file instead; a file that cannot be removed this way is inherent to a
+    client-side file.
 
 - **`maw` shows no distribution figures.**
   - **Seen:** `maw --list --verbose` keeps the columns of `wsl.exe --list --verbose`, and

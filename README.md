@@ -218,15 +218,32 @@ With no distribution installed, `maw --list` says so and exits with status 1, as
 does; `maw --list --quiet` prints nothing and exits with 0. With none running,
 `maw --list --running` prints "No distribution is running." and exits with 0.
 
-### Removing a distribution
-
-`maw --unregister` arrives in phase 06b. Until then, stop the distribution's virtual machine
-and delete its directory, which permanently deletes its disk:
+### Removing and exporting a distribution
 
 ```sh
-maw --terminate Ubuntu-24.04
-rm -r "$HOME/Library/Application Support/maw/distros/Ubuntu-24.04"
+maw --unregister Work                    # ask, then stop Work and delete it with its disk
+maw --unregister Work --yes              # the same without the question
+maw --export Work work.tar               # write Work's root file system to a tar archive
+maw --export Work work.tar.gz            # compressed, chosen by the file's extension
+maw --export Work work.tar --format tar.xz   # or by --format: tar, tar.gz, or tar.xz
+maw --export Work - | ssh other-mac 'cat > work.tar'   # the archive to standard output
 ```
+
+`--unregister` permanently deletes the distribution's disk and every file in it. On a
+terminal it asks "Delete Work and its disk for good? [y/N]" and goes on only after `y` or
+`yes`; without a terminal on standard input, as in a script, and with `--yes`, it asks
+nothing. It stops the distribution's virtual machine first, which ends its sessions with the
+reason "maw --unregister was run", and deletes its logs. If it was the default, maw names the
+new default on standard error.
+
+`--export` writes the root file system of a stopped distribution; stop a running one with
+`maw --terminate` first. maw creates the file itself with mode 600, because the archive
+holds `/etc/shadow` and every user's files, and never replaces an existing file. The format
+follows the extension, as `tar -a` does: `.tar.gz`, `.tgz`, and `.gz` give `tar.gz`;
+`.tar.xz`, `.txz`, and `.xz` give `tar.xz`, in any case; any other name, and `-`, give an
+uncompressed `tar`. A `--format` that is given always wins. Progress goes to standard error,
+and Ctrl-C cancels the export and removes the file. POSIX ACLs are not kept
+([`docs/known-limitations.md`](docs/known-limitations.md)).
 
 To remove the daemon, which stops its virtual machines first:
 
@@ -235,8 +252,8 @@ mawd uninstall
 ```
 
 Logs are in `~/Library/Logs/maw`: `mawd.log` for the daemon, `<distribution>.log` for each
-distribution's console, including how each shutdown went, and `install/<distribution>.log` for
-its installation. [`docs/daemon.md`](docs/daemon.md) describes the daemon in detail.
+distribution's console, including how each shutdown went, `install/<distribution>.log` for
+its installation, and `export/<distribution>.log` for its last export. [`docs/daemon.md`](docs/daemon.md) describes the daemon in detail.
 
 ## Booting the guest on your Mac
 
