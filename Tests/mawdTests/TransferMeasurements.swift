@@ -34,14 +34,17 @@ struct TransferMeasurements {
     }
 
     /// From maw's start to its exit, for a distribution whose machine is stopped. Each run
-    /// removes a distribution installed for it.
+    /// removes a distribution installed for it, after stopping the machine that the
+    /// installation's last step started; the daemon's log must confirm that it was not running.
     @Test func measuresUnregisterOfAStoppedDistribution() async throws {
         var times: [Double] = []
         for run in 1...Self.runs {
             try await maw.withDistribution("measure-unregister-stopped-\(run)") { name in
+                try await stop(name)
                 let (status, elapsed) = try await maw.timedUnregister(name)
                 try #require(status == 0)
                 #expect(maw.traces(of: name).isEmpty)
+                try requireRemoval(of: name, saying: "its machine was not running")
                 times.append(elapsed)
             }
         }
@@ -70,6 +73,7 @@ struct TransferMeasurements {
                 let (status, elapsed) = try await maw.timedUnregister(name)
                 try #require(status == 0)
                 #expect(maw.traces(of: name).isEmpty)
+                try requireRemoval(of: name, saying: "its machine was stopped and 0 sessions ended")
                 times.append(elapsed)
             }
         }
@@ -82,6 +86,7 @@ struct TransferMeasurements {
     /// maw's exit, the throughput, and how much the daemon's footprint grows meanwhile.
     @Test func measuresExportToAFile() async throws {
         try await maw.withDistribution("measure-export-file") { name in
+            try await stop(name)
             let daemon = try await maw.daemonProcessID()
             var times: [Double] = []
             var throughput: [Double] = []
@@ -118,6 +123,7 @@ struct TransferMeasurements {
     /// make the daemon buffer.
     @Test func measuresExportThroughAPipe() async throws {
         try await maw.withDistribution("measure-export-pipe") { name in
+            try await stop(name)
             let daemon = try await maw.daemonProcessID()
             var times: [Double] = []
             var throughput: [Double] = []
@@ -155,6 +161,7 @@ struct TransferMeasurements {
     /// `--format tar.gz` and `--format tar.xz` of the same distribution: reported only.
     @Test func measuresCompressedExports() async throws {
         try await maw.withDistribution("measure-export-compressed") { name in
+            try await stop(name)
             for format in ["tar.gz", "tar.xz"] {
                 var times: [Double] = []
                 var sizes: [Double] = []
@@ -176,6 +183,22 @@ struct TransferMeasurements {
     }
 
     // MARK: Helpers
+
+    /// Requires the daemon's log line of the removal of `name` to contain `outcome`, so that each
+    /// run measured the case it names.
+    func requireRemoval(of name: String, saying outcome: String) throws {
+        let lines = try maw.daemonLogLines(since: "\(name): removal requested by process")
+        try #require(
+            lines.contains { $0.contains("\(name): removed for process ") && $0.contains(outcome) },
+            "\(lines.joined(separator: "\n"))")
+    }
+
+    /// Stops the machine that the installation's last step started, since only a stopped
+    /// distribution can be exported.
+    func stop(_ name: String) async throws {
+        let result = try await maw.run(["--terminate", name])
+        try #require(result.status == 0, "\(result.standardError)")
+    }
 
     /// Runs `body` while it samples the daemon's footprint (`ri_phys_footprint`) every 20 ms,
     /// and returns the result with the largest growth over the footprint before `body`, in MiB.
