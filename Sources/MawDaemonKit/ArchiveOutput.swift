@@ -42,7 +42,8 @@
         private let writer: DescriptorWriter
         /// The write end of the pipe to `/usr/bin/tar`, for a compressed archive.
         private let compressorInput: OwnedDescriptor?
-        private let compressor: Task<Result<StreamingProcess.Outcome, any Error>, Never>?
+        /// `/usr/bin/tar`'s outcome, once it has exited.
+        private let compressor: Completion<Result<StreamingProcess.Outcome, any Error>>?
         /// Whether `abort()` was called; `/usr/bin/tar` failing then is not the archive's failure.
         private let aborted = OSAllocatedUnfairLock(initialState: false)
 
@@ -86,16 +87,27 @@
             let reader = OwnedDescriptor(fds[0])
             compressorInput = OwnedDescriptor(fds[1])
             let writer = self.writer
-            compressor = Task {
-                await runOnDedicatedThread { () -> Result<StreamingProcess.Outcome, any Error> in
+            // On a thread of its own from the start, not from a task: the guest's output may
+            // already wait for /usr/bin/tar to read, and a task could wait for a free thread of
+            // the cooperative pool.
+            let completion = Completion<Result<StreamingProcess.Outcome, any Error>>()
+            let started = startDetachedThread {
+                completion.complete(
                     Result {
                         try StreamingProcess.run("/usr/bin/tar", arguments, input: reader) {
                             chunk in
                             chunk.withUnsafeBytes { writer.write($0) }
                         }
-                    }
-                }
+                    })
             }
+            guard started else {
+                reader.close()
+                compressorInput?.close()
+                writer.abort()
+                writer.end()
+                throw .compressorFailed("the thread that runs /usr/bin/tar cannot start")
+            }
+            compressor = completion
         }
 
         /// Takes the next chunk of the guest's archive. Called on one thread, in order. Returns
@@ -134,7 +146,7 @@
             compressorInput?.close()
             var compressorFailure: Failure?
             if let compressor {
-                switch await compressor.value {
+                switch await runOnDedicatedThread({ compressor.wait() }) {
                 case .failure(let error):
                     compressorFailure = .compressorFailed(
                         "/usr/bin/tar cannot start: \(error.localizedDescription)")
@@ -150,6 +162,29 @@
                 return Outcome(bytes: written.bytes, failure: compressorFailure)
             }
             return written
+        }
+
+        /// A value that one thread sets once and others wait for.
+        private final class Completion<Value: Sendable>: @unchecked Sendable {
+            private let lock = ConditionLock()
+            private var value: Value?
+
+            func complete(_ value: Value) {
+                lock.withLock {
+                    self.value = value
+                    lock.broadcast()
+                }
+            }
+
+            /// Blocks until `complete(_:)` has been called; call it on a thread of its own.
+            func wait() -> Value {
+                lock.withLock {
+                    while value == nil {
+                        lock.wait()
+                    }
+                    return value!
+                }
+            }
         }
 
         /// Writes the archive to the client's descriptor on a detached thread of its own, one

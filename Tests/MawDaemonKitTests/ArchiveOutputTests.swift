@@ -93,15 +93,31 @@ func listed(_ archive: [UInt8]) throws -> [String] {
     return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
 }
 
+/// Hands `bytes` to `output` in chunks of `size`, as the guest's output arrives, on a thread of
+/// its own: a write may wait for the reader or for `/usr/bin/tar`, and must not hold a thread of
+/// the cooperative pool, which other tests in the process share. Returns how many chunks were
+/// accepted before one was refused.
+func feed(_ output: ArchiveOutput, _ bytes: [UInt8], size: Int = 65536) async -> Int {
+    await runOnDedicatedThread { () -> Int in
+        var accepted = 0
+        for start in stride(from: 0, to: bytes.count, by: size) {
+            guard
+                Array(bytes[start..<min(start + size, bytes.count)])
+                    .withUnsafeBytes({ output.write($0) })
+            else { break }
+            accepted += 1
+        }
+        return accepted
+    }
+}
+
 @Suite struct ArchiveOutputTests {
     @Test func writesATarArchiveAsTheGuestMadeIt() async throws {
         let pipe = try DrainedPipe()
         let output = try ArchiveOutput(
             format: .tar, destination: OwnedDescriptor(dup(pipe.writer.rawValue)))
         pipe.writer.close()
-        for chunk in ["one ", "two ", "three"] {
-            #expect(Array(chunk.utf8).withUnsafeBytes { output.write($0) })
-        }
+        #expect(await feed(output, Array("one two three".utf8), size: 4) == 4)
         let outcome = await output.finish()
         #expect(outcome == ArchiveOutput.Outcome(bytes: 13, failure: nil))
         #expect(try await pipe.bytes() == Array("one two three".utf8))
@@ -119,9 +135,8 @@ func listed(_ archive: [UInt8]) throws -> [String] {
             format: format, destination: OwnedDescriptor(dup(pipe.writer.rawValue)))
         pipe.writer.close()
         // In two chunks, as the guest's output arrives.
-        let half = archive.count / 2
-        #expect(Array(archive[..<half]).withUnsafeBytes { output.write($0) })
-        #expect(Array(archive[half...]).withUnsafeBytes { output.write($0) })
+        let half = (archive.count + 1) / 2
+        #expect(await feed(output, archive, size: half) == 2)
         let outcome = await output.finish()
         #expect(outcome.failure == nil)
         let written = try await pipe.bytes()
@@ -154,11 +169,7 @@ func listed(_ archive: [UInt8]) throws -> [String] {
         close(fds[0])
         let output = try ArchiveOutput(format: format, destination: OwnedDescriptor(fds[1]))
         let archive = try paxArchive(holding: String(repeating: "data ", count: 100_000))
-        var accepted = true
-        for start in stride(from: 0, to: archive.count, by: 65536) where accepted {
-            accepted = Array(archive[start..<min(start + 65536, archive.count)])
-                .withUnsafeBytes { output.write($0) }
-        }
+        _ = await feed(output, archive)
         let outcome = await output.finish()
         #expect(outcome.failure == .readerClosed)
     }
@@ -173,22 +184,13 @@ func listed(_ archive: [UInt8]) throws -> [String] {
         let reader = OwnedDescriptor(fds[0])
         defer { reader.close() }
         let output = try ArchiveOutput(format: format, destination: OwnedDescriptor(fds[1]))
-        // Letters that gzip cannot shrink below a pipe's 64 KiB.
-        let text = String(
-            (0..<2_000_000).map { _ in "abcdefghijklmnopqrstuvwxyz".randomElement()! })
-        let archive = try paxArchive(holding: text)
-        let producer = Task {
-            await runOnDedicatedThread { () -> Int in
-                var chunks = 0
-                for start in stride(from: 0, to: archive.count, by: 65536) {
-                    let accepted = Array(archive[start..<min(start + 65536, archive.count)])
-                        .withUnsafeBytes { output.write($0) }
-                    guard accepted else { break }
-                    chunks += 1
-                }
-                return chunks
-            }
+        // Random bytes in base64, which gzip cannot shrink below a pipe's 64 KiB.
+        let archive = try await runOnDedicatedThread { () throws -> [UInt8] in
+            var random = [UInt8](repeating: 0, count: 1_500_000)
+            arc4random_buf(&random, random.count)
+            return try paxArchive(holding: Data(random).base64EncodedString())
         }
+        let producer = Task { await feed(output, archive) }
         // The pipe fills, and the producer waits.
         try await Task.sleep(for: .milliseconds(500))
         let aborted = ContinuousClock.now
