@@ -1,6 +1,7 @@
 #if os(macOS)
     import Darwin
     import Foundation
+    import MawProtocol
 
     /// Runs a program on the Mac and hands its standard output to a consumer in chunks.
     ///
@@ -21,9 +22,14 @@
         /// output. If `consume` returns false, the program is terminated and the rest of its
         /// output discarded. Blocks until the program has exited; call it on a thread of its
         /// own.
+        ///
+        /// Its standard input is `input`, which this closes as soon as the program has started,
+        /// so that the program is its only reader, or `/dev/null` without one.
         static func run(
-            _ path: String, _ arguments: [String], consume: (Data) -> Bool
+            _ path: String, _ arguments: [String], input: OwnedDescriptor? = nil,
+            consume: (Data) -> Bool
         ) throws -> Outcome {
+            defer { input?.close() }
             var fds: [Int32] = [-1, -1]
             guard pipe(&fds) == 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
             let (reader, writer) = (fds[0], fds[1])
@@ -36,7 +42,11 @@
             var actions: posix_spawn_file_actions_t?
             posix_spawn_file_actions_init(&actions)
             defer { posix_spawn_file_actions_destroy(&actions) }
-            posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0)
+            if let input {
+                posix_spawn_file_actions_adddup2(&actions, input.rawValue, STDIN_FILENO)
+            } else {
+                posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0)
+            }
             posix_spawn_file_actions_adddup2(&actions, writer, STDOUT_FILENO)
             posix_spawn_file_actions_addopen(
                 &actions, STDERR_FILENO, errorFile.path(percentEncoded: false),
@@ -65,6 +75,7 @@
             var pid: pid_t = 0
             let spawned = posix_spawn(&pid, path, &actions, &attributes, argv, environ)
             close(writer)
+            input?.close()
             guard spawned == 0 else {
                 close(reader)
                 throw POSIXError(.init(rawValue: spawned) ?? .EIO)
