@@ -31,6 +31,21 @@ import Testing
         try store.commit(staging: staging, metadata: try metadata(name))
     }
 
+    /// The first distribution that registers becomes the default and is recorded; a later one
+    /// is not.
+    @Test func registersTheFirstDistributionAsTheDefault() throws {
+        let first = store.stagingDirectory(for: try DistroName("Work"))
+        try store.createStagingDirectory(first)
+        #expect(try store.register(staging: first, metadata: try metadata("Work")))
+        let second = store.stagingDirectory(for: try DistroName("Copy"))
+        try store.createStagingDirectory(second)
+        #expect(try !store.register(staging: second, metadata: try metadata("Copy")))
+        #expect(store.isInstalled(try DistroName("Copy")))
+        #expect(store.defaultDistribution() == (try DistroName("Work")))
+        let state = try JSONSerialization.jsonObject(with: Data(contentsOf: store.paths.stateFile))
+        #expect((state as? [String: Any])?["defaultDistribution"] as? String == "Work")
+    }
+
     func contents(of url: URL) -> [String] {
         ((try? FileManager.default.contentsOfDirectory(atPath: url.path(percentEncoded: false)))
             ?? []).sorted()

@@ -202,6 +202,25 @@
             }
         }
 
+        /// Registers a new distribution: `commit(staging:metadata:)`, and, if no distribution was
+        /// installed before, records it as the default. Returns whether it became the default.
+        /// The decision and the rename happen under the lock of `state.json`, so that of two
+        /// installations or imports that register at once, only the first becomes the default.
+        public func register(staging: URL, metadata: DistroMetadata) throws(MawError) -> Bool {
+            try Self.stateLock.withLock { () throws(MawError) -> Bool in
+                let isDefault = defaultDistribution() == nil
+                try commit(staging: staging, metadata: metadata)
+                if isDefault {
+                    // As before, a default that cannot be recorded does not fail the
+                    // registration: the first installed distribution is the default anyway.
+                    var state = readState()
+                    state.defaultDistribution = metadata.name
+                    try? writeState(state)
+                }
+                return isDefault
+            }
+        }
+
         /// Writes `metadata` into `staging` and renames it to the distribution's directory.
         /// The rename is the moment the distribution becomes installed.
         public func commit(staging: URL, metadata: DistroMetadata) throws(MawError) {
