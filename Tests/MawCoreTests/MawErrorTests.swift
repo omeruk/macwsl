@@ -4,7 +4,7 @@ import Testing
 
 @Suite struct MawErrorTests {
     static let errors: [MawError] = [
-        .notImplemented(feature: "--import", phase: "06b"),
+        .notImplemented(feature: "--install", phase: "05"),
         .distributionNotInstalled(try! DistroName("Ubuntu")),
         .unsupportedDirectory("projects"),
         .daemonNotInstalled(label: "dev.maw.mawd"),
@@ -33,8 +33,8 @@ import Testing
     }
 
     @Test func namesThePhaseOfAMissingFeature() {
-        let error = MawError.notImplemented(feature: "--import", phase: "06b")
-        #expect(error.errorDescription == "--import is not implemented yet; phase 06b adds it.")
+        let error = MawError.notImplemented(feature: "--install", phase: "05")
+        #expect(error.errorDescription == "--install is not implemented yet; phase 05 adds it.")
         #expect(error.recoverySuggestion == nil)
     }
 

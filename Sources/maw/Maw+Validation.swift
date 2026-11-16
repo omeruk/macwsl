@@ -85,7 +85,8 @@ extension Maw {
                 name, file: file, format: ArchiveFormat.format(given: managing.format, file: file))
         case .importDistro(let name):
             return .importDistro(
-                name, file: try fileOperand(for: CLIOption.import, purpose: "read"))
+                name, file: try fileOperand(for: CLIOption.import, purpose: "read"),
+                user: running.user)
         case .unregister(let name):
             try expectNoOperands(after: CLIOption.unregister.displayName)
             return .unregister(name, yes: managing.yes)
@@ -242,10 +243,11 @@ private enum Request {
         }
     }
 
-    /// Whether `-u` applies. `--install -u <user>` names the account to create.
+    /// Whether `-u` applies. `--install -u <user>` names the account to create, and
+    /// `--import -u <user>` the default user, which must exist in the archive.
     var acceptsUser: Bool {
         switch self {
-        case .install, .exec, .command: true
+        case .install, .importDistro, .exec, .command: true
         default: false
         }
     }

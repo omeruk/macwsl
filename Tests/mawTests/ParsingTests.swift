@@ -203,7 +203,13 @@ func distro(_ name: String) throws -> DistroName {
     @Test func imports() throws {
         #expect(
             try action("--import", "Ubuntu", "ubuntu.tar")
-                == .importDistro(distro("Ubuntu"), file: "ubuntu.tar"))
+                == .importDistro(distro("Ubuntu"), file: "ubuntu.tar", user: nil))
+        #expect(
+            try action("--import", "Copy", "-", "-u", "ayse")
+                == .importDistro(distro("Copy"), file: "-", user: "ayse"))
+        #expect(
+            try action("-u", "root", "--import", "Copy", "u.tar.xz")
+                == .importDistro(distro("Copy"), file: "u.tar.xz", user: "root"))
     }
 
     @Test func unregisters() throws {
@@ -227,15 +233,6 @@ func distro(_ name: String) throws -> DistroName {
         #expect(try action(arguments) == .version)
     }
 
-    // MARK: Running a stub
-
-    /// `--import` arrives with phase 06b's second pull request.
-    @Test func importReportsThatItIsNotImplemented() async throws {
-        let command = try Maw.parse(ArgumentNormalizer.normalize(["--import", "Ubuntu", "u.tar"]))
-        await #expect(throws: MawError.notImplemented(feature: "--import", phase: "06b")) {
-            try await command.run()
-        }
-    }
 }
 
 private func action(_ arguments: [String]) throws -> Action {

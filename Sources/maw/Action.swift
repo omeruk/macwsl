@@ -17,7 +17,9 @@ enum Action: Equatable, Sendable {
     /// `--export <distro> <file> [--format <format>]`, with the format that `--format` or
     /// the file's name chooses (`ArchiveFormat.format(given:file:)`).
     case export(DistroName, file: String, format: ArchiveFormat)
-    case importDistro(DistroName, file: String)
+    /// `--import <distro> <file> [-u <user>]`. `user` is the default user, which must exist in
+    /// the archive.
+    case importDistro(DistroName, file: String, user: String?)
     /// `--unregister <distro> [--yes]`. `yes` skips the question.
     case unregister(DistroName, yes: Bool)
     case status

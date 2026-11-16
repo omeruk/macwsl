@@ -42,14 +42,12 @@ import Testing
         }
     }
 
-    /// Each suggestion names only commands of this build, and never asks to delete files by
-    /// hand.
+    /// No suggestion asks to delete files by hand.
     @Test(arguments: errors)
-    func suggestsNoStepThatThisBuildLacks(_ error: MawError) {
+    func suggestsNoStepByHand(_ error: MawError) {
         let suggestion = error.recoverySuggestion ?? ""
         #expect(!suggestion.contains("rm "))
         #expect(!suggestion.contains("README"))
-        #expect(!suggestion.contains("--import"))
     }
 
     @Test func namesTheOperationThatHoldsTheName() {

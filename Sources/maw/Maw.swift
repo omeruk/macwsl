@@ -25,7 +25,7 @@ struct Maw: AsyncParsableCommand {
             maw --terminate <distro>
             maw --shutdown
             maw --export <distro> <file> [--format tar | tar.gz | tar.xz]
-            maw --import <distro> <file>
+            maw --import <distro> <file> [-u <user>]
             maw --unregister <distro> [--yes]
             maw --status
             maw --version
@@ -45,12 +45,18 @@ struct Maw: AsyncParsableCommand {
             in .tar.gz, .tgz, or .gz, and with xz when it ends in .tar.xz, .txz, or .xz; \
             --format chooses instead.
 
+            --import creates a distribution from a tar archive in any compression, such as \
+            one from --export or wsl.exe --export, or from standard input for -. Its sessions \
+            run as the user that -u names, or else the default user of the archive's \
+            /etc/maw.conf or /etc/wsl.conf, or else root.
+
             Examples:
               maw --install Ubuntu-24.04          Install Ubuntu 24.04.
               maw -l -v                           List distributions with their state.
               maw -d Ubuntu-24.04 -u root         Open a root shell in Ubuntu 24.04.
               maw -e uname -a                     Run uname directly, without a shell.
               maw --export Ubuntu-24.04 u.tar.gz  Back up Ubuntu 24.04 to a tar.gz file.
+              maw --import Copy u.tar.gz          Create Copy from that archive.
               maw --unregister Ubuntu-24.04       Delete Ubuntu 24.04 and its disk.
             """
     )
@@ -126,9 +132,11 @@ struct Maw: AsyncParsableCommand {
             if status != 0 {
                 throw ExitCode(status)
             }
-        case .importDistro:
-            // Phase 06b's second pull request adds it.
-            throw MawError.notImplemented(feature: action.displayName, phase: "06b")
+        case .importDistro(let name, let file, let user):
+            let status = try await ImportCommand(name: name, file: file, user: user).run()
+            if status != 0 {
+                throw ExitCode(status)
+            }
         }
     }
 
@@ -249,7 +257,10 @@ struct RunningOptions: ParsableArguments {
         name: CLIOption.user.names,
         parsing: .unconditional,
         help: ArgumentHelp(
-            "Run as <user> instead of the distribution's default user.", valueName: "user"))
+            "Run as <user> instead of the distribution's default user.",
+            discussion:
+                "With --install: the account to create. With --import: the default user, "
+                + "which must exist in the archive.", valueName: "user"))
     var user: String?
 
     @Option(
@@ -359,7 +370,7 @@ struct ManagingOptions: ParsableArguments {
         name: CLIOption.import.names,
         parsing: .unconditional,
         help: ArgumentHelp(
-            "Create <distro> from <file>, a tar archive made by --export.",
+            "Create <distro> from <file>, a tar archive, or - for standard input.",
             valueName: "distro> <file"),
         transform: { try DistroName($0) })
     var `import`: DistroName?
