@@ -246,7 +246,8 @@ import Testing
     @Test(arguments: [
         ["-d", "A", "--unregister", "B"], ["-d", "A", "--export", "B", "b.tar"],
         ["-u", "root", "--unregister", "B"], ["-u", "root", "--export", "B", "-"],
-        ["--cd", "/root", "--export", "B", "-"],
+        ["--cd", "/root", "--export", "B", "-"], ["-d", "A", "--import", "B", "b.tar"],
+        ["--cd", "/root", "--import", "B", "b.tar"],
     ])
     func rejectsSessionOptionsWithRemovalAndExport(_ arguments: [String]) {
         #expect(failure(arguments)?.contains("cannot be combined with") == true)
@@ -300,7 +301,8 @@ import Testing
             "-- <command>", "-e <command>", "--install [<distro>]",
             "--list [--running] [--verbose | --quiet]", "--list --online",
             "--set-default <distro>", "--terminate <distro>", "--shutdown",
-            "--export <distro> <file> [--format tar | tar.gz | tar.xz]", "--import <distro> <file>",
+            "--export <distro> <file> [--format tar | tar.gz | tar.xz]",
+            "--import <distro> <file> [-u <user>]",
             "--unregister <distro> [--yes]",
             "--status", "--version",
         ] {

@@ -46,8 +46,9 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case unknownDistribution(String)
     /// `--install` names a distribution that is already installed.
     case distributionAlreadyInstalled(DistroName)
-    /// Another `maw --install` is installing the same distribution.
-    case installationInProgress(DistroName)
+    /// Another `maw --install` or `maw --import`, `operation`, is creating a distribution of
+    /// the same name.
+    case installationInProgress(DistroName, by: DistributionOperation)
     /// The distribution's directory, `path`, exists but holds no `distro.json`, as a partial
     /// manual removal leaves it. maw never changes it: it may hold the distribution's disk.
     case distributionDirectoryExists(path: String)
@@ -68,8 +69,10 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case imageChecksumMismatch(path: String, expected: String, actual: String)
     /// A downloaded image that should be in the cache is not there.
     case imageMissing(path: String)
-    /// The Mac's volume has less free space than the installation needs.
-    case insufficientDiskSpace(required: UInt64, available: UInt64, volume: String)
+    /// The Mac's volume has less free space than the installation or the import, `operation`,
+    /// needs.
+    case insufficientDiskSpace(
+        required: UInt64, available: UInt64, volume: String, for: DistributionOperation)
     /// A provisioning step failed. `step` names it.
     case provisioningFailed(step: String, reason: String)
     /// The installation was cancelled, because its client went away or the daemon stopped.
@@ -106,6 +109,38 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case exportOutputClosed(DistroName)
     /// The export was cancelled, because its client went away or the daemon stopped.
     case exportCancelled(DistroName)
+
+    // MARK: Import
+
+    /// `maw --import` cannot open or read the archive at `path`. `reason` says why.
+    case importArchiveNotReadable(path: String, reason: String)
+    /// `maw --import <distro> -` was run with standard input on a terminal.
+    case importFromTerminal
+    /// `maw --import <distro> -` was run with standard input closed or open only for writing.
+    case importInputNotReadable
+    /// The archive, once decompressed, is not a tar archive: its first block has no `ustar`
+    /// at offset 257. maw does not let the Mac read any other archive format.
+    case importNotATarArchive(DistroName)
+    /// The archive holds no root file system at its top level, for example because all of its
+    /// files are under one directory. `found` says what its top level holds.
+    case importNotARootFileSystem(DistroName, found: String)
+    /// The archive's `/sbin/init`, followed through links inside the archive's root, is not
+    /// systemd, which every maw distribution boots. `reason` says what it is instead.
+    case importInitNotSystemd(DistroName, reason: String)
+    /// A path that the import reads or writes in the archive's root file system cannot be
+    /// resolved inside that root, for example because its links form a loop.
+    case importPathNotResolvable(DistroName, path: String, reason: String)
+    /// A step of an import failed before the distribution was registered. `step` names it.
+    case importFailed(DistroName, step: String, reason: String)
+    /// The import was cancelled, because its client went away or the daemon stopped.
+    case importCancelled(DistroName)
+    /// After Ctrl-C, the daemon did not confirm the cancellation of the import, or the import's
+    /// own reply did not reach maw, so whether the distribution was imported is not known. An
+    /// import that had registered its distribution goes on to its first start.
+    case importOutcomeUnknown(DistroName)
+    /// The imported distribution is registered, but its first start failed. `consoleLog` is
+    /// the path of its console log, which explains the failure.
+    case importStartFailed(DistroName, consoleLog: String, reason: String)
 
     // MARK: Daemon
 
@@ -237,8 +272,8 @@ extension MawError: LocalizedError {
             "There is no distribution named '\(name)' that maw can install."
         case .distributionAlreadyInstalled(let name):
             "\(name) is already installed."
-        case .installationInProgress(let name):
-            "\(name) is being installed by another maw --install."
+        case .installationInProgress(let name, let operation):
+            "\(name) is being \(operation.participle) by \(operation.command)."
         case .distributionDirectoryExists(let path):
             "\(path) already exists, but it holds no installed distribution: its distro.json is "
                 + "missing."
@@ -260,9 +295,9 @@ extension MawError: LocalizedError {
                 + "but it should be \(expected)."
         case .imageMissing(let path):
             "The downloaded image \(path) is missing."
-        case .insufficientDiskSpace(let required, let available, let volume):
-            "The installation needs \(ByteSize(bytes: required).approximateDescription) of free "
-                + "space on \(volume), but only \(ByteSize(bytes: available).approximateDescription) "
+        case .insufficientDiskSpace(let required, let available, let volume, let operation):
+            "The \(operation.noun) needs \(ByteSize(bytes: required).approximateDescription) of free "
+                + "space on \(volume),\nbut only \(ByteSize(bytes: available).approximateDescription) "
                 + "is available."
         case .provisioningFailed(let step, let reason):
             "The installation failed while \(step): \(reason)."
@@ -296,6 +331,30 @@ extension MawError: LocalizedError {
                 + "archive closed its end of the pipe before the archive was complete."
         case .exportCancelled(let name):
             "The export of \(name) was cancelled."
+        case .importArchiveNotReadable(let path, let reason):
+            "maw --import cannot read \(path): \(reason)."
+        case .importFromTerminal:
+            "maw --import - would read the archive from a terminal."
+        case .importInputNotReadable:
+            "Standard input is not open for reading, so maw --import - cannot use it."
+        case .importNotATarArchive(let name):
+            "The archive for \(name) is not a tar archive."
+        case .importNotARootFileSystem(let name, let found):
+            "The archive for \(name) holds no root file system at its top level:\n\(found)."
+        case .importInitNotSystemd(let name, let reason):
+            "\(name) cannot be imported, because its /sbin/init is not systemd:\n\(reason)."
+        case .importPathNotResolvable(let name, let path, let reason):
+            "\(name) cannot be imported, because a path in the archive\n"
+                + "cannot be resolved inside it: \(path)\n\(reason)."
+        case .importFailed(let name, let step, let reason):
+            "The import of \(name) failed while \(step):\n\(reason)."
+        case .importCancelled(let name):
+            "The import of \(name) was cancelled."
+        case .importOutcomeUnknown(let name):
+            "The import of \(name) may have registered it before the cancellation\n"
+                + "reached it, and its result did not reach maw."
+        case .importStartFailed(let name, _, let reason):
+            "\(name) was imported, but its first start failed:\n\(reason)."
         case .daemonNotInstalled(let label):
             "The maw daemon is not installed: launchd has no LaunchAgent named \(label)."
         case .daemonUnreachable(let reason):
@@ -422,7 +481,8 @@ extension MawError: LocalizedError {
         case .noDistributionInstalled:
             "Install Ubuntu with maw --install."
         case .userNotFound:
-            "Check the name, or create the user in the distribution with sudo adduser."
+            "Check the name. In a distribution, sudo adduser creates a user. For\n"
+                + "maw --import, -u must name a user in the archive's /etc/passwd."
         case .rootFileSystemCheckFailed(let name, _, let diskImage, _):
             "maw keeps the disk image \(diskImage) and has not written to it; only e2fsck -p "
                 + "may have repaired parts of it before it stopped. Copy the image to a safe "
@@ -434,8 +494,8 @@ extension MawError: LocalizedError {
             "maw --list --online shows the distributions that can be installed."
         case .distributionAlreadyInstalled(let name):
             "Use it with maw -d \(name), or remove it with\nmaw --unregister \(name)."
-        case .installationInProgress:
-            "Wait for the other installation to finish."
+        case .installationInProgress(_, let operation):
+            "Wait for the other \(operation.noun) to finish."
         case .distributionDirectoryExists:
             "maw leaves the directory as it is, because it may hold a distribution's disk.img. "
                 + "Move it elsewhere, or delete it if you no longer need what it holds, then run "
@@ -460,8 +520,8 @@ extension MawError: LocalizedError {
                 + "happens again, the download is being altered on its way to this Mac."
         case .imageMissing:
             "Run maw --install again to download it again."
-        case .insufficientDiskSpace:
-            "Free up space on the volume, then run maw --install again."
+        case .insufficientDiskSpace(_, _, _, let operation):
+            "Free up space on the volume, then run \(operation.command) again."
         case .provisioningFailed:
             "Nothing was installed. The installation's console log in ~/Library/Logs/maw has "
                 + "details."
@@ -495,6 +555,35 @@ extension MawError: LocalizedError {
             "Run maw --export again with a reader that reads the whole archive."
         case .exportCancelled:
             "Run maw --export again to start over."
+        case .importArchiveNotReadable:
+            "Check the file's name and permissions, or give the archive on standard input\n"
+                + "with - in place of the file name."
+        case .importFromTerminal, .importInputNotReadable:
+            "Redirect standard input from a file or a pipe, or give a file name instead of -."
+        case .importNotATarArchive:
+            "Nothing was installed. maw --import reads tar archives, uncompressed or\n"
+                + "compressed with gzip, bzip2, xz, or lzip, as maw --export and wsl --export\n"
+                + "write them."
+        case .importNotARootFileSystem:
+            "Nothing was installed. maw --import needs etc/passwd and usr/ at the archive's\n"
+                + "top level, as maw --export and wsl --export write them."
+        case .importInitNotSystemd:
+            "Nothing was installed. maw starts every distribution with systemd."
+        case .importPathNotResolvable:
+            "Nothing was installed. Repair the links on that path in the distribution\n"
+                + "that the archive comes from, then export it and import it again."
+        case .importFailed(let name, _, _):
+            "Nothing was installed. The import's console log,\n"
+                + "~/Library/Logs/maw/install/\(name).log, may have details."
+        case .importCancelled:
+            "Nothing was installed. Run maw --import again to start over."
+        case .importOutcomeUnknown(let name):
+            "maw --list shows whether \(name) was imported: it lists \(name)\n"
+                + "once the import has registered it."
+        // The console log comes first, because maw --unregister deletes it.
+        case .importStartFailed(let name, let consoleLog, _):
+            "Its console log shows why:\n\(consoleLog)\n"
+                + "To delete \(name) and that log: maw --unregister \(name)"
         case .daemonNotInstalled:
             "Register the daemon with mawd install."
         case .daemonUnreachable, .daemonConnectionLost, .daemonProtocolError:

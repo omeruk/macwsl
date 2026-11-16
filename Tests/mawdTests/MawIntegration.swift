@@ -123,14 +123,62 @@ struct MawIntegration: Sendable {
     /// `prefix` that is not installed yet becomes one that this process created, which
     /// `unregister` may remove.
     func install(_ name: String) throws -> DebugBootProcess {
+        try willCreate(name)
+        return try start(
+            ["--install", "--name", name, "-u", user], standardInput: Data("\(password)\n".utf8))
+    }
+
+    /// Records `name` as one that this process creates, if it is under `prefix` and not
+    /// installed yet, so that `unregister` may remove it. An installation and an import call it
+    /// before they start.
+    func willCreate(_ name: String) throws {
         let directory = paths.distroDirectory(for: try DistroName(name))
         if name.hasPrefix("\(prefix)-"), name != distribution,
             !FileManager.default.fileExists(atPath: directory.path(percentEncoded: false))
         {
             Self.created.insert(name)
         }
-        return try start(
-            ["--install", "--name", name, "-u", user], standardInput: Data("\(password)\n".utf8))
+    }
+
+    /// Starts `maw --import <name> <file>`, with `-u <user>` if given, for a name under
+    /// `prefix`, which `willCreate` records.
+    func startImport(_ name: String, from file: String, user: String? = nil) throws
+        -> DebugBootProcess
+    {
+        try willCreate(name)
+        return try start(["--import", name, file] + (user.map { ["-u", $0] } ?? []))
+    }
+
+    /// `startImport`, waited for.
+    func importArchive(
+        _ name: String, from file: String, user: String? = nil, timeout: Duration = .seconds(600)
+    ) async throws -> DebugBootProcess.Result {
+        await (try startImport(name, from: file, user: user)).waitForExit(timeout: timeout)
+    }
+
+    /// Imports `\(prefix)-<suffix>` from `file`, requires the import to succeed, runs `body`
+    /// with its name and maw's result, and removes it afterwards, also when `body` throws.
+    func withImported(
+        _ suffix: String, from file: String, user: String? = nil,
+        sourceLocation: SourceLocation = #_sourceLocation,
+        _ body: (_ name: String, _ result: DebugBootProcess.Result) async throws -> Void
+    ) async throws {
+        let name = "\(prefix)-\(suffix)"
+        let result = try await importArchive(name, from: file, user: user)
+        do {
+            try #require(
+                result.status == 0, "\(result.output)\(result.standardError)",
+                sourceLocation: sourceLocation)
+            try await body(name, result)
+        } catch {
+            do {
+                try await remove(name)
+            } catch let removal {
+                Issue.record(removal, "removing \(name) after the failure above")
+            }
+            throw error
+        }
+        try await remove(name)
     }
 
     // MARK: Removing distributions
@@ -520,24 +568,37 @@ struct MawIntegration: Sendable {
     }
 
     /// `measurement: <what>, 5 runs: 1, 2, 3, 4, 5 ms; median 3 ms, slowest 5 ms`, which the
-    /// pull request quotes. Returns the median, or infinity if no run succeeded.
+    /// pull request quotes. For a figure where more is faster, such as a throughput, pass
+    /// `higherIsFaster`, so that the slowest run is the lowest figure. Returns the median, or
+    /// infinity if no run succeeded.
     @discardableResult
-    static func report(_ what: String, _ times: [Double], unit: String = "ms") -> Double {
+    static func report(
+        _ what: String, _ times: [Double], unit: String = "ms", higherIsFaster: Bool = false
+    ) -> Double {
+        let (line, median) = reportLine(what, times, unit: unit, higherIsFaster: higherIsFaster)
+        print(line)
+        return median
+    }
+
+    /// The line that `report` prints, and the median.
+    static func reportLine(
+        _ what: String, _ times: [Double], unit: String = "ms", higherIsFaster: Bool = false
+    ) -> (line: String, median: Double) {
         guard !times.isEmpty else {
-            print("measurement: \(what), no successful runs")
-            return .infinity
+            return ("measurement: \(what), no successful runs", .infinity)
         }
         let sorted = times.sorted()
         let median =
             sorted.count % 2 == 1
             ? sorted[sorted.count / 2]
             : (sorted[sorted.count / 2 - 1] + sorted[sorted.count / 2]) / 2
-        print(
+        let slowest = (higherIsFaster ? sorted.first : sorted.last) ?? 0
+        let line =
             "measurement: \(what), \(times.count) runs: "
-                + times.map { String(format: "%.0f", $0) }.joined(separator: ", ")
-                + " \(unit); median "
-                + String(format: "%.0f %@, slowest %.0f %@", median, unit, sorted.last ?? 0, unit))
-        return median
+            + times.map { String(format: "%.0f", $0) }.joined(separator: ", ")
+            + " \(unit); median "
+            + String(format: "%.0f %@, slowest %.0f %@", median, unit, slowest, unit)
+        return (line, median)
     }
 }
 

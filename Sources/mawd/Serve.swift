@@ -125,10 +125,24 @@ struct Serve: AsyncParsableCommand {
             },
             isStopped: { machine in await registry.isStopped(machine) },
             logDirectory: settings.logDirectoryURL, log: log)
+        let importer = Importer(
+            store: store, operations: operations,
+            makeMachine: { (name: DistroName) throws(MawError) -> any ImportingMachine in
+                guard canRunVirtualMachines else { throw .virtualizationEntitlementMissing }
+                return VirtualProvisioningMachine(
+                    kernelDirectory: paths.kernelDirectory,
+                    consoleLog: MawPaths.installLogFile(for: name, in: settings.logDirectoryURL),
+                    log: log)
+            },
+            freeSpace: FreeSpace.probe,
+            startMachine: { machine throws(MawError) in try await registry.start(machine) },
+            makeMACAddress: { VZMACAddress.randomLocallyAdministered().string },
+            registered: { await sampler.distributionsChanged() },
+            logDirectory: settings.logDirectoryURL, log: log)
         let service = DaemonService(
             clock: clock, registry: registry, lifetime: lifetime,
             canRunVirtualMachines: canRunVirtualMachines, store: store, installer: installer,
-            exporter: exporter, sampler: sampler, operations: operations,
+            exporter: exporter, importer: importer, sampler: sampler, operations: operations,
             logDirectory: settings.logDirectoryURL,
             log: log)
 

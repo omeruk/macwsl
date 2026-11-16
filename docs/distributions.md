@@ -152,7 +152,7 @@ and [docs/protocol.md](protocol.md) specifies the environment a session gets.
 | Path | Content |
 |------|---------|
 | `~/Library/Application Support/maw/distros/<name>/disk.img` | The sparse disk image, mode 600. About 1.3 GB is allocated after installation. |
-| `~/Library/Application Support/maw/distros/<name>/distro.json` | Name, catalog entry, release, image SHA-256, creation date, default user, disk size, MAC address. |
+| `~/Library/Application Support/maw/distros/<name>/distro.json` | Name, creation date, default user, disk size, MAC address, and where the distribution came from: the catalog entry, release, and image SHA-256, or, for an imported one, the archive's path or `standard input`. Since `maw --import`, new files have schema version 2; files of schema version 1 are read as they are and never rewritten. A build from before schema 2 reads the file of a distribution installed from the catalog, and skips an imported one: it does not list it, and commands that name it fail with "cannot be used". Remove imported distributions with `maw --unregister` before going back to such a build, or keep them until this build is installed again. |
 | `~/Library/Application Support/maw/state.json` | The default distribution. |
 | `~/Library/Caches/maw/images/<sha256>.tar.gz` | Verified images, and `.partial` downloads with their validator. |
 | `~/Library/Logs/maw/<name>.log` | Each distribution's console. |
@@ -243,3 +243,85 @@ fail with "<name> is being exported by maw --export."; `maw --terminate` and `ma
 work as for any stopped distribution, and the list shows it as `Stopped`. Ctrl-C asks the
 daemon to cancel, which stops the provisioning machine, and maw removes the file. The machine's
 console goes to `~/Library/Logs/maw/export/<name>.log`.
+
+## Importing a distribution
+
+`maw --import <name> <file>` creates the distribution `<name>` from a tar archive, and
+`maw --import <name> -` reads the archive from standard input, so that
+`maw --export Ubuntu-24.04 - | maw --import Copy -` copies a distribution. The archive is a
+tar archive in the ustar, pax, or GNU format, uncompressed or compressed with gzip, bzip2, xz,
+compress, or lzip, such as one from `maw --export`, from `wsl.exe --export`, or a
+distribution's published root file system. The new name follows the installation's rules. An
+archive in which every file is under one directory is refused, and so is anything that is not
+such a tar archive: a `.vhdx` from `wsl.exe --export --vhd`, a zstd-compressed archive, an old
+tar archive without the ustar magic, or another archive format. `-` is refused
+when standard input is a terminal.
+
+As for `--export`, maw opens the file itself and hands the daemon its descriptor, so that the
+daemon needs no access to `~/Desktop` or `~/Documents`. `distro.json` records the absolute path
+of the file that maw opened, or `standard input`. The import checks the free space first: 1 GB,
+plus the archive's size times 1 for an uncompressed tar archive, 4 for gzip, and 6 for any other
+compression; from a pipe, 1 GB.
+
+The steps are those of an installation, with the archive in place of the image:
+
+| Step | What happens |
+|------|--------------|
+| Creating the virtual disk | A sparse 256 GiB disk in the staging directory, and the provisioning machine. |
+| Formatting the disk | As at installation. |
+| Extracting the archive | `/usr/bin/gzip` on the Mac decompresses the archive, and `bsdtar` in the provisioning machine extracts it without `-P`: absolute paths lose their leading `/`, and `..` and extraction through links are refused. No program on the Mac reads the archive's format. |
+| Checking the root file system | The archive must hold `etc/passwd` and `usr/` at its top level, and `/sbin/init` must lead to systemd. Links are followed inside the imported root, as the imported system follows them. The default user is chosen. |
+| Configuring `<name>` | The system files below. |
+| Writing the disk | As at installation. |
+| Starting `<name>` | The first start. |
+
+Ctrl-C, a failure, or a refusal before the registration leaves no distribution and no staging
+directory behind; the provisioning machine's console log stays, for the failure. A distribution
+imported while none is installed becomes the default. If the first start fails, the
+distribution stays installed: maw prints the start's error, which names the distribution's
+console log, `~/Library/Logs/maw/<name>.log`, and then `maw --unregister <name>`, which deletes
+that log, and exits with status 1. The provisioning machine's console goes to
+`~/Library/Logs/maw/install/<name>.log`. While an import runs, an installation or a second import
+of the name fails with "<name> is being imported by maw --import.".
+
+### What `--import` configures
+
+The imported root file system keeps its users, its files, and its locale. The import changes
+only what a root file system needs to boot and work in maw. Every path below is resolved inside
+the imported root first, and a link where a file is written is replaced, not written through.
+
+| Change | Why |
+|--------|-----|
+| `/etc/hostname` and `/etc/hosts` from the new name, as at installation | Two imports of one archive do not share a host name; WSL's generated `/etc/hosts` is replaced. |
+| `/etc/fstab`, `/etc/netplan/50-maw.yaml`, the `/etc/resolv.conf` link, the journal's limit, and the masked units, as at installation | The root, the network, and the units, as maw needs them. Lines of the archive's `/etc/fstab`, such as WSL's drvfs mounts, are dropped. |
+| `/etc/profile.d/update-motd.sh` diverted, if it is not diverted yet | As at installation. |
+| `/etc/machine-id` emptied, and `/var/lib/dbus/machine-id` removed | systemd generates a new machine ID at the first boot, so that two distributions imported from one archive send different DHCP client IDs. |
+| `/dev`, `/proc`, `/sys`, `/run` created if missing | The initramfs moves its file systems there. |
+| Without netplan: `/etc/systemd/network/50-maw.network` (DHCP on the `virtio_net` device), and `systemd-networkd` and `systemd-resolved` enabled | Nothing else would configure the network. |
+| `/var/lib/systemd/linger/<user>` for the default user, unless it is `root` | As at installation. |
+| `/etc/maw.conf`: `[user] default = <user>`, if the file does not name that user yet; its other lines are kept | The guest agent reads the default user from it. |
+
+No user is created and no password is asked. The default user is the user that `-u <user>`
+names, which must exist in the archive's `/etc/passwd`, or else the import fails before
+anything is registered. Without `-u`, it is `[user] default` from the archive's `/etc/maw.conf`,
+or else from its `/etc/wsl.conf`, if that names a user with a valid name in the archive's
+`/etc/passwd`; otherwise `root`, as after `wsl.exe --import`. `distro.json` records the same
+user. maw's last lines name the user that sessions run as; with `root` because nothing named
+another user, they say how to import again with `-u <user>`. For an archive made by
+`maw --export`, every change but the host name, the machine ID, and the MAC address finds its
+result already in place.
+
+### An archive from WSL
+
+| What the archive brings | What it would do in maw | What the import does |
+|-------------------------|-------------------------|----------------------|
+| `[boot] systemd=true` in `/etc/wsl.conf`, or no such line | Nothing: maw reads only `[user] default` from `/etc/wsl.conf`, and always boots `/sbin/init` | Nothing; `/sbin/init` must lead to systemd |
+| `[boot] command`, `[automount]`, `[network]`, `[interop]` in `/etc/wsl.conf` | Nothing: maw does not apply them | Keeps the file as it is |
+| `/etc/resolv.conf` written by WSL, or a link to `/mnt/wsl/resolv.conf` | Windows' DNS server, or no DNS | Replaces it with the link to systemd-resolved's stub resolver |
+| `/etc/hosts` and `/etc/hostname` with the Windows host's name | The wrong host name | Replaces them |
+| A drvfs line in `/etc/fstab`, such as `C: /mnt/c drvfs defaults 0 0` | A mount of a device that maw does not have | Replaces the file |
+| A machine ID | The same DHCP client ID as other imports of the archive | Empties it |
+| No `/etc/maw.conf` | Sessions as `root` | Writes the default user into it |
+| No `systemd-resolved` (Debian's default) | The stub link leads nowhere: no DNS | Nothing ([docs/known-limitations.md](known-limitations.md)) |
+| `systemd-networkd` or `systemd-resolved` masked | No network or no DNS | Nothing ([docs/known-limitations.md](known-limitations.md)) |
+| An init that is not systemd | The guest agent never starts | Refuses the archive, naming what `/sbin/init` leads to |

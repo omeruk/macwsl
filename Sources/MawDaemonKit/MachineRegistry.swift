@@ -131,8 +131,8 @@
         }
 
         /// Starts `machine` if it is not running, and returns once it runs. Without a session,
-        /// it stops after the idle timeout as usual. The installer uses this for a new
-        /// distribution's first boot.
+        /// it stops after the idle timeout as usual. The installer and the importer use this for
+        /// a new distribution's first boot, while they still hold its name.
         ///
         /// While an export or a removal holds the distribution's name, it throws
         /// `distributionBusy`, also for a machine that runs, so that no new session reaches a
@@ -142,7 +142,8 @@
         public func start(_ machine: MachineID) async throws(MawError) {
             while true {
                 if case .distribution(let name) = machine,
-                    let operation = operations?.operation(on: name), operation != .install
+                    let operation = operations?.operation(on: name),
+                    !operation.createsTheDistribution
                 {
                     throw .distributionBusy(name, operation: operation)
                 }

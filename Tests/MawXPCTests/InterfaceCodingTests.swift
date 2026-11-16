@@ -35,6 +35,14 @@ import XPC
         .export(ExportRequest(name: try! DistroName("Ubuntu-24.04"), format: .tar)),
         .export(ExportRequest(name: try! DistroName("Ubuntu-24.04"), format: .tarGzip)),
         .export(ExportRequest(name: try! DistroName("Ubuntu-24.04"), format: .tarXz)),
+        .import(
+            ImportRequest(
+                name: try! DistroName("Copy"), user: "ayse",
+                archive: "/Users/ayse/Desktop/ubuntu.tar")),
+        .import(
+            ImportRequest(
+                name: try! DistroName("Copy"), user: nil,
+                archive: DistroMetadata.ImportOrigin.standardInput)),
     ]
 
     static let replies: [DaemonReply] = [
@@ -87,7 +95,25 @@ import XPC
             ExportSummary(
                 name: try! DistroName("Ubuntu-24.04"), format: .tarXz, bytes: 1_300_000_000,
                 milliseconds: 9_800)),
+        .imported(
+            ImportSummary(
+                name: try! DistroName("Copy"), defaultUser: "ayse", defaultUserSource: .mawConf,
+                isDefault: false, extractedBytes: 1_350_625_280, milliseconds: 12_400,
+                firstStartFailure: nil)),
+        .imported(
+            ImportSummary(
+                name: try! DistroName("Copy"), defaultUser: "root", defaultUserSource: .fallback,
+                isDefault: true, extractedBytes: 1_024, milliseconds: 40_000,
+                firstStartFailure: .importStartFailed(
+                    try! DistroName("Copy"), consoleLog: "/Users/ayse/Library/Logs/maw/Copy.log",
+                    reason: "the guest agent did not answer"))),
         .failure(.distributionBusy(try! DistroName("Copy"), operation: .removal)),
+        .failure(.distributionBusy(try! DistroName("Copy"), operation: .import)),
+        .failure(.installationInProgress(try! DistroName("Copy"), by: .import)),
+        .failure(
+            .insufficientDiskSpace(
+                required: 5 << 30, available: 1 << 30, volume: "Macintosh HD", for: .import)),
+        .failure(.importNotARootFileSystem(try! DistroName("Copy"), found: "rootfs/")),
         .failure(.distributionRunning(try! DistroName("Ubuntu-24.04"))),
         .failure(.virtualizationEntitlementMissing),
         .failure(.distributionNotInstalled(try! DistroName("Ubuntu"))),
@@ -100,6 +126,8 @@ import XPC
         .installProgress(.finished(.extract, milliseconds: 5_512)),
         .installProgress(.started(.check)),
         .installProgress(.finished(.archive, milliseconds: 9_100)),
+        .installProgress(.started(.inspect)),
+        .installProgress(.finished(.inspect, milliseconds: 310)),
         .installProgress(
             .download(
                 DownloadProgress(
@@ -142,11 +170,12 @@ import XPC
         #expect(try InterfaceCoding.decode(DaemonEvent.self, from: message, as: .client) == event)
     }
 
-    @Test func isInterfaceVersion6() {
-        #expect(DaemonInterface.version == 6)
+    @Test func isInterfaceVersion7() {
+        #expect(DaemonInterface.version == 7)
     }
 
-    /// The installation's steps are unchanged, and an export has steps of its own.
+    /// The installation's steps are unchanged; an export and an import have steps of their
+    /// own.
     @Test func ordersEachOperationsSteps() {
         #expect(
             InstallStep.installation.map(\.rawValue) == [
@@ -154,7 +183,13 @@ import XPC
                 "start",
             ])
         #expect(InstallStep.export == [.prepare, .check, .archive, .finish])
-        #expect(Set(InstallStep.installation + InstallStep.export) == Set(InstallStep.allCases))
+        #expect(
+            InstallStep.import == [
+                .prepare, .format, .extract, .inspect, .configure, .finish, .start,
+            ])
+        #expect(
+            Set(InstallStep.installation + InstallStep.export + InstallStep.import)
+                == Set(InstallStep.allCases))
     }
 
     /// A running distribution with every figure.
@@ -192,6 +227,9 @@ import XPC
         #expect(
             DaemonRequest.export(ExportRequest(name: name, format: .tar)).displayName
                 == "the export")
+        #expect(
+            DaemonRequest.import(ImportRequest(name: name, user: nil, archive: "/a.tar"))
+                .displayName == "the import")
         #expect(DaemonRequest.cancel.displayName == "the cancellation")
     }
 
@@ -303,6 +341,47 @@ import XPC
         byte = 0
         #expect(read(fds[0], &byte, 1) == 1)
         #expect(byte == 7)
+    }
+
+    /// An import request carries the client's descriptor of the archive, which the daemon
+    /// reads: the duplicate it receives reads from the client's file.
+    @Test func carriesTheArchiveDescriptorOfAnImport() throws {
+        var fds: [Int32] = [-1, -1]
+        try #require(pipe(&fds) == 0)
+        defer {
+            close(fds[0])
+            close(fds[1])
+        }
+        let request = DaemonRequest.import(
+            ImportRequest(name: try DistroName("Copy"), user: nil, archive: "standard input"))
+        let message = try InterfaceCoding.encode(request, descriptor: fds[0])
+        #expect(
+            try InterfaceCoding.decode(DaemonRequest.self, from: message, as: .daemon) == request)
+        let received = try #require(try InterfaceCoding.descriptor(in: message))
+        #expect(received.rawValue != fds[0], "The message must hold a duplicate.")
+        #expect(fcntl(received.rawValue, F_GETFD) & FD_CLOEXEC != 0)
+        #expect(fcntl(received.rawValue, F_GETFL) & O_ACCMODE == O_RDONLY)
+
+        var byte: UInt8 = 9
+        #expect(write(fds[1], &byte, 1) == 1)
+        byte = 0
+        #expect(read(received.rawValue, &byte, 1) == 1)
+        #expect(byte == 9)
+    }
+
+    /// The daemon records standard input or an absolute path of at most 1,024 bytes.
+    @Test func acceptsOnlyAnAbsolutePathOrStandardInputAsTheArchive() throws {
+        let name = try DistroName("Copy")
+        func isValid(_ archive: String) -> Bool {
+            ImportRequest(name: name, user: nil, archive: archive).hasValidArchive
+        }
+        #expect(isValid("standard input"))
+        #expect(isValid("/Users/ayse/Desktop/ubuntu.tar"))
+        #expect(isValid("/" + String(repeating: "a", count: 1_023)))
+        #expect(!isValid("/" + String(repeating: "a", count: 1_024)))
+        #expect(!isValid("ubuntu.tar"))
+        #expect(!isValid(""))
+        #expect(!isValid("-"))
     }
 
     @Test func hasNoDescriptorUnlessOneWasAdded() throws {

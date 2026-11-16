@@ -47,6 +47,36 @@ import Testing
         #expect(String(decoding: output, as: UTF8.self) == "closed\n")
     }
 
+    /// A stop ends a program that waits for input that does not come, as an import's
+    /// `/usr/bin/tar` waits on an idle pipe, and one that comes before the program has
+    /// started ends it as soon as it starts.
+    @Test(arguments: [false, true])
+    func stopsAProgramThatWaitsForItsInput(stopFirst: Bool) async throws {
+        var fds: [Int32] = [-1, -1]
+        try #require(pipe(&fds) == 0)
+        let writer = fds[1]
+        defer { close(writer) }
+        let input = OwnedDescriptor(fds[0])
+        let stopper = StreamingProcess.Stopper()
+        if stopFirst {
+            stopper.stop()
+        }
+        let running = Task {
+            try await runOnDedicatedThread { () throws -> StreamingProcess.Outcome in
+                try StreamingProcess.run("/bin/cat", [], input: input, stopper: stopper) { _ in
+                    true
+                }
+            }
+        }
+        if !stopFirst {
+            try await Task.sleep(for: .milliseconds(200))
+            stopper.stop()
+        }
+        let outcome = try await running.value
+        #expect(outcome.status == 128 + SIGTERM)
+        #expect(stopper.isStopped)
+    }
+
     @Test func reportsAProgramThatCannotStart() {
         #expect(throws: POSIXError.self) {
             try StreamingProcess.run("/no/such/program", []) { _ in true }

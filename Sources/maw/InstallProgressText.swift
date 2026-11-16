@@ -14,6 +14,7 @@ struct InstallProgressText {
     enum Operation {
         case installation
         case export
+        case `import`
     }
 
     let name: DistroName
@@ -31,6 +32,7 @@ struct InstallProgressText {
         switch operation {
         case .installation: InstallStep.installation
         case .export: InstallStep.export
+        case .import: InstallStep.import
         }
     }
 
@@ -41,6 +43,9 @@ struct InstallProgressText {
             case .finish: return "Stopping the virtual machine"
             default: break
             }
+        }
+        if operation == .import, step == .extract {
+            return "Extracting the archive"
         }
         return switch step {
         case .download: "Downloading \(displayName)"
@@ -53,6 +58,7 @@ struct InstallProgressText {
         case .start: "Starting \(name)"
         case .check: "Checking the file system"
         case .archive: "Writing the archive"
+        case .inspect: "Checking the root file system"
         }
     }
 

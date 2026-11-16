@@ -137,13 +137,7 @@
                     staging: staging, progress: progress)
                 try checkCancellation(name)
                 // A distribution that registers while none is installed becomes the default.
-                // Deciding that and registering the distribution involve no suspension, so no
-                // other installation on this actor can register between them.
-                isDefault = store.defaultDistribution() == nil
-                try store.commit(staging: staging, metadata: metadata)
-                if isDefault {
-                    try? store.setDefaultDistribution(name)
-                }
+                isDefault = try store.register(staging: staging, metadata: metadata)
             } catch {
                 removeStaging(staging)
                 if Task.isCancelled {
@@ -188,19 +182,29 @@
                 entry = catalog.recommendedEntry
             }
             let name = name ?? entry.name
-            guard !Self.reservedNames.contains(name.rawValue.lowercased()) else {
+            try Self.checkNewName(name, store: store, operations: operations, for: .install)
+            try checkFreeSpace(for: entry.image)
+            return (entry, name)
+        }
+
+        /// Checks that a new distribution can take `name`: the name is neither reserved,
+        /// installed, nor held by another operation, and nothing else is in `distros/` under it.
+        /// An installation and an import check the same.
+        static func checkNewName(
+            _ name: DistroName, store: DistributionStore, operations: DistributionOperations,
+            for operation: DistributionOperation
+        ) throws(MawError) {
+            guard !reservedNames.contains(name.rawValue.lowercased()) else {
                 throw .invalidDistroName(name.rawValue, reason: "the name is reserved for maw")
             }
             guard !store.isInstalled(name) else {
                 throw .distributionAlreadyInstalled(name)
             }
-            // Another installation of the name, or a removal that has not finished.
-            try operations.check(name, for: .install)
+            // Another installation or import of the name, or a removal that has not finished.
+            try operations.check(name, for: operation)
             if let leftover = store.leftoverEntry(for: name) {
                 throw .distributionDirectoryExists(path: leftover.path(percentEncoded: false))
             }
-            try checkFreeSpace(for: entry.image)
-            return (entry, name)
         }
 
         // MARK: Steps
@@ -327,7 +331,7 @@
             guard let space = freeSpace(store.paths.homeDirectory) else { return }
             try InstallSpace.check(
                 required: required, available: ByteSize(bytes: space.available),
-                volume: space.volume)
+                volume: space.volume, for: .install)
         }
 
         private func removeStaging(_ staging: URL) {

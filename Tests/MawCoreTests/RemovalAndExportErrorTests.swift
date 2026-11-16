@@ -42,14 +42,12 @@ import Testing
         }
     }
 
-    /// Each suggestion names only commands of this build, and never asks to delete files by
-    /// hand.
+    /// No suggestion asks to delete files by hand.
     @Test(arguments: errors)
-    func suggestsNoStepThatThisBuildLacks(_ error: MawError) {
+    func suggestsNoStepByHand(_ error: MawError) {
         let suggestion = error.recoverySuggestion ?? ""
         #expect(!suggestion.contains("rm "))
         #expect(!suggestion.contains("README"))
-        #expect(!suggestion.contains("--import"))
     }
 
     @Test func namesTheOperationThatHoldsTheName() {
@@ -90,12 +88,22 @@ import Testing
     @Test func namesTheCommandOfEachOperation() {
         #expect(
             DistributionOperation.allCases.map(\.command) == [
-                "maw --install", "maw --export", "maw --unregister",
+                "maw --install", "maw --export", "maw --unregister", "maw --import",
             ])
     }
 
     /// The raw values travel in the daemon's messages and never change.
     @Test func keepsItsRawValues() {
-        #expect(DistributionOperation.allCases.map(\.rawValue) == ["install", "export", "removal"])
+        #expect(
+            DistributionOperation.allCases.map(\.rawValue) == [
+                "install", "export", "removal", "import",
+            ])
+    }
+
+    /// An installation and an import create the distribution and start its machine
+    /// themselves; an export and a removal do neither.
+    @Test func tellsWhichOperationsCreateTheDistribution() {
+        #expect(
+            DistributionOperation.allCases.filter(\.createsTheDistribution) == [.install, .import])
     }
 }

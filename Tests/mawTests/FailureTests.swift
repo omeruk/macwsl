@@ -88,13 +88,16 @@ import Testing
 
     // MARK: Runtime errors
 
-    /// `--import` fails before it connects to any daemon: a test must never reach the
-    /// installed one.
+    /// `--import` of a file that does not exist fails before it connects to any daemon: a test
+    /// must never reach the installed one.
     @Test func reportsARuntimeErrorWithoutUsage() async throws {
+        let file = "/maw-tests/no-such-archive.tar"
         #expect(
-            try await failure(["--import", "Ubuntu", "u.tar"])
+            try await failure(["--import", "Ubuntu", file])
                 == CommandFailure(
-                    output: "maw: --import is not implemented yet; phase 06b adds it.\n",
+                    output: "maw: maw --import cannot read \(file): No such file or directory.\n"
+                        + "Check the file's name and permissions, or give the archive on standard "
+                        + "input\nwith - in place of the file name.\n",
                     exitCode: .failure))
     }
 

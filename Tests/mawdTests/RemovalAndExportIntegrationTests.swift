@@ -199,7 +199,9 @@ struct RemovalAndExportIntegrationTests {
     /// and libarchive skips the kernel's ACL attributes, so neither form reaches the archive
     /// (docs/known-limitations.md). The ACLs are set with python3's `os.setxattr`, because the
     /// image has no `setfacl`, and read back with `os.getxattr` before the export, so that the
-    /// test knows the kernel accepted them.
+    /// test knows the kernel accepted them. The archive is then imported, and the ACLs are read
+    /// on the imported disk with `getfacl`, or with `os.getxattr` if the image has no
+    /// `getfacl`.
     @Test func recordsWhatAnExportKeepsOfPOSIXACLs() async throws {
         try await maw.withDistribution("export-acl") { name in
             let set = try await maw.session(["-u", "root", "--", Self.aclScript], in: name)
@@ -232,13 +234,32 @@ struct RemovalAndExportIntegrationTests {
                 }
                 let aclFile = try #require(entries.first { $0.path == "srv/maw-acl/file" })
                 #expect(aclFile.mode == 0o644, "\(String(aclFile.mode, radix: 8))")
+
+                try await maw.withImported("import-acl", from: file.path(percentEncoded: false)) {
+                    copy, _ in
+                    let read = try await maw.session(
+                        ["-u", "root", "--", Self.aclReadBackScript], in: copy)
+                    #expect(read.status == 0, "\(read.output)\(read.standardError)")
+                    for line in read.lines {
+                        print("acl after the import: \(line)")
+                    }
+                    for path in ["/srv/maw-acl/file", "/srv/maw-acl/dir"] {
+                        let comment = Comment(
+                            rawValue: "The import now keeps ACLs of \(path); update "
+                                + "docs/known-limitations.md: \(read.output)")
+                        #expect(read.lines.contains("\(path): no ACL"), comment)
+                        #expect(!read.lines.contains("\(path): ACL (getfacl)"), comment)
+                        #expect(read.lines.contains("\(path): user.maw kept"), "\(read.output)")
+                    }
+                }
             }
         }
     }
 
     /// The format follows the extension as `tar -a` does, and `--format` wins over it; each
     /// archive is listed by `/usr/bin/tar` with the same entries, modes, owners, sizes, and link
-    /// targets as the uncompressed one.
+    /// targets as the uncompressed one, and `maw --import` reads it back into a distribution
+    /// that starts.
     @Test func exportsEachFormat() async throws {
         let name = maw.distribution
         try expectQuietSuccess(try await maw.run(["--terminate", name]))
@@ -271,6 +292,12 @@ struct RemovalAndExportIntegrationTests {
                 #expect(try await listedNames(of: file) == names, "\(fileName)")
                 let started = try maw.daemonLogLines(since: "\(name): export as \(format) started")
                 #expect(!started.isEmpty, "\(fileName): no export as \(format) in the log")
+                let suffix = "import-" + format.replacing(".", with: "-")
+                try await maw.withImported(suffix, from: file.path(percentEncoded: false)) {
+                    copy, _ in
+                    let started = try await maw.session(["-e", "true"], in: copy)
+                    #expect(started.status == 0, "\(fileName): \(started.standardError)")
+                }
                 try FileManager.default.removeItem(at: file)
             }
         }
@@ -453,6 +480,39 @@ struct RemovalAndExportIntegrationTests {
     }
     static let nonASCIIEscaped = pythonEscaped(nonASCIIName)
     static let valueEscaped = pythonEscaped(value)
+
+    /// Reports, for each of the ACL test's paths on an imported disk, whether it has an ACL,
+    /// with `getfacl` if the image has it and with python3's `os.getxattr` otherwise, and
+    /// whether its user attribute is there.
+    static let aclReadBackScript = #"""
+        set -eu
+        for path in /srv/maw-acl/file /srv/maw-acl/dir; do
+            if command -v getfacl > /dev/null; then
+                if getfacl --omit-header --skip-base "$path" 2> /dev/null | grep -q .; then
+                    echo "$path: ACL (getfacl)"
+                else
+                    echo "$path: getfacl finds no ACL"
+                fi
+            fi
+        done
+        python3 - <<'PYTHON'
+        import os
+        for path in ["/srv/maw-acl/file", "/srv/maw-acl/dir"]:
+            found = []
+            for key in ["system.posix_acl_access", "system.posix_acl_default"]:
+                try:
+                    os.getxattr(path, key)
+                    found.append(key)
+                except OSError:
+                    pass
+            print("%s: %s" % (path, "ACL " + ", ".join(found) if found else "no ACL"))
+            try:
+                kept = os.getxattr(path, "user.maw") == b"kept"
+            except OSError:
+                kept = False
+            print("%s: user.maw %s" % (path, "kept" if kept else "missing"))
+        PYTHON
+        """#
 
     /// An access ACL on a file and a default ACL on a directory, each granting user 1234, in
     /// the kernel's `posix_acl_xattr` encoding, and a user attribute beside each.

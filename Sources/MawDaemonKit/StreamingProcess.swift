@@ -2,6 +2,7 @@
     import Darwin
     import Foundation
     import MawProtocol
+    import os
 
     /// Runs a program on the Mac and hands its standard output to a consumer in chunks.
     ///
@@ -24,10 +25,11 @@
         /// own.
         ///
         /// Its standard input is `input`, which this closes as soon as the program has started,
-        /// so that the program is its only reader, or `/dev/null` without one.
+        /// so that the program is its only reader, or `/dev/null` without one. `stopper` ends
+        /// the program from another thread, also while it waits for its input.
         static func run(
             _ path: String, _ arguments: [String], input: OwnedDescriptor? = nil,
-            consume: (Data) -> Bool
+            stopper: Stopper? = nil, consume: (Data) -> Bool
         ) throws -> Outcome {
             defer { input?.close() }
             var fds: [Int32] = [-1, -1]
@@ -76,6 +78,9 @@
             let spawned = posix_spawn(&pid, path, &actions, &attributes, argv, environ)
             close(writer)
             input?.close()
+            if spawned == 0, let stopper, !stopper.started(pid) {
+                kill(pid, SIGTERM)
+            }
             guard spawned == 0 else {
                 close(reader)
                 throw POSIXError(.init(rawValue: spawned) ?? .EIO)
@@ -94,6 +99,9 @@
             }
             close(reader)
 
+            // From here on a stop does not signal the process ID, which the program gives up
+            // when it is reaped.
+            stopper?.finished()
             var status: Int32 = 0
             while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
             let exitStatus = status & 0x7F == 0 ? (status >> 8) & 0xFF : 128 + (status & 0x7F)
@@ -101,6 +109,50 @@
             return Outcome(
                 status: exitStatus,
                 errors: String(errors.trimmingCharacters(in: .whitespacesAndNewlines).suffix(2048)))
+        }
+    }
+
+    extension StreamingProcess {
+        /// Ends a program that `run` started, from any thread: a cancellation calls `stop()`,
+        /// which sends SIGTERM if the program runs, or makes `run` send it as soon as the
+        /// program has started.
+        final class Stopper: Sendable {
+            private struct State {
+                var processID: pid_t?
+                var isStopped = false
+                var isFinished = false
+            }
+
+            private let state = OSAllocatedUnfairLock(initialState: State())
+
+            init() {}
+
+            func stop() {
+                let processID = state.withLock { state -> pid_t? in
+                    state.isStopped = true
+                    return state.isFinished ? nil : state.processID
+                }
+                if let processID {
+                    kill(processID, SIGTERM)
+                }
+            }
+
+            var isStopped: Bool {
+                state.withLock { $0.isStopped }
+            }
+
+            /// Records the program's process ID. Returns false if `stop()` came first.
+            func started(_ processID: pid_t) -> Bool {
+                state.withLock { state in
+                    state.processID = processID
+                    return !state.isStopped
+                }
+            }
+
+            /// The program's output has ended, and it is about to be reaped.
+            func finished() {
+                state.withLock { $0.isFinished = true }
+            }
         }
     }
 #endif

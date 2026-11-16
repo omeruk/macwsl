@@ -65,13 +65,14 @@
             }
         }
 
-        /// The error for a request of `requester` on a name that `holder` holds. Two
-        /// installations of one name keep the error they had before removals and exports.
+        /// The error for a request of `requester` on a name that `holder` holds. Two operations
+        /// that create a distribution, installations and imports, get `installationInProgress`,
+        /// which names the holder; every other pair gets `distributionBusy`.
         static func conflict(
             _ name: DistroName, holder: DistributionOperation, requester: DistributionOperation
         ) -> MawError {
-            if holder == .install, requester == .install {
-                return .installationInProgress(name)
+            if holder.createsTheDistribution, requester.createsTheDistribution {
+                return .installationInProgress(name, by: holder)
             }
             return .distributionBusy(name, operation: holder)
         }

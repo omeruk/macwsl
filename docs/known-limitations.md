@@ -10,22 +10,6 @@ request #19 lists under "Review results". Commits from the branch of pull reques
 cited, because that pull request was squash-merged and its branch commits are not reachable
 from `main`.
 
-## Phase 06b: Distro removal and transfer
-
-- **No `maw --import`.**
-  - **Seen:** `maw --import` fails with `notImplemented`: "--import is not implemented yet;
-    phase 06b adds it." An archive from `maw --export` cannot yet become a distribution.
-  - **Evidence:** `Sources/maw/Maw.swift:131`; phase 06b is split into two pull requests, and
-    the first adds only `--unregister` and `--export`.
-  - **Phase:** 06b, its second pull request.
-- **CR-7: An imported root file system whose `/sbin/init` is not systemd.**
-  - **Seen:** On a distribution's machine, only systemd starts the agent, through the unit
-    that the initramfs writes. A distribution whose `/sbin/init` is not systemd would fail to
-    start with the generic timeout for the agent, without naming the reason.
-  - **Evidence:** `Guest/initramfs/init:78`; pull request #19, "Review results", CR-7.
-    Installation from the catalog cannot produce such a distribution.
-  - **Phase:** 06b. `--import` checks `/sbin/init` and refuses such a file system by name.
-
 ## Phase 07: File sharing and paths
 
 - **Shells with a working directory have no logind session.**
@@ -192,7 +176,9 @@ from `main`.
     `distributionNotInstalled`, and the suggestion of `installationOutcomeUnknown`
     (`Tests/mawTests/FailureTests.swift`), and `sessionConnectionEnded`
     (`Tests/MawCoreTests/MawErrorTests.swift:275`). Since phase 06b, the errors of
-    `--unregister` and `--export` have one as well (`Tests/MawCoreTests/RemovalAndExportErrorTests.swift`).
+    `--unregister`, `--export`, and `--import` have one as well
+    (`Tests/MawCoreTests/RemovalAndExportErrorTests.swift`,
+    `Tests/MawCoreTests/ImportErrorTests.swift`).
   - **Phase:** 12b. Proposed: `CommandFailure` wraps its output at spaces to the terminal's
     width when standard error is a terminal, and leaves it unchanged otherwise.
 - **CR-3: A resumed download does not check `Content-Range`.**
@@ -340,6 +326,15 @@ from `main`.
     distribution running, is at every sample; every window's views observe that array. Reduce
     the work where the profile shows it.
 
+- **Three copies of an operation's step timing and cancellation.**
+  - **Seen:** `timed(_:progress:_:)`, `checkCancellation(_:)`, the computation of
+    milliseconds, and the pattern that runs the steps under `withTaskCancellationHandler` exist
+    in `Installer`, `Exporter`, and `Importer`. A change to how steps are timed, logged, or
+    mapped to a cancellation must be made three times.
+  - **Evidence:** `Sources/MawDaemonKit/Installer.swift`, `Exporter.swift`, and
+    `Importer.swift`; pull request #32, code review.
+  - **Phase:** 12b: one helper for an operation's steps in `MawDaemonKit`.
+
 ## Phase 13: Packaging and release
 
 - **The ad-hoc code signing requirement does not identify maw's builds.**
@@ -383,7 +378,7 @@ from `main`.
     removal.
   - **Phase:** None yet; a watch of the distributions directory, or no change, since the
     supported removal publishes.
-- **`maw --export` does not keep POSIX ACLs.**
+- **`maw --export` and `maw --import` do not keep POSIX ACLs.**
   - **Seen:** Access and default ACLs of files in a distribution are missing from its archive;
     the files keep their mode, whose group bits are the ACL's mask, and their other extended
     attributes.
@@ -392,9 +387,50 @@ from `main`.
     `system.posix_acl_access` and `system.posix_acl_default` attributes as extended attributes
     either. `RemovalAndExportIntegrationTests.recordsWhatAnExportKeepsOfPOSIXACLs` sets both
     kinds and prints which ACL records reach the archive: none, as its run in the pull request
-    records.
+    records. It then imports the archive and reads both ACLs on the imported disk, with
+    `os.getxattr`, since the image has no `getfacl`: neither is there, and the user attribute
+    beside them is (pull request #32).
   - **Phase:** None yet. Building `bsdtar` with ACL support needs libacl in the guest build;
     the import would need the same to restore them.
+- **`maw --import` reads no zstd archive and no tar archive without the ustar magic.**
+  - **Seen:** An archive compressed with zstd, and an old (v7) tar archive, whose header has no
+    `ustar` at offset 257, are refused with "is not a tar archive".
+  - **Evidence:** The import decompresses with `/usr/bin/gzip -dcf`, which has no zstd, and
+    forwards only a stream whose first block has the magic (`Sources/MawDaemonKit/ImportStream.swift`),
+    because `/usr/bin/tar` would follow an mtree archive's names to files of the Mac (pull request
+    #32, security review). Decompress a zstd archive first, with `zstd -dc archive.tar.zst |
+    maw --import <name> -`.
+  - **Phase:** None yet. A zstd decoder that reads no archive format, on the Mac or in the
+    guest, would add it.
+- **The network of an import without netplan is verified on Ubuntu only.**
+  - **Seen:** For an archive without netplan, the import enables `systemd-networkd` and
+    `systemd-resolved` with links in `multi-user.target.wants` only. It does not create what
+    `systemctl enable` also creates: `systemd-networkd.socket`, which the unit names with
+    `Also=`, and the `dbus-org.freedesktop.network1` and `resolve1` aliases. On Ubuntu 24.04
+    without netplan, the copy got a DHCP address, its gateway answered a ping, and
+    systemd-resolved had a DNS server. On a distribution whose units need the socket or the
+    aliases, `networkctl` and `resolvectl` may not answer until `systemctl enable` runs.
+  - **Evidence:** `ProvisioningScript.text`, the `import` mode's fallback;
+    `ImportIntegrationTests.configuresTheNetworkWithoutNetplan`; pull request #32, code review.
+  - **Phase:** None yet. `systemctl --root` from the imported root file system, if it has one,
+    would enable the units completely.
+- **An imported distribution without systemd-resolved has no DNS.**
+  - **Seen:** `maw --import` links `/etc/resolv.conf` to systemd-resolved's stub resolver, as
+    the installation does. An archive without systemd-resolved, such as one of Debian, which
+    does not install it by default, boots with a link that leads nowhere, and names do not
+    resolve.
+  - **Evidence:** `ProvisioningScript.text` in `Sources/MawDaemonKit/ProvisioningScript.swift`
+    writes the link in both modes; pull request B of phase 06b decided not to handle it.
+  - **Phase:** None yet. The import could write a `resolv.conf` that names the NAT gateway's
+    DNS proxy instead, which needs the gateway's address at the import.
+- **An imported distribution whose systemd-networkd or systemd-resolved is masked has no
+  network or no DNS.**
+  - **Seen:** An archive in which the user masked either unit, as some WSL setups do, keeps the
+    mask; the import does not unmask a unit that the user masked.
+  - **Evidence:** `ProvisioningScript.text` only adds masks; pull request B of phase 06b decided
+    not to handle it.
+  - **Phase:** None yet. `systemctl unmask systemd-networkd systemd-resolved` in the
+    distribution restores them.
 - **A `maw --export` killed with SIGKILL leaves its file.**
   - **Seen:** maw removes the file of a failed or cancelled export, on Ctrl-C, SIGTERM, and
     SIGHUP as well, but a SIGKILL ends it before it can. The partial file, of mode 600, stays

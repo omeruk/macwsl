@@ -27,12 +27,14 @@ import Testing
         }
     }
 
-    /// Each refusal names the operation that holds the name; two installations keep their own
-    /// error.
+    /// Each refusal names the operation that holds the name; two operations that create a
+    /// distribution, installations and imports, get `installationInProgress`.
     @Test(arguments: [
         (DistributionOperation.install, DistributionOperation.install),
         (.install, .removal), (.export, .export), (.export, .removal), (.removal, .install),
-        (.removal, .export), (.removal, .removal),
+        (.removal, .export), (.removal, .removal), (.install, .import), (.import, .install),
+        (.import, .import), (.import, .export), (.import, .removal), (.export, .import),
+        (.removal, .import),
     ])
     func namesTheHolderWhenItRefuses(
         _ holder: DistributionOperation, _ requester: DistributionOperation
@@ -40,8 +42,8 @@ import Testing
         let operations = DistributionOperations()
         _ = try operations.claim(Self.name("Copy"), for: holder)
         let expected: MawError =
-            holder == .install && requester == .install
-            ? .installationInProgress(Self.name("Copy"))
+            holder.createsTheDistribution && requester.createsTheDistribution
+            ? .installationInProgress(Self.name("Copy"), by: holder)
             : .distributionBusy(Self.name("Copy"), operation: holder)
         #expect(throws: expected) { try operations.check(Self.name("Copy"), for: requester) }
         #expect(throws: expected) { try operations.claim(Self.name("Copy"), for: requester) }
