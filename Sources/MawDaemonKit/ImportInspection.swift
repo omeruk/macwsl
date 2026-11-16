@@ -24,9 +24,13 @@
             \#(ProvisioningScript.functions)
 
             # The top level: how many entries it has, and the first few, with / after a directory.
+            # lost+found is the formatting's, not the archive's.
             count=0
             for entry in "$root"/* "$root"/.[!.]* "$root"/..?*; do
                 if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then
+                    continue
+                fi
+                if [ "${entry##*/}" = lost+found ]; then
                     continue
                 fi
                 count=$((count + 1))

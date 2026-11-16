@@ -117,6 +117,8 @@ enum ImportInspectionTests {
             let fake = try FakeRoot()
             try fake.file("rootfs/etc/passwd", "root:x:0:0:root:/root:/bin/bash\n")
             try fake.directory("rootfs/usr")
+            // The formatting's, not the archive's.
+            try fake.directory("lost+found")
             #expect(
                 refusal(try await inspect(fake))
                     == .importNotARootFileSystem(
@@ -124,8 +126,10 @@ enum ImportInspectionTests {
         }
 
         @Test func refusesAnEmptyArchive() async throws {
+            let fake = try FakeRoot()
+            try fake.directory("lost+found")
             #expect(
-                refusal(try await inspect(try FakeRoot()))
+                refusal(try await inspect(fake))
                     == .importNotARootFileSystem(Self.name, found: "the archive is empty"))
         }
 
