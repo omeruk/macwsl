@@ -44,6 +44,8 @@ struct ImportCommand {
 
     /// How long maw waits for the daemon to confirm a cancellation.
     static let cancelTimeout = Duration.seconds(5)
+    /// The same, for this command. The tests shorten it.
+    var cancelTimeout = ImportCommand.cancelTimeout
 
     func run() async throws -> Int32 {
         let signals = SignalMonitor([SIGINT, SIGTERM, SIGHUP])
@@ -90,15 +92,33 @@ struct ImportCommand {
         case .signal(let number):
             view.interrupt()
             output.writeError("Cancelling the import...\n")
-            await Self.cancel(on: client)
-            // An import that had registered its distribution before the cancellation reached it
-            // finishes, and its reply says so (`OperationReply`).
-            if case .success(let summary) = await OperationReply.reply(
-                of: running, timeout: .milliseconds(500))
-            {
-                return await finish(summary)
+            let error: MawError
+            switch await Self.cancel(on: client, timeout: cancelTimeout) {
+            case .cancelled:
+                error = .importCancelled(name)
+            case .alreadyFinished:
+                // The import had registered its distribution, or ended, before the daemon
+                // received the cancellation. Its own reply says how (`OperationReply`).
+                switch await OperationReply.reply(of: running, timeout: .milliseconds(500)) {
+                case .success(let summary):
+                    return await finish(summary)
+                case .failure(let failure):
+                    // It failed on its own; maw exits as it would have without the signal.
+                    let report = Maw.failure(for: failure)
+                    output.writeError(report?.output ?? "")
+                    await output.waitUntilWritten(timeout: .milliseconds(250))
+                    return report?.exitCode.rawValue ?? 1
+                case nil:
+                    error = .importOutcomeUnknown(name)
+                }
+            case .requestFailed:
+                error = .daemonConnectionLost(during: "cancelling the import")
+            case .unanswered:
+                // The daemon answers once the import has ended, which, after the registration,
+                // is the end of the first start.
+                error = .importOutcomeUnknown(name)
             }
-            output.writeError(Maw.failure(for: MawError.importCancelled(name))?.output ?? "")
+            output.writeError(Maw.failure(for: error)?.output ?? "")
             await output.waitUntilWritten(timeout: .milliseconds(250))
             return 128 + number
         }
@@ -181,19 +201,24 @@ struct ImportCommand {
         }
     }
 
-    /// Asks the daemon to cancel, and waits at most `cancelTimeout` for its answer; the
-    /// import's own reply then says how it ended.
-    static func cancel(on client: any ImportDaemon) async {
-        let first = FirstResult<Void>()
-        await withCheckedContinuation { continuation in
-            first.onResult { continuation.resume() }
+    /// Asks the daemon to cancel and waits, for at most `timeout`, until it has removed the
+    /// import's traces, as `InstallCommand.cancel(on:timeout:)` does.
+    static func cancel(
+        on client: any ImportDaemon, timeout: Duration = cancelTimeout
+    ) async -> InstallCommand.Cancellation {
+        let first = FirstResult<InstallCommand.Cancellation>()
+        return await withCheckedContinuation { continuation in
+            first.onResult { continuation.resume(returning: $0) }
             Task {
-                _ = try? await client.cancel()
-                first.settle(())
+                switch try? await client.cancel() {
+                case true: first.settle(.cancelled)
+                case false: first.settle(.alreadyFinished)
+                case nil: first.settle(.requestFailed)
+                }
             }
             Task {
-                try? await Task.sleep(for: cancelTimeout)
-                first.settle(())
+                try? await Task.sleep(for: timeout)
+                first.settle(.unanswered)
             }
         }
     }

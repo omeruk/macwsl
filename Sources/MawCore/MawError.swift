@@ -134,6 +134,10 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case importFailed(DistroName, step: String, reason: String)
     /// The import was cancelled, because its client went away or the daemon stopped.
     case importCancelled(DistroName)
+    /// After Ctrl-C, the daemon did not confirm the cancellation of the import, or the import's
+    /// own reply did not reach maw, so whether the distribution was imported is not known. An
+    /// import that had registered its distribution goes on to its first start.
+    case importOutcomeUnknown(DistroName)
     /// The imported distribution is registered, but its first start failed. `consoleLog` is
     /// the path of its console log, which explains the failure.
     case importStartFailed(DistroName, consoleLog: String, reason: String)
@@ -346,6 +350,9 @@ extension MawError: LocalizedError {
             "The import of \(name) failed while \(step):\n\(reason)."
         case .importCancelled(let name):
             "The import of \(name) was cancelled."
+        case .importOutcomeUnknown(let name):
+            "The import of \(name) may have registered it before the cancellation\n"
+                + "reached it, and its result did not reach maw."
         case .importStartFailed(let name, _, let reason):
             "\(name) was imported, but its first start failed:\n\(reason)."
         case .daemonNotInstalled(let label):
@@ -570,6 +577,9 @@ extension MawError: LocalizedError {
                 + "~/Library/Logs/maw/install/\(name).log, may have details."
         case .importCancelled:
             "Nothing was installed. Run maw --import again to start over."
+        case .importOutcomeUnknown(let name):
+            "maw --list shows whether \(name) was imported: it lists \(name)\n"
+                + "once the import has registered it."
         // The console log comes first, because maw --unregister deletes it.
         case .importStartFailed(let name, let consoleLog, _):
             "Its console log shows why:\n\(consoleLog)\n"

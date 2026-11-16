@@ -20,6 +20,7 @@ import Testing
             reason: "it has more than 40 links, or a loop"),
         .importFailed(name, step: "extracting the archive", reason: "Truncated tar archive"),
         .importCancelled(name),
+        .importOutcomeUnknown(name),
         .importStartFailed(
             name, consoleLog: "~/Library/Logs/maw/Ubuntu-24.04.log",
             reason: "the guest agent did not answer"),

@@ -27,6 +27,11 @@ import os
         /// With `holdsUntilCancelled`: the distribution was registered, so the import succeeds
         /// although the cancellation reached it.
         var succeedsWhenCancelled = false
+        /// With `holdsUntilCancelled`: the import failed on its own before the cancellation
+        /// reached it, with this error.
+        var failsWhenCancelled: MawError?
+        /// Whether `cancel` never answers, as while the first start runs.
+        var cancelHangs = false
         var summary = ImportSummary(
             name: try! DistroName("Copy"), defaultUser: "ayse", defaultUserSource: .mawConf,
             isDefault: false, extractedBytes: 7, milliseconds: 9, firstStartFailure: nil)
@@ -62,6 +67,9 @@ import os
                     }
                     if resumeNow { waiter.resume() }
                 }
+                if let failsWhenCancelled {
+                    throw failsWhenCancelled
+                }
                 if !succeedsWhenCancelled {
                     throw .importCancelled(request.name)
                 }
@@ -73,6 +81,11 @@ import os
         }
 
         func cancel() async throws(MawError) -> Bool {
+            if cancelHangs {
+                state.withLock { $0.requests.append("cancel") }
+                try? await Task.sleep(for: .seconds(60))
+                return false
+            }
             let waiter = state.withLock { state in
                 state.requests.append("cancel")
                 state.cancelled = true
@@ -80,7 +93,8 @@ import os
                 return state.waiter
             }
             waiter?.resume()
-            return true
+            // As the daemon answers: false when the import was no longer running.
+            return !succeedsWhenCancelled && failsWhenCancelled == nil
         }
 
         func close() {
@@ -265,6 +279,24 @@ import os
         #expect(standardOutput.contains("Copy is imported."))
     }
 
+    /// An import that failed on its own before the cancellation reached it reports its own
+    /// error, not the cancellation.
+    @Test func reportsAFailureThatCameBeforeTheCancellation() async throws {
+        let file = path("u.tar")
+        try Data("x".utf8).write(to: URL(filePath: file))
+        let daemon = FakeDaemon()
+        daemon.holdsUntilCancelled = true
+        daemon.failsWhenCancelled = .importInitNotSystemd(
+            try DistroName("Copy"), reason: "/sbin/init leads to /bin/busybox")
+        let (signals, sender) = AsyncStream.makeStream(of: Int32.self)
+        let running = Task { try await command(daemon, file: file).run(signals: signals) }
+        try await waitUntil { daemon.requests.contains("import Copy") }
+        sender.yield(SIGINT)
+        #expect(try await running.value == 1)
+        #expect(standardError.contains("cannot be imported, because its /sbin/init is not systemd"))
+        #expect(!standardError.contains("was cancelled"))
+    }
+
     // MARK: The last lines
 
     @Test func namesTheDefaultAndTheUser() throws {
@@ -318,6 +350,37 @@ import os
         while !condition() {
             try #require(ContinuousClock.now < deadline, "The condition did not become true.")
             try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+}
+
+extension ImportCommandTests {
+    /// Tests that wait for the cancellation's time limit (decision record 0018).
+    @Suite struct Latency {
+        /// When the daemon does not answer the cancellation, as while the first start of a
+        /// registered import runs, maw says that the outcome is not known.
+        @Test func reportsAnUnconfirmedCancellation() async throws {
+            let tests = try ImportCommandTests()
+            let file = tests.path("u.tar")
+            try Data("x".utf8).write(to: URL(filePath: file))
+            let daemon = FakeDaemon()
+            daemon.holdsUntilCancelled = true
+            daemon.cancelHangs = true
+            var command = tests.command(daemon, file: file)
+            command.cancelTimeout = .milliseconds(200)
+            let (signals, sender) = AsyncStream.makeStream(of: Int32.self)
+            let running = Task { try await command.run(signals: signals) }
+            let deadline = ContinuousClock.now + .seconds(5)
+            while !daemon.requests.contains("import Copy") {
+                try #require(ContinuousClock.now < deadline)
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            sender.yield(SIGINT)
+            #expect(try await running.value == 128 + SIGINT)
+            #expect(
+                tests.standardError.contains(
+                    "maw: The import of Copy may have registered it before the cancellation"),
+                "\(tests.standardError)")
         }
     }
 }
