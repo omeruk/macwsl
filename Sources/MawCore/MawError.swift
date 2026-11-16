@@ -107,6 +107,31 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     /// The export was cancelled, because its client went away or the daemon stopped.
     case exportCancelled(DistroName)
 
+    // MARK: Import
+
+    /// `maw --import` cannot open or read the archive at `path`. `reason` says why.
+    case importArchiveNotReadable(path: String, reason: String)
+    /// `maw --import <distro> -` was run with standard input on a terminal.
+    case importFromTerminal
+    /// `maw --import <distro> -` was run with standard input closed or open only for writing.
+    case importInputNotReadable
+    /// The archive holds no root file system at its top level, for example because all of its
+    /// files are under one directory. `found` says what its top level holds.
+    case importNotARootFileSystem(DistroName, found: String)
+    /// The archive's `/sbin/init`, followed through links inside the archive's root, is not
+    /// systemd, which every maw distribution boots. `reason` says what it is instead.
+    case importInitNotSystemd(DistroName, reason: String)
+    /// A path that the import reads or writes in the archive's root file system cannot be
+    /// resolved inside that root, for example because its links form a loop.
+    case importPathNotResolvable(DistroName, path: String, reason: String)
+    /// A step of an import failed before the distribution was registered. `step` names it.
+    case importFailed(DistroName, step: String, reason: String)
+    /// The import was cancelled, because its client went away or the daemon stopped.
+    case importCancelled(DistroName)
+    /// The imported distribution is registered, but its first start failed. `consoleLog` is
+    /// the path of its console log, which explains the failure.
+    case importStartFailed(DistroName, consoleLog: String, reason: String)
+
     // MARK: Daemon
 
     /// The LaunchAgent that runs `mawd` is not registered with launchd. `label` names it.
@@ -296,6 +321,25 @@ extension MawError: LocalizedError {
                 + "archive closed its end of the pipe before the archive was complete."
         case .exportCancelled(let name):
             "The export of \(name) was cancelled."
+        case .importArchiveNotReadable(let path, let reason):
+            "maw --import cannot read \(path): \(reason)."
+        case .importFromTerminal:
+            "maw --import - would read the archive from a terminal."
+        case .importInputNotReadable:
+            "Standard input is not open for reading, so maw --import - cannot use it."
+        case .importNotARootFileSystem(let name, let found):
+            "The archive for \(name) holds no root file system at its top level:\n\(found)."
+        case .importInitNotSystemd(let name, let reason):
+            "\(name) cannot be imported, because its /sbin/init is not systemd:\n\(reason)."
+        case .importPathNotResolvable(let name, let path, let reason):
+            "\(name) cannot be imported, because \(path) in the archive\n"
+                + "cannot be resolved inside it: \(reason)."
+        case .importFailed(let name, let step, let reason):
+            "The import of \(name) failed while \(step):\n\(reason)."
+        case .importCancelled(let name):
+            "The import of \(name) was cancelled."
+        case .importStartFailed(let name, _, let reason):
+            "\(name) was imported, but its first start failed:\n\(reason)."
         case .daemonNotInstalled(let label):
             "The maw daemon is not installed: launchd has no LaunchAgent named \(label)."
         case .daemonUnreachable(let reason):
@@ -422,7 +466,8 @@ extension MawError: LocalizedError {
         case .noDistributionInstalled:
             "Install Ubuntu with maw --install."
         case .userNotFound:
-            "Check the name, or create the user in the distribution with sudo adduser."
+            "Check the name. In a distribution, sudo adduser creates a user. For\n"
+                + "maw --import, -u must name a user in the archive's /etc/passwd."
         case .rootFileSystemCheckFailed(let name, _, let diskImage, _):
             "maw keeps the disk image \(diskImage) and has not written to it; only e2fsck -p "
                 + "may have repaired parts of it before it stopped. Copy the image to a safe "
@@ -495,6 +540,28 @@ extension MawError: LocalizedError {
             "Run maw --export again with a reader that reads the whole archive."
         case .exportCancelled:
             "Run maw --export again to start over."
+        case .importArchiveNotReadable:
+            "Check the file's name and permissions, or give the archive on standard input\n"
+                + "with - in place of the file name."
+        case .importFromTerminal, .importInputNotReadable:
+            "Redirect standard input from a file or a pipe, or give a file name instead of -."
+        case .importNotARootFileSystem:
+            "Nothing was installed. maw --import needs etc/passwd and usr/ at the archive's\n"
+                + "top level, as maw --export and wsl --export write them."
+        case .importInitNotSystemd:
+            "Nothing was installed. maw starts every distribution with systemd."
+        case .importPathNotResolvable:
+            "Nothing was installed. Repair the links on that path in the distribution\n"
+                + "that the archive comes from, then export it and import it again."
+        case .importFailed(let name, _, _):
+            "Nothing was installed. The import's console log,\n"
+                + "~/Library/Logs/maw/install/\(name).log, may have details."
+        case .importCancelled:
+            "Nothing was installed. Run maw --import again to start over."
+        // The console log comes first, because maw --unregister deletes it.
+        case .importStartFailed(let name, let consoleLog, _):
+            "Its console log shows why:\n\(consoleLog)\n"
+                + "To delete \(name) and that log: maw --unregister \(name)"
         case .daemonNotInstalled:
             "Register the daemon with mawd install."
         case .daemonUnreachable, .daemonConnectionLost, .daemonProtocolError:
