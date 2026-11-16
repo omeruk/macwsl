@@ -20,6 +20,9 @@
         static let script = #"""
             set -eu
             root=$1
+            newline='
+            '
+            tab=$(printf '\t')
 
             \#(ProvisioningScript.functions)
 
@@ -35,7 +38,9 @@
                 fi
                 count=$((count + 1))
                 if [ "$count" -le \#(namedEntries) ]; then
-                    name=${entry##*/}
+                    # One record per line, with tabs between fields: a line break or a tab in a
+                    # name is shown as ?.
+                    name=$(printf '%s' "${entry##*/}" | tr '\n\t' '??')
                     if [ -d "$entry" ] && [ ! -L "$entry" ]; then
                         name=$name/
                     fi
@@ -70,6 +75,12 @@
                 *)
                     kind=unresolvable
                     found=${found#!}
+                    ;;
+                esac
+                case $found in
+                *"$newline"* | *"$tab"*)
+                    kind=unresolvable
+                    found="a name on its way contains a line break or a tab"
                     ;;
                 esac
                 printf 'path\t%s\t%s\t%s\t%s\n' "$path" "$kind" "$link" "$found"

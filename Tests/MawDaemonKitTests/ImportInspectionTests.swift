@@ -158,6 +158,25 @@ enum ImportInspectionTests {
                         reason: "it has more than 40 links, or a loop"))
         }
 
+        /// A line break in a name cannot split a record: an entry shows it as ?, and a path
+        /// that leads through such a name cannot be resolved.
+        @Test func keepsEachRecordOnOneLine() async throws {
+            let fake = try FakeRoot()
+            try fake.directory("a\nb")
+            try fake.file(
+                "x\npath\t/etc/passwd\tfile\tplain\t/etc/shadow", "root:x:0:0::/:/bin/sh\n")
+            try fake.link("etc/passwd", to: "/x\npath\t/etc/passwd\tfile\tplain\t/etc/shadow")
+            try fake.directory("usr")
+            let report = try await inspect(fake)
+            #expect(report.entries.contains("a?b/"), "\(report.entries)")
+            #expect(report.finding(.passwd).kind == .unresolvable)
+            #expect(
+                refusal(report)
+                    == .importPathNotResolvable(
+                        Self.name, path: "/etc/passwd",
+                        reason: "a name on its way contains a line break or a tab"))
+        }
+
         /// The output's lines, read without the script.
         @Test func readsTheReport() {
             let report = ImportInspection.Report(
