@@ -259,7 +259,7 @@ there is no negotiation.
 | `shutdown` | `shutdownComplete(ShutdownSummary)` | Stops every machine and ends its sessions. Returns once they have stopped. |
 | `install(InstallRequest)` | `installed(InstallSummary)` | Installs a distribution. The reply comes when the installation has finished; meanwhile the daemon sends `installProgress` events. `InstallRequest` holds the catalog name, an optional name to install under, the user, the password as a `Secret`, and the Mac's locale. |
 | `checkInstall(distribution:name:)` | `installPossible` | Checks what can be checked before the account is known: the distribution is in the catalog, the name is free and not being installed, and the volume has room. `maw --install` sends it before it asks for the account; `install` checks the same again. |
-| `cancel` | `cancelled(wasRunning:)` | Cancels this connection's installation or export, and replies once its traces are removed; the operation's own reply is then `failure(installationCancelled)` or `failure(exportCancelled)`. An installation that has already registered the distribution finishes instead, and `wasRunning` is false; so is it for one that had already ended, successfully or not. The daemon sends the installation's own reply before this one, but in `maw` the two replies resume different tasks, which run in either order. When `wasRunning` is false, `maw` therefore waits up to 500 ms for the installation's reply and reports what it says: installed, or the failure. Without the reply, it reports that whether the distribution was installed is not known (`installationOutcomeUnknown`). |
+| `cancel` | `cancelled(wasRunning:)` | Cancels this connection's installation, export, or import, and replies once its traces are removed; the operation's own reply is then `failure(installationCancelled)`, `failure(exportCancelled)`, or `failure(importCancelled)`. An installation or an import that has already registered the distribution finishes instead, and `wasRunning` is false; so is it for one that had already ended, successfully or not. The daemon sends the installation's own reply before this one, but in `maw` the two replies resume different tasks, which run in either order. When `wasRunning` is false, `maw` therefore waits up to 500 ms for the installation's reply and reports what it says: installed, or the failure. Without the reply, it reports that whether the distribution was installed is not known (`installationOutcomeUnknown`). |
 | `listDistributions` | `distributions(DistributionList)` | Every installed distribution, by stored name and sorted by name, each with a `DistributionState` (`stopped`, `starting`, `running`, or `stopping`), and the effective default: the one `state.json` names if it is installed, otherwise the first installed one by name. With nothing installed, the list is empty and the default is absent; clients report that. It starts no machine. |
 | `setDefault(DistroName)` | `defaultSet(DistroName)` | Resolves the name (see "Machines") and records the stored spelling in `state.json`, which is written atomically. The reply carries the stored spelling. It starts no machine. |
 | `terminate(DistroName)` | `terminated(TerminateSummary)` | Resolves the name and stops that one machine (see "Terminating one distribution"). The reply comes once the machine has stopped. `TerminateSummary` holds whether this request stopped the machine and how many sessions ended. |
@@ -267,6 +267,7 @@ there is no negotiation.
 | `unregister(DistroName)` | `unregistered(UnregisterSummary)` | Removes the distribution (see "Removing a distribution"). The reply comes once it is no longer installed. `UnregisterSummary` holds the stored name, the new default if the removed distribution was the default, and how many sessions ended. |
 | `checkExport(DistroName)` | `exportPossible(DistroName)` | Resolves the name and checks that no operation holds it and that its machine is stopped. `maw --export` sends it before it creates the file, so that a refused export creates none. |
 | `export(ExportRequest)` plus `descriptor` | `exported(ExportSummary)` | Writes the distribution's root file system to the descriptor (see "Exporting a distribution"). The reply comes when the archive is complete and the daemon has closed its copy of the descriptor; meanwhile the daemon sends `installProgress` events with the export's steps. `ExportRequest` holds the name and the format; `ExportSummary` the stored name, the format, the bytes written, and the duration. |
+| `import(ImportRequest)` plus `descriptor` | `imported(ImportSummary)` | Creates a distribution from the archive that the descriptor reads (see "Importing a distribution"). The reply comes when the distribution is registered and its first start has ended; meanwhile the daemon sends `installProgress` events with the import's steps. `ImportRequest` holds the new name, the user that `-u` names, and where the archive comes from: the absolute path of the file that the client opened, or `standard input`. `ImportSummary` holds the name, the default user and what chose it, whether the distribution became the default, the bytes of the uncompressed archive, the duration, and, when the first start failed, its error as `importStartFailed`. |
 | `watchDistributions(after: UInt64)` | `distributionSnapshot(DistributionSnapshot)` | A long poll: the reply comes at once if the daemon's latest snapshot has a sequence number greater than `after`, and otherwise when the next one exists. Makes the connection a watcher until it closes (see "Watching the distributions"). It starts no machine. |
 
 Any request can be answered with `failure(MawError)`, which carries the error unchanged; the
@@ -280,14 +281,16 @@ added `sampleNumber` to each distribution's figures, so that the terminal app ca
 from a snapshot that another change published. Version 6 adds `checkUnregister`, `unregister`,
 `checkExport`, and `export`, the descriptor in a request, and the steps `check` and `archive`;
 it renames `cancelInstall` to `cancel` and `installCancelled` to `cancelled`, because they also
-cancel an export.
+cancel an export. Version 7 adds `import` and the step `inspect`; `installationInProgress` names
+the installation or import that holds the name, and `insufficientDiskSpace` the operation that
+needs the space.
 
 **Events** (daemon to client, without a request):
 
 | Event | Meaning |
 |-------|---------|
 | `sessionEnded(SessionEnded)` | A session's machine stopped. `reason` says why, for example `maw --shutdown was run`. The daemon sends it before it stops the machine, so it normally arrives before the guest connection closes. |
-| `installProgress(InstallProgress)` | This connection's installation or export started or finished a step (for an installation `download`, `verify`, `prepare`, `format`, `extract`, `configure`, `finish`, `start`; for an export `prepare`, `check`, `archive`, `finish`; each with its duration), or downloaded more (bytes, total, rate, and where it resumed), at most five times a second. An event can arrive after the reply it precedes; `maw` waits briefly for the last step's event. |
+| `installProgress(InstallProgress)` | This connection's installation, export, or import started or finished a step (for an installation `download`, `verify`, `prepare`, `format`, `extract`, `configure`, `finish`, `start`; for an export `prepare`, `check`, `archive`, `finish`; for an import `prepare`, `format`, `extract`, `inspect`, `configure`, `finish`, `start`; each with its duration), or downloaded more (bytes, total, rate, and where it resumed), at most five times a second. An event can arrive after the reply it precedes; `maw` waits briefly for the last step's event. |
 
 ### The version check
 
@@ -345,17 +348,20 @@ distribution that is no longer installed, the default is the first installed one
 
 `DistributionOperations` (`Sources/MawDaemonKit/DistributionOperations.swift`) holds, for each
 distribution name in any case, the one operation that runs on it: an installation, an export,
-or a removal. A second operation on the same name fails: an installation of a name being
-installed with `installationInProgress`, every other pair with `distributionBusy`, whose message
-names the operation in progress ("<name> is being exported by maw --export."). While an export
+an import, or a removal. A second operation on the same name fails: an installation or an
+import of a name that an installation or an import holds with `installationInProgress`, every
+other pair with `distributionBusy`; both name the operation in progress ("<name> is being
+imported by maw --import."). While an export
 or a removal holds a name, the registry refuses to start its machine or open a session on it,
 so that no start can follow the export's check that the machine is stopped. While a removal
 holds a name, `setDefault` and `terminate` of it fail in the same way; during an export they
 work as for any stopped distribution. The list shows an exported distribution as `stopped`.
 
-A connection runs at most one installation or export at a time. `cancel`, the connection's
-closing, and SIGTERM end it; `shutdown` stops only the distributions' machines and does not
-end an installation or an export, which run on provisioning machines of their own.
+A connection runs at most one installation, export, or import at a time. `cancel`, the
+connection's closing, and SIGTERM end it; `shutdown` stops only the distributions' machines and
+does not end an installation, an export, or an import, which run on provisioning machines of
+their own. A `shutdown` during the first start of an installation or an import stops the new
+distribution's machine, and the import reports that start as failed.
 
 ### Removing a distribution
 
@@ -403,6 +409,54 @@ The daemon checks the descriptor before it starts: one that is missing or not op
 writing is a protocol error, and a terminal is refused with `exportToTerminal`. It never opens
 a path of its own for an export. When the export ends, successfully or not, the daemon closes
 its copy of the descriptor before it replies, and the client removes its file on a failure.
+
+### Importing a distribution
+
+`Importer` (`Sources/MawDaemonKit/Importer.swift`) runs an import on a task of its own, like an
+installation. Before anything is created it refuses what an installation refuses about the name
+(reserved, installed, held by another operation in any case of the letters, or anything left in
+`distros/` under it), a `-u` that fails `UserName`'s rules, and too little free space. The free
+space it requires is 1 GiB, plus, when the descriptor is a regular file, the archive's size from
+the descriptor's offset times a factor that the archive's first bytes choose: 1 for a plain tar
+archive (`ustar` at offset 257), 4 for gzip, and 6 for anything else. From a pipe or a socket it
+requires the 1 GiB only. It then holds the name, as an installation does, until the end of the
+first start; an installation or a second import of the name fails meanwhile with
+`installationInProgress`, which names the import.
+
+The steps, with the provisioning machine's console in `install/<name>.log`:
+
+1. **prepare**: a new sparse disk in the import's staging directory and the provisioning machine.
+2. **format**: as at installation.
+3. **extract**: `/usr/bin/tar -c -f - --format pax @-` on the Mac reads the client's descriptor
+   as its standard input, in any compression that it reads, and its uncompressed output goes to
+   `bsdtar -x -p --numeric-owner --xattrs -C /mnt/root` in the guest, as an installation's image
+   does. A thread of its own reads tar's output and writes each chunk to the guest agent; the
+   write waits while 256 KiB are queued for the guest, so a slow disk in the guest stops the
+   reading of tar's pipe, tar stops reading the descriptor, and the writer of a pipe waits. A
+   slow writer makes tar wait for input, and bsdtar for its own. The daemon holds at most one
+   chunk of 1 MiB and the agent's queue.
+4. **inspect**: a script resolves `/etc/passwd`, `/usr`, `/sbin/init`, `/etc/maw.conf`, and
+   `/etc/wsl.conf` inside the extracted root, following links as the imported system would,
+   never into the provisioning machine's files. It refuses an archive without `etc/passwd` and
+   `usr/` at its top level (`importNotARootFileSystem`, which names what the top level holds),
+   one whose `/sbin/init` does not lead to an executable named `systemd`
+   (`importInitNotSystemd`), and a path whose links loop (`importPathNotResolvable`). The daemon
+   then reads `/etc/passwd`, `/etc/maw.conf`, and `/etc/wsl.conf`, at most 4 MiB each, and chooses
+   the default user ([docs/distributions.md](distributions.md), "What --import configures").
+5. **configure**: `ProvisioningScript` in its `import` mode, and the default user written into
+   `/etc/maw.conf` if the file does not name it yet.
+6. **finish**: as at installation.
+
+The import then registers the distribution with a new MAC address and `distro.json` schema 2,
+which records the archive's path or `standard input`, publishes a snapshot to the watchers, and
+starts the distribution. A failed start does not undo the registration: the reply carries it as
+`importStartFailed`, which names the console log, and `maw` prints it and exits with status 1.
+
+A refusal, a failure, or a cancellation before the registration stops the provisioning machine,
+sends SIGTERM to `/usr/bin/tar`, also while it waits on an idle pipe, and removes the staging
+directory. A truncated or unreadable archive fails the extraction with `/usr/bin/tar`'s message.
+The daemon closes its copy of the descriptor before it replies, and it records the archive's
+path but never opens it; `mawd.log` shows it with control characters escaped.
 
 ### The session lease
 

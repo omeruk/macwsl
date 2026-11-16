@@ -68,9 +68,19 @@ code signing requirement
   file and passes the descriptor in the message's `descriptor` field. The daemon accepts it only
   if it is open for writing, refuses a terminal, and closes its copy before it replies. It
   changes nothing about the descriptor's open file description, which the client's other
-  processes share; the daemon ignores SIGPIPE, so a reader that closes its end cannot end it. A descriptor in any other request is ignored. Because the client opens the file,
-  the daemon, a LaunchAgent without the user's privacy permissions, needs no access to
-  `~/Desktop` or `~/Documents`, and the privacy prompt never names it.
+  processes share; the daemon ignores SIGPIPE, so a reader that closes its end cannot end it.
+  A descriptor in any request other than `export` and `import` is ignored. Because the client
+  opens the file, the daemon, a LaunchAgent without the user's privacy permissions, needs no
+  access to `~/Desktop` or `~/Documents`, and the privacy prompt never names it.
+- **Import (interface version 7).** A client can create a distribution from an archive that it
+  supplies through a descriptor (`import`). Any process of the same user can already create
+  files in `distros/`, which belong to that user, so the same-user check stays the boundary.
+  The daemon accepts the descriptor only if it is open for reading, refuses a terminal, and
+  closes its copy before it replies. It never opens a path for an import: the request names the
+  archive's path only so that `distro.json` can record it, as an absolute path of at most 1,024
+  bytes or `standard input`, and `mawd.log` shows it with control characters escaped. The new
+  name passes the installation's checks, and an import never writes into an existing entry of
+  `distros/`.
 - Every message carries the interface version, which is checked before the body is decoded.
   Bodies are JSON decoded into fixed types; a malformed body fails the request.
 - Phase 13 adds the team identifier to the requirement, which only Apple's certificate chain
@@ -269,9 +279,31 @@ provisioning machine by `bsdtar`, as root, with `--numeric-owner`, into the new 
   maintainer was checked when it was pinned. It is linked statically, without compression
   libraries.
 - `/usr/bin/tar` runs with only its standard descriptors (`POSIX_SPAWN_CLOEXEC_DEFAULT`), so it
-  cannot reach the daemon's connections or a client's descriptor. For an installation its input
-  is `/dev/null`; for an export's compression, a pipe from the daemon, and its output a pipe that
-  the daemon copies to the client's descriptor.
+  cannot reach the daemon's connections or any other descriptor of the daemon. For an
+  installation its input is `/dev/null`; for an export's compression, a pipe from the daemon, and
+  its output a pipe that the daemon copies to the client's descriptor; for an import, its input
+  is the client's descriptor, which the daemon closes as soon as tar has started, and its output
+  a pipe to the daemon.
+- **An imported archive is input from outside maw, and it is never extracted on the Mac.**
+  `/usr/bin/tar` re-encodes it as a stream, without `-P`, and `bsdtar` extracts it in the
+  provisioning machine, also without `-P`, so absolute paths, `..` components, links, and
+  special files in it act only inside that machine and on the new disk. The machine has no
+  access to the Mac's files and no other disk. An archive that `/usr/bin/tar` cannot read, such
+  as a truncated one, fails the import before anything is registered.
+- **The import's checks and configuration resolve every path inside the new root.** The
+  inspection and `ProvisioningScript` follow each link of a path as the imported system would:
+  an absolute target starts again at the root, and `..` stops there. The configuration replaces
+  a link where it writes a file instead of writing through it, and refuses a path whose links
+  loop. So a link in the archive cannot make the configuration write outside the new root, not
+  even into the provisioning machine's own files. The daemon reads at most 4 MiB of
+  `/etc/passwd`, `/etc/maw.conf`, and `/etc/wsl.conf` each.
+- **The import's configuration runs programs of the imported root file system**, through
+  `chroot`: `dpkg-divert`, if the archive has it, to divert the message of the day. They run as
+  root inside the provisioning machine, which has no access to the Mac's files and no other
+  disk; at worst they damage the new distribution.
+- **The default user that `/etc/maw.conf` or `/etc/wsl.conf` names is validated** with
+  `UserName`'s rules and must be a user in the archive's `/etc/passwd`; otherwise it is ignored.
+  It reaches the configuration script as an argument, never inside the script's text.
 
 ### The password
 
@@ -312,7 +344,8 @@ From phase 05 each distribution has a virtio network device with
 
 - Disk images are created with mode 600: they contain the distribution's files, including its
   password hashes.
-- `distro.json`, `state.json`, the image cache, and the logs contain no secrets. The console
+- `distro.json`, `state.json`, the image cache, and the logs contain no secrets. An imported
+  distribution's `distro.json` and `mawd.log` record the path of the archive it came from. The console
   logs, the provisioning machines' in `~/Library/Logs/maw/install/` included, contain what the
   guest prints on its console: the kernel log, systemd's status messages, and the agent's log,
   which records commands' process IDs but not their arguments or input.

@@ -218,7 +218,7 @@ With no distribution installed, `maw --list` says so and exits with status 1, as
 does; `maw --list --quiet` prints nothing and exits with 0. With none running,
 `maw --list --running` prints "No distribution is running." and exits with 0.
 
-### Removing and exporting a distribution
+### Removing, exporting, and importing a distribution
 
 ```sh
 maw --unregister Work                    # ask, then stop Work and delete it with its disk
@@ -227,6 +227,9 @@ maw --export Work work.tar               # write Work's root file system to a ta
 maw --export Work work.tar.gz            # compressed, chosen by the file's extension
 maw --export Work work.tar --format tar.xz   # or by --format: tar, tar.gz, or tar.xz
 maw --export Work - | ssh other-mac 'cat > work.tar'   # the archive to standard output
+maw --import Copy work.tar               # create Copy from an archive, in any compression
+maw --import Copy work.tar -u ayse       # with ayse, a user in the archive, as its default user
+maw --export Work - | maw --import Copy -   # copy Work through a pipe
 ```
 
 `--unregister` permanently deletes the distribution's disk and every file in it. On a
@@ -245,6 +248,16 @@ uncompressed `tar`. A `--format` that is given always wins. Progress goes to sta
 and Ctrl-C cancels the export and removes the file. POSIX ACLs are not kept
 ([`docs/known-limitations.md`](docs/known-limitations.md)).
 
+`--import` creates a distribution from a tar archive, such as one from `maw --export` or
+`wsl.exe --export`, in any compression, or from standard input for `-`. It keeps the archive's
+users, files, and locale, and changes only what the distribution needs to boot in maw: its host
+name, its network, its machine ID, and a new MAC address. No user is created and no password is
+asked. Sessions run as the user that `-u` names, or else as the default user of the archive's
+`/etc/maw.conf` or `/etc/wsl.conf`, or else as `root`; maw's last lines name that user. An
+archive whose files are all under one directory, or whose `/sbin/init` is not systemd, is
+refused. If the first start fails, the distribution stays installed, and maw names its console
+log. [`docs/distributions.md`](docs/distributions.md) lists what the import changes.
+
 To remove the daemon, which stops its virtual machines first:
 
 ```sh
@@ -253,7 +266,7 @@ mawd uninstall
 
 Logs are in `~/Library/Logs/maw`: `mawd.log` for the daemon, `<distribution>.log` for each
 distribution's console, including how each shutdown went, `install/<distribution>.log` for
-its installation, and `export/<distribution>.log` for its last export. [`docs/daemon.md`](docs/daemon.md) describes the daemon in detail.
+its installation or import, and `export/<distribution>.log` for its last export. [`docs/daemon.md`](docs/daemon.md) describes the daemon in detail.
 
 ## Booting the guest on your Mac
 
