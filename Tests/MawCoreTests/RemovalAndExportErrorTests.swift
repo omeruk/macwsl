@@ -90,12 +90,22 @@ import Testing
     @Test func namesTheCommandOfEachOperation() {
         #expect(
             DistributionOperation.allCases.map(\.command) == [
-                "maw --install", "maw --export", "maw --unregister",
+                "maw --install", "maw --export", "maw --unregister", "maw --import",
             ])
     }
 
     /// The raw values travel in the daemon's messages and never change.
     @Test func keepsItsRawValues() {
-        #expect(DistributionOperation.allCases.map(\.rawValue) == ["install", "export", "removal"])
+        #expect(
+            DistributionOperation.allCases.map(\.rawValue) == [
+                "install", "export", "removal", "import",
+            ])
+    }
+
+    /// An installation and an import create the distribution and start its machine
+    /// themselves; an export and a removal do neither.
+    @Test func tellsWhichOperationsCreateTheDistribution() {
+        #expect(
+            DistributionOperation.allCases.filter(\.createsTheDistribution) == [.install, .import])
     }
 }
