@@ -190,6 +190,20 @@ import os
         #expect(fcntl(STDIN_FILENO, F_GETFD) != -1, "Standard input was closed.")
     }
 
+    /// A non-blocking pipe, as some parent processes give their children, becomes blocking, so
+    /// that the daemon's decompressor waits for input instead of failing with EAGAIN.
+    @Test func makesANonBlockingInputBlocking() throws {
+        var fds: [Int32] = [-1, -1]
+        try #require(pipe(&fds) == 0)
+        defer {
+            close(fds[0])
+            close(fds[1])
+        }
+        _ = fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL) | O_NONBLOCK)
+        ArchiveSource.makeBlocking(fds[0])
+        #expect(fcntl(fds[0], F_GETFL) & O_NONBLOCK == 0)
+    }
+
     /// Each refusal comes before the daemon is asked.
     @Test func refusesBeforeItConnects() async throws {
         let daemon = FakeDaemon()

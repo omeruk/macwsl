@@ -236,6 +236,7 @@ struct ArchiveSource: Sendable {
     /// refused here, before the daemon is asked.
     static func open(_ file: String) throws(MawError) -> ArchiveSource {
         guard file != "-" else {
+            makeBlocking(STDIN_FILENO)
             return ArchiveSource(
                 descriptor: STDIN_FILENO,
                 description: DistroMetadata.ImportOrigin.standardInput, isOwned: false)
@@ -256,6 +257,17 @@ struct ArchiveSource: Sendable {
         return ArchiveSource(
             descriptor: descriptor, description: path(of: descriptor, opened: file),
             isOwned: true)
+    }
+
+    /// Clears `O_NONBLOCK` on `descriptor`. The daemon's decompressor reads the descriptor, and a
+    /// read that would wait fails with EAGAIN instead when the flag is set, as some parent
+    /// processes leave a pipe. maw is the descriptor's reader, so it may choose the mode; the
+    /// flag belongs to the file description, which the processes that share it see as well.
+    static func makeBlocking(_ descriptor: Int32) {
+        let flags = fcntl(descriptor, F_GETFL)
+        if flags >= 0, flags & O_NONBLOCK != 0 {
+            _ = fcntl(descriptor, F_SETFL, flags & ~O_NONBLOCK)
+        }
     }
 
     /// The path of the file that `descriptor` reads, as the kernel names it, or `file` made
