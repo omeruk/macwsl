@@ -105,6 +105,15 @@ import Testing
         #expect(MawConf(parsing: changed).values["boot.default"] == "something")
     }
 
+    /// A file with CRLF line endings, as an editor on Windows writes it, is read line by line.
+    @Test func replacesTheDefaultInAFileWithCRLFLineEndings() throws {
+        let text = "# c\r\n[user]\r\ndefault = bob\r\n[boot]\r\ncommand = true\r\n"
+        let changed = try #require(MawConf.settingDefaultUser("alice", in: text))
+        #expect(changed == "# c\n[user]\ndefault = alice\n[boot]\ncommand = true\n")
+        #expect(MawConf(parsing: changed).defaultUser == "alice")
+        #expect(MawConf(parsing: changed).values["boot.command"] == "true")
+    }
+
     @Test func writesAWholeFileWhenThereWasNone() throws {
         let changed = try #require(MawConf.settingDefaultUser("root", in: ""))
         #expect(changed == "[user]\ndefault = root\n")

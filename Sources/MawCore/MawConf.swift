@@ -44,7 +44,7 @@ public struct MawConf: Equatable, Sendable {
     }
 
     /// `text` with `[user] default` set to `user`, every other line kept as it is, or `nil` if
-    /// `text` already names `user`.
+    /// `text` already names `user`. Line endings become LF.
     ///
     /// The parser keeps the last `default` line of the last `[user]` section, so that line is
     /// replaced. Without one, the line goes under the last `[user]` section header, and without
@@ -54,7 +54,11 @@ public struct MawConf: Equatable, Sendable {
             return nil
         }
         let setting = "default = \(user)"
-        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        // Every line break, as the parser splits: "\r\n" is one Character in Swift, so a split
+        // at "\n" alone would see a file with CRLF line endings as one line. The result has LF
+        // line endings.
+        var lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+            .map(String.init)
         // A file that ends with a line break splits into a last, empty element.
         let endsWithLineBreak = lines.last == ""
         if endsWithLineBreak {
