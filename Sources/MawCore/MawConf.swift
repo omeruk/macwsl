@@ -42,6 +42,56 @@ public struct MawConf: Equatable, Sendable {
 
         """
     }
+
+    /// `text` with `[user] default` set to `user`, every other line kept as it is, or `nil` if
+    /// `text` already names `user`.
+    ///
+    /// The parser keeps the last `default` line of the last `[user]` section, so that line is
+    /// replaced. Without one, the line goes under the last `[user]` section header, and without
+    /// such a section, a new section is appended.
+    public static func settingDefaultUser(_ user: String, in text: String) -> String? {
+        if MawConf(parsing: text).defaultUser == user {
+            return nil
+        }
+        let setting = "default = \(user)"
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        // A file that ends with a line break splits into a last, empty element.
+        let endsWithLineBreak = lines.last == ""
+        if endsWithLineBreak {
+            lines.removeLast()
+        }
+        var section = ""
+        var lastHeader: Int?
+        var lastDefault: Int?
+        for (index, rawLine) in lines.enumerated() {
+            let line = trimmed(rawLine)
+            if line.isEmpty || line.hasPrefix("#") || line.hasPrefix(";") {
+                continue
+            }
+            if line.hasPrefix("["), line.hasSuffix("]") {
+                section = trimmed(line.dropFirst().dropLast()).lowercased()
+                if section == "user" {
+                    lastHeader = index
+                }
+                continue
+            }
+            guard section == "user", let equals = line.firstIndex(of: "=") else { continue }
+            if trimmed(line[..<equals]).lowercased() == "default" {
+                lastDefault = index
+            }
+        }
+        if let lastDefault {
+            lines[lastDefault] = setting
+        } else if let lastHeader {
+            lines.insert(setting, at: lastHeader + 1)
+        } else {
+            if let last = lines.last, !trimmed(last).isEmpty {
+                lines.append("")
+            }
+            lines += ["[user]", setting]
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
 }
 
 /// `text` without leading and trailing spaces and tabs.
