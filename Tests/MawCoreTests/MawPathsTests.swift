@@ -52,6 +52,28 @@ import Testing
                 == "/tmp/maw-tests/home/Library/Application Support/maw/dev.maw.mawd.lock")
     }
 
+    /// An export's console log has a directory of its own, apart from the installation's, so
+    /// that an export never replaces the log of the distribution's installation.
+    @Test func placesExportLogsInADirectoryOfTheirOwn() throws {
+        let foo = try DistroName("foo")
+        let logs = URL(filePath: "/logs", directoryHint: .isDirectory)
+        #expect(
+            MawPaths.exportLogFile(for: foo, in: logs).path(percentEncoded: false)
+                == "/logs/export/foo.log")
+        #expect(
+            MawPaths.exportLogFile(for: foo, in: logs)
+                != MawPaths.installLogFile(for: foo, in: logs))
+    }
+
+    /// `maw --unregister` deletes these three logs, and no other.
+    @Test func listsEveryLogOfOneDistribution() throws {
+        let logs = URL(filePath: "/logs", directoryHint: .isDirectory)
+        #expect(
+            MawPaths.distributionLogFiles(for: try DistroName("Copy"), in: logs).map {
+                $0.path(percentEncoded: false)
+            } == ["/logs/Copy.log", "/logs/install/Copy.log", "/logs/export/Copy.log"])
+    }
+
     /// The provisioning machines' console logs have a directory of their own, so that the
     /// installation of `foo` and a distribution named `install-foo` never share a log.
     @Test func placesInstallationLogsInADirectoryOfTheirOwn() throws {

@@ -33,6 +33,7 @@ jobs:
 
       - name: Build tests
         id: build-tests
+        timeout-minutes: 30
         run: swift build --build-tests -Xswiftc -warnings-as-errors
 
       # Three groups, so that a test that generates heavy load never runs at the same time as a

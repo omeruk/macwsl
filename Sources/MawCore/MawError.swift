@@ -11,6 +11,10 @@
 ///
 /// `Codable`, so that the daemon can return an error to its clients unchanged.
 public enum MawError: Error, Equatable, Sendable, Codable {
+    /// The reason of `machineStopped` when `maw --unregister` stopped the machine, after which
+    /// running the command again cannot start it.
+    public static let unregisterReason = "maw --unregister was run"
+
     /// A distribution name failed validation. `reason` explains which rule it broke.
     case invalidDistroName(String, reason: String)
     /// The requested feature exists in the command surface but has no implementation yet.
@@ -77,6 +81,32 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     /// for it, although the connection stayed open, so the installation may still be ending.
     case installationCancellationUnconfirmed(DistroName)
 
+    // MARK: Removal and export
+
+    /// A request names a distribution that `operation` holds, such as `maw --export`.
+    case distributionBusy(DistroName, operation: DistributionOperation)
+    /// `maw --export` names a distribution whose machine is not stopped: it runs, starts, or
+    /// stops.
+    case distributionRunning(DistroName)
+    /// `maw --unregister` asked whether to delete the distribution, and the answer was not yes.
+    case unregisterDeclined(DistroName)
+    /// `maw --unregister` could not move the distribution's directory away, so nothing was
+    /// deleted. `reason` says why.
+    case removalFailed(DistroName, reason: String)
+    /// `maw --export` names a file that exists already; it never replaces one.
+    case exportFileExists(path: String)
+    /// `maw --export <distro> -` was run with standard output on a terminal.
+    case exportToTerminal
+    /// `maw --export <distro> -` was run with standard output closed or open only for reading.
+    case exportOutputNotWritable
+    /// A step of an export failed. `step` names it.
+    case exportFailed(DistroName, step: String, reason: String)
+    /// The reader of an export's archive closed its end before the archive was complete, as
+    /// `maw --export <distro> - | head -c 1` does.
+    case exportOutputClosed(DistroName)
+    /// The export was cancelled, because its client went away or the daemon stopped.
+    case exportCancelled(DistroName)
+
     // MARK: Daemon
 
     /// The LaunchAgent that runs `mawd` is not registered with launchd. `label` names it.
@@ -92,7 +122,8 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     /// This executable's code signature does not satisfy the daemon's peer requirement, so the
     /// daemon would refuse its connection. `identifier` is the signature's identifier.
     case clientSignatureRejected(identifier: String)
-    /// The virtual machine that ran the session stopped. `reason` says why.
+    /// The virtual machine that ran the session stopped. `reason` says why; it is
+    /// `unregisterReason` when the distribution was deleted.
     case machineStopped(machine: String, reason: String)
     /// The LaunchAgent could not be installed or removed.
     case launchAgentFailed(reason: String)
@@ -244,6 +275,27 @@ extension MawError: LocalizedError {
         case .installationCancellationUnconfirmed(let name):
             "The daemon has not yet confirmed the cancellation of the installation of\n"
                 + "\(name). The installation may still be ending."
+        case .distributionBusy(let name, let operation):
+            "\(name) is being \(operation.participle) by \(operation.command)."
+        case .distributionRunning(let name):
+            "\(name) is not stopped; only a stopped distribution can be exported."
+        case .unregisterDeclined(let name):
+            "\(name) was not deleted, because the answer was not yes."
+        case .removalFailed(let name, let reason):
+            "\(name) could not be removed: \(reason)."
+        case .exportFileExists(let path):
+            "\(path) already exists.\nmaw --export never replaces a file."
+        case .exportToTerminal:
+            "maw --export - would write the archive to a terminal."
+        case .exportOutputNotWritable:
+            "Standard output is not open for writing, so maw --export - cannot use it."
+        case .exportFailed(let name, let step, let reason):
+            "The export of \(name) failed while \(step):\n\(reason)."
+        case .exportOutputClosed(let name):
+            "The export of \(name) stopped, because the program that reads the\n"
+                + "archive closed its end of the pipe before the archive was complete."
+        case .exportCancelled(let name):
+            "The export of \(name) was cancelled."
         case .daemonNotInstalled(let label):
             "The maw daemon is not installed: launchd has no LaunchAgent named \(label)."
         case .daemonUnreachable(let reason):
@@ -371,17 +423,17 @@ extension MawError: LocalizedError {
             "Install Ubuntu with maw --install."
         case .userNotFound:
             "Check the name, or create the user in the distribution with sudo adduser."
-        case .rootFileSystemCheckFailed(_, _, let diskImage, _):
+        case .rootFileSystemCheckFailed(let name, _, let diskImage, _):
             "maw keeps the disk image \(diskImage) and has not written to it; only e2fsck -p "
                 + "may have repaired parts of it before it stopped. Copy the image to a safe "
                 + "place before you try any repair by hand. maw has no command to repair a "
                 + "file system yet; a later phase adds one. If you do not need the "
-                + "distribution's files, the README explains how to remove it, after which "
+                + "distribution's files, maw --unregister \(name) removes it, after which "
                 + "maw --install can install it again."
         case .unknownDistribution:
             "maw --list --online shows the distributions that can be installed."
         case .distributionAlreadyInstalled(let name):
-            "Use it with maw -d \(name). The README explains how to remove a distribution."
+            "Use it with maw -d \(name), or remove it with\nmaw --unregister \(name)."
         case .installationInProgress:
             "Wait for the other installation to finish."
         case .distributionDirectoryExists:
@@ -422,6 +474,27 @@ extension MawError: LocalizedError {
         case .installationCancellationUnconfirmed(let name):
             "Wait a moment, then run maw --list. It lists \(name) if the installation\n"
                 + "finished after all."
+        case .distributionBusy(_, let operation):
+            "Wait until \(operation.command) has finished, then run the command again."
+        case .distributionRunning(let name):
+            "Stop it with maw --terminate \(name), which ends its sessions and\n"
+                + "waits for its stop, then run maw --export again."
+        case .unregisterDeclined:
+            nil
+        case .removalFailed(let name, _):
+            "Nothing was deleted, and \(name) is still installed. Check the\n"
+                + "permissions of ~/Library/Application Support/maw/distros."
+        case .exportFileExists:
+            "Choose another file name, or move the existing file away first."
+        case .exportToTerminal, .exportOutputNotWritable:
+            "Redirect standard output to a file or a pipe, or give a file name instead of -."
+        case .exportFailed(let name, _, _):
+            "The export's console log, ~/Library/Logs/maw/export/\(name).log,\n"
+                + "may have details."
+        case .exportOutputClosed:
+            "Run maw --export again with a reader that reads the whole archive."
+        case .exportCancelled:
+            "Run maw --export again to start over."
         case .daemonNotInstalled:
             "Register the daemon with mawd install."
         case .daemonUnreachable, .daemonConnectionLost, .daemonProtocolError:
@@ -430,6 +503,8 @@ extension MawError: LocalizedError {
             "Run mawd install again, so that launchd runs the daemon from this build."
         case .clientSignatureRejected:
             "Build and sign with scripts/sign-dev.sh; a plain swift build replaces the signature."
+        case .machineStopped(let machine, let reason) where reason == Self.unregisterReason:
+            "\(machine) was deleted; maw --list shows the installed distributions."
         case .machineStopped:
             "Run the command again to start a new virtual machine."
         case .launchAgentFailed:

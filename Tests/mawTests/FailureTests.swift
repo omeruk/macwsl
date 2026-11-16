@@ -88,11 +88,13 @@ import Testing
 
     // MARK: Runtime errors
 
+    /// `--import` fails before it connects to any daemon: a test must never reach the
+    /// installed one.
     @Test func reportsARuntimeErrorWithoutUsage() async throws {
         #expect(
-            try await failure(["--unregister", "Ubuntu"])
+            try await failure(["--import", "Ubuntu", "u.tar"])
                 == CommandFailure(
-                    output: "maw: --unregister is not implemented yet; phase 06b adds it.\n",
+                    output: "maw: --import is not implemented yet; phase 06b adds it.\n",
                     exitCode: .failure))
     }
 
@@ -187,6 +189,18 @@ import Testing
                 maw: The session ended because the virtual machine Ubuntu-24.04 stopped:
                 maw --terminate was run.
                 Run the command again to start a new virtual machine.
+
+                """)
+    }
+
+    /// A deleted distribution cannot be started again, so the suggestion points to the list.
+    @Test func fitsTheStopOfAnUnregisteredMachine() throws {
+        try expectWithinEightyColumns(
+            .machineStopped(machine: "Ubuntu-24.04", reason: MawError.unregisterReason),
+            printing: """
+                maw: The session ended because the virtual machine Ubuntu-24.04 stopped:
+                maw --unregister was run.
+                Ubuntu-24.04 was deleted; maw --list shows the installed distributions.
 
                 """)
     }

@@ -19,6 +19,20 @@ extension Maw {
                 "\(CLIOption.name.displayName) can only be used with \(CLIOption.install.displayName)."
             )
         }
+        if managing.format != nil,
+            !(request.map { if case .export = $0 { true } else { false } } ?? false)
+        {
+            throw ValidationError(
+                "\(CLIOption.format.displayName) can only be used with "
+                    + "\(CLIOption.export.displayName).")
+        }
+        if managing.yes,
+            !(request.map { if case .unregister = $0 { true } else { false } } ?? false)
+        {
+            throw ValidationError(
+                "\(CLIOption.yes.displayName) can only be used with "
+                    + "\(CLIOption.unregister.displayName).")
+        }
 
         let session = Session(
             distro: running.distribution, user: running.user, directory: running.directory)
@@ -66,13 +80,15 @@ extension Maw {
             try expectNoOperands(after: CLIOption.shutdown.displayName)
             return .shutdown
         case .export(let name):
-            return .export(name, file: try fileOperand(for: CLIOption.export, purpose: "write"))
+            let file = try fileOperand(for: CLIOption.export, purpose: "write")
+            return .export(
+                name, file: file, format: ArchiveFormat.format(given: managing.format, file: file))
         case .importDistro(let name):
             return .importDistro(
                 name, file: try fileOperand(for: CLIOption.import, purpose: "read"))
         case .unregister(let name):
             try expectNoOperands(after: CLIOption.unregister.displayName)
-            return .unregister(name)
+            return .unregister(name, yes: managing.yes)
         case .status:
             try expectNoOperands(after: CLIOption.status.displayName)
             return .status

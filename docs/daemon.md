@@ -240,9 +240,9 @@ Every message is an XPC dictionary (`Sources/MawXPC/InterfaceCoding.swift`):
 
 | Key | Type | Content |
 |-----|------|---------|
-| `interfaceVersion` | uint64 | `DaemonInterface.version`, currently **5**. This key never changes. |
+| `interfaceVersion` | uint64 | `DaemonInterface.version`, currently **6**. This key never changes. |
 | `body` | data | the message, JSON-encoded from the `Codable` types in `Sources/MawXPC/DaemonInterface.swift` |
-| `descriptor` | fd | only in `sessionOpened`: the guest agent connection |
+| `descriptor` | fd | only in `sessionOpened`, the guest agent connection, and in `export`, the file or standard output that `maw --export` opened |
 
 The receiver checks the version before it decodes the body, so that any two versions can
 detect a mismatch even when their bodies differ. Any change to the messages, their fields, or
@@ -259,10 +259,14 @@ there is no negotiation.
 | `shutdown` | `shutdownComplete(ShutdownSummary)` | Stops every machine and ends its sessions. Returns once they have stopped. |
 | `install(InstallRequest)` | `installed(InstallSummary)` | Installs a distribution. The reply comes when the installation has finished; meanwhile the daemon sends `installProgress` events. `InstallRequest` holds the catalog name, an optional name to install under, the user, the password as a `Secret`, and the Mac's locale. |
 | `checkInstall(distribution:name:)` | `installPossible` | Checks what can be checked before the account is known: the distribution is in the catalog, the name is free and not being installed, and the volume has room. `maw --install` sends it before it asks for the account; `install` checks the same again. |
-| `cancelInstall` | `installCancelled(wasRunning:)` | Cancels this connection's installation, and replies once its traces are removed; the installation's own reply is then `failure(installationCancelled)`. An installation that has already registered the distribution finishes instead, and `wasRunning` is false; so is it for one that had already ended, successfully or not. The daemon sends the installation's own reply before this one, but in `maw` the two replies resume different tasks, which run in either order. When `wasRunning` is false, `maw` therefore waits up to 500 ms for the installation's reply and reports what it says: installed, or the failure. Without the reply, it reports that whether the distribution was installed is not known (`installationOutcomeUnknown`). |
+| `cancel` | `cancelled(wasRunning:)` | Cancels this connection's installation or export, and replies once its traces are removed; the operation's own reply is then `failure(installationCancelled)` or `failure(exportCancelled)`. An installation that has already registered the distribution finishes instead, and `wasRunning` is false; so is it for one that had already ended, successfully or not. The daemon sends the installation's own reply before this one, but in `maw` the two replies resume different tasks, which run in either order. When `wasRunning` is false, `maw` therefore waits up to 500 ms for the installation's reply and reports what it says: installed, or the failure. Without the reply, it reports that whether the distribution was installed is not known (`installationOutcomeUnknown`). |
 | `listDistributions` | `distributions(DistributionList)` | Every installed distribution, by stored name and sorted by name, each with a `DistributionState` (`stopped`, `starting`, `running`, or `stopping`), and the effective default: the one `state.json` names if it is installed, otherwise the first installed one by name. With nothing installed, the list is empty and the default is absent; clients report that. It starts no machine. |
 | `setDefault(DistroName)` | `defaultSet(DistroName)` | Resolves the name (see "Machines") and records the stored spelling in `state.json`, which is written atomically. The reply carries the stored spelling. It starts no machine. |
 | `terminate(DistroName)` | `terminated(TerminateSummary)` | Resolves the name and stops that one machine (see "Terminating one distribution"). The reply comes once the machine has stopped. `TerminateSummary` holds whether this request stopped the machine and how many sessions ended. |
+| `checkUnregister(DistroName)` | `unregisterPossible(DistroName)` | Resolves the name and checks that no operation holds it. `maw --unregister` sends it before its question, so that a name that is not installed fails without one and the question shows the stored spelling. |
+| `unregister(DistroName)` | `unregistered(UnregisterSummary)` | Removes the distribution (see "Removing a distribution"). The reply comes once it is no longer installed. `UnregisterSummary` holds the stored name, the new default if the removed distribution was the default, and how many sessions ended. |
+| `checkExport(DistroName)` | `exportPossible(DistroName)` | Resolves the name and checks that no operation holds it and that its machine is stopped. `maw --export` sends it before it creates the file, so that a refused export creates none. |
+| `export(ExportRequest)` plus `descriptor` | `exported(ExportSummary)` | Writes the distribution's root file system to the descriptor (see "Exporting a distribution"). The reply comes when the archive is complete and the daemon has closed its copy of the descriptor; meanwhile the daemon sends `installProgress` events with the export's steps. `ExportRequest` holds the name and the format; `ExportSummary` the stored name, the format, the bytes written, and the duration. |
 | `watchDistributions(after: UInt64)` | `distributionSnapshot(DistributionSnapshot)` | A long poll: the reply comes at once if the daemon's latest snapshot has a sequence number greater than `after`, and otherwise when the next one exists. Makes the connection a watcher until it closes (see "Watching the distributions"). It starts no machine. |
 
 Any request can be answered with `failure(MawError)`, which carries the error unchanged; the
@@ -272,15 +276,18 @@ unit tests, lists nothing and answers `setDefault` and `terminate` with
 
 Version 3 added `listDistributions`, `setDefault`, and `terminate`. Version 4 added
 `watchDistributions` ([decision record 0020](decisions/0020-distribution-figures.md)). Version 5
-adds `sampleNumber` to each distribution's figures, so that the terminal app can tell each sample
-from a snapshot that another change published.
+added `sampleNumber` to each distribution's figures, so that the terminal app can tell each sample
+from a snapshot that another change published. Version 6 adds `checkUnregister`, `unregister`,
+`checkExport`, and `export`, the descriptor in a request, and the steps `check` and `archive`;
+it renames `cancelInstall` to `cancel` and `installCancelled` to `cancelled`, because they also
+cancel an export.
 
 **Events** (daemon to client, without a request):
 
 | Event | Meaning |
 |-------|---------|
 | `sessionEnded(SessionEnded)` | A session's machine stopped. `reason` says why, for example `maw --shutdown was run`. The daemon sends it before it stops the machine, so it normally arrives before the guest connection closes. |
-| `installProgress(InstallProgress)` | This connection's installation started or finished a step (`download`, `verify`, `prepare`, `format`, `extract`, `configure`, `finish`, `start`, with its duration), or downloaded more (bytes, total, rate, and where it resumed), at most five times a second. An event can arrive after the reply it precedes; `maw` waits briefly for the last step's event. |
+| `installProgress(InstallProgress)` | This connection's installation or export started or finished a step (for an installation `download`, `verify`, `prepare`, `format`, `extract`, `configure`, `finish`, `start`; for an export `prepare`, `check`, `archive`, `finish`; each with its duration), or downloaded more (bytes, total, rate, and where it resumed), at most five times a second. An event can arrive after the reply it precedes; `maw` waits briefly for the last step's event. |
 
 ### The version check
 
@@ -333,6 +340,69 @@ distribution that is no longer installed, the default is the first installed one
 `maw --set-default <name>` records another installed distribution as the default through the
 `setDefault` request, whether or not any machine runs, and starts none. Plain `maw` and
 `maw --list` see the new default at once, and it survives a restart of the daemon.
+
+### Operations on a distribution
+
+`DistributionOperations` (`Sources/MawDaemonKit/DistributionOperations.swift`) holds, for each
+distribution name in any case, the one operation that runs on it: an installation, an export,
+or a removal. A second operation on the same name fails: an installation of a name being
+installed with `installationInProgress`, every other pair with `distributionBusy`, whose message
+names the operation in progress ("<name> is being exported by maw --export."). While an export
+or a removal holds a name, the registry refuses to start its machine or open a session on it,
+so that no start can follow the export's check that the machine is stopped. While a removal
+holds a name, `setDefault` and `terminate` of it fail in the same way; during an export they
+work as for any stopped distribution. The list shows an exported distribution as `stopped`.
+
+A connection runs at most one installation or export at a time. `cancel`, the connection's
+closing, and SIGTERM end it; `shutdown` stops only the distributions' machines and does not
+end an installation or an export, which run on provisioning machines of their own.
+
+### Removing a distribution
+
+`unregister` resolves the name, holds it for the removal, and then:
+
+1. stops the distribution's machine, if it runs, as `terminate` does, with the reason
+   `maw --unregister was run`, which each ended session reports;
+2. renames `distros/<name>` to `distros/.staging/<label>/<name>-<UUID>.removed`, which is the
+   moment the distribution stops being installed; a failed rename fails the request with
+   `removalFailed`, and nothing is changed;
+3. if the distribution was the default, records the first installed distribution as the
+   default in `state.json`, or none if nothing is left;
+4. deletes `<name>.log`, `install/<name>.log`, and `export/<name>.log` in the log directory;
+5. deletes the renamed directory, and publishes a snapshot to the watchers.
+
+Nothing after the rename is undone or interrupted. A
+`.removed` directory that the daemon could not delete, because it exited or a file could not
+be removed, is deleted at the daemon's next start with the rest of its staging directory, and
+`mawd.log` notes it as left by an interrupted removal. The daemon logs the request and the
+outcome: whether the machine was running, how many sessions ended, and the new default.
+
+### Exporting a distribution
+
+`Exporter` (`Sources/MawDaemonKit/Exporter.swift`) runs an export on a task of its own, like an
+installation. It holds the name, checks that the machine is stopped, and boots the provisioning
+machine with the distribution's disk; its console log is `export/<name>.log`. In the guest it
+runs `maw-check-root`, the check of a start, and refuses a file system that fails it with
+`rootFileSystemCheckFailed`; it mounts the file system with `ro,noload`, so that the journal is
+not replayed, and runs `bsdtar -c -f - --format pax --numeric-owner --xattrs -C /mnt/root .`.
+
+The archive's bytes arrive over the guest agent's vsock connection. `ArchiveOutput`
+(`Sources/MawDaemonKit/ArchiveOutput.swift`) writes them to the client's descriptor, or for
+`tar.gz` and `tar.xz` into a pipe to `/usr/bin/tar -c -f - --format pax --gzip @-` or `--xz`,
+whose output the daemon writes to the descriptor. A thread of its own writes to the descriptor,
+one chunk at a time; the next chunk waits until the previous one is written, and the daemon
+reads the next bytes from the agent's connection only after that, so vsock's flow control
+stops the guest's writes and a slow reader holds the guest's `bsdtar` back instead of making
+the daemon buffer. Cancelling ends the wait at once, even while a write waits for a reader that
+has stopped reading; that write's thread closes the descriptor when the write returns. The
+daemon ignores SIGPIPE and leaves the client's descriptor unchanged, so a reader that closes
+its end gives `EPIPE`: the export fails with `exportOutputClosed`, the machine stops, and the
+daemon keeps serving.
+
+The daemon checks the descriptor before it starts: one that is missing or not open for
+writing is a protocol error, and a terminal is refused with `exportToTerminal`. It never opens
+a path of its own for an export. When the export ends, successfully or not, the daemon closes
+its copy of the descriptor before it replies, and the client removes its file on a failure.
 
 ### The session lease
 
@@ -521,6 +591,7 @@ the boundary until phase 13.
 | `~/Library/Logs/maw/mawd.log` | The daemon's own log: start, machines starting and stopping and why, sessions opened and released, errors. launchd sends the daemon's standard output and error here. |
 | `~/Library/Logs/maw/<machine>.log` | One machine's console, with the daemon's notes, including how each shutdown went. |
 | `~/Library/Logs/maw/install/<name>.log` | The console of the machine that provisioned `<name>`, from its last installation attempt. Earlier builds wrote `install-<name>.log`; those files stay where they are. |
+| `~/Library/Logs/maw/export/<name>.log` | The console of the machine that exported `<name>`, from its last export. |
 | `~/Library/Logs/maw/debug-boot-console.log` | The console of the machine that `mawd debug-boot` boots, without the daemon. |
 
 The daemon also logs to the unified log, subsystem `dev.maw`, categories `daemon` and `xpc`:

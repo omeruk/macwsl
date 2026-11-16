@@ -355,6 +355,8 @@ import os
             MawError.daemonNotInstalled(label: "dev.maw.mawd"), .noDistributionInstalled,
             .sessionConnectionEnded(distribution: "Ubuntu-24.04"),
             .daemonUnreachable(reason: "gone"), .launchAgentFailed(reason: "failed"),
+            // Enter cannot start a deleted distribution again.
+            .machineStopped(machine: "Copy", reason: MawError.unregisterReason),
         ] {
             #expect(LinuxSession.suggestion(for: error) == error.recoverySuggestion)
         }

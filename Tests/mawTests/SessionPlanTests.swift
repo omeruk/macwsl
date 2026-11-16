@@ -5,7 +5,16 @@ import Testing
 
 @Suite struct SessionPlanTests {
     private func plan(_ arguments: String...) throws -> SessionPlan {
-        try SessionPlan(Maw.parse(ArgumentNormalizer.normalize(arguments)).resolveAction())
+        try #require(
+            try SessionPlan(Maw.parse(ArgumentNormalizer.normalize(arguments)).resolveAction()))
+    }
+
+    /// An action without a session has no plan, rather than a trap.
+    @Test(arguments: [["--list"], ["--shutdown"], ["--export", "Ubuntu-24.04", "u.tar"]])
+    func hasNoPlanForAnActionWithoutASession(_ arguments: [String]) throws {
+        #expect(
+            try SessionPlan(Maw.parse(ArgumentNormalizer.normalize(arguments)).resolveAction())
+                == nil)
     }
 
     // MARK: Actions to sessions

@@ -14,21 +14,14 @@ enum Action: Equatable, Sendable {
     case setDefault(DistroName)
     case terminate(DistroName)
     case shutdown
-    case export(DistroName, file: String)
+    /// `--export <distro> <file> [--format <format>]`, with the format that `--format` or
+    /// the file's name chooses (`ArchiveFormat.format(given:file:)`).
+    case export(DistroName, file: String, format: ArchiveFormat)
     case importDistro(DistroName, file: String)
-    case unregister(DistroName)
+    /// `--unregister <distro> [--yes]`. `yes` skips the question.
+    case unregister(DistroName, yes: Bool)
     case status
     case version
-
-    /// The roadmap phase that implements the action.
-    var phase: String {
-        switch self {
-        case .shell, .run, .exec, .shutdown, .status, .version: "04b"
-        case .install, .list(.online): "05"
-        case .list(.installed), .setDefault, .terminate: "06a"
-        case .export, .importDistro, .unregister: "06b"
-        }
-    }
 
     /// How the action is named in user-facing messages.
     var displayName: String {

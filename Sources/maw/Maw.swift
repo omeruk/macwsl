@@ -24,9 +24,9 @@ struct Maw: AsyncParsableCommand {
             maw --set-default <distro>
             maw --terminate <distro>
             maw --shutdown
-            maw --export <distro> <file>
+            maw --export <distro> <file> [--format tar | tar.gz | tar.xz]
             maw --import <distro> <file>
-            maw --unregister <distro>
+            maw --unregister <distro> [--yes]
             maw --status
             maw --version
             """,
@@ -37,12 +37,21 @@ struct Maw: AsyncParsableCommand {
 
             As in wsl.exe, -v means --verbose after --list, and --version anywhere else.
 
+            --unregister permanently deletes the distribution and its disk, with every file in \
+            it. On a terminal, maw asks first; --yes deletes without asking.
+
+            --export writes a stopped distribution's root file system to a tar archive, or to \
+            standard output for -. The archive is compressed with gzip when the file name ends \
+            in .tar.gz, .tgz, or .gz, and with xz when it ends in .tar.xz, .txz, or .xz; \
+            --format chooses instead.
+
             Examples:
-              maw --install Ubuntu-24.04     Install Ubuntu 24.04.
-              maw -l -v                      List distributions with their state.
-              maw -d Ubuntu-24.04 -u root    Open a root shell in Ubuntu 24.04.
-              maw -e uname -a                Run uname directly, without a shell.
-              maw --export Ubuntu ubuntu.tar Back up Ubuntu to a tar file.
+              maw --install Ubuntu-24.04          Install Ubuntu 24.04.
+              maw -l -v                           List distributions with their state.
+              maw -d Ubuntu-24.04 -u root         Open a root shell in Ubuntu 24.04.
+              maw -e uname -a                     Run uname directly, without a shell.
+              maw --export Ubuntu-24.04 u.tar.gz  Back up Ubuntu 24.04 to a tar.gz file.
+              maw --unregister Ubuntu-24.04       Delete Ubuntu 24.04 and its disk.
             """
     )
 
@@ -80,12 +89,17 @@ struct Maw: AsyncParsableCommand {
 
     func run() async throws {
         let action = try resolveAction()
-        switch action {
-        case .shell, .run, .exec:
-            let status = try await runSession(SessionPlan(action))
+        if let plan = try SessionPlan(action) {
+            let status = try await runSession(plan)
             if status != 0 {
                 throw ExitCode(status)
             }
+            return
+        }
+        switch action {
+        case .shell, .run, .exec:
+            // Each has a session, which ran above.
+            return
         case .status:
             try await Self.showStatus()
         case .shutdown:
@@ -105,8 +119,16 @@ struct Maw: AsyncParsableCommand {
             try await Self.setDefault(name)
         case .terminate(let name):
             try await Self.terminate(name)
-        case .export, .importDistro, .unregister:
-            throw MawError.notImplemented(feature: action.displayName, phase: action.phase)
+        case .unregister(let name, let yes):
+            try await UnregisterCommand(name: name, yes: yes).run()
+        case .export(let name, let file, let format):
+            let status = try await ExportCommand(name: name, file: file, format: format).run()
+            if status != 0 {
+                throw ExitCode(status)
+            }
+        case .importDistro:
+            // Phase 06b's second pull request adds it.
+            throw MawError.notImplemented(feature: action.displayName, phase: "06b")
         }
     }
 
@@ -319,9 +341,19 @@ struct ManagingOptions: ParsableArguments {
         parsing: .unconditional,
         // The file is the positional `operand`. Naming it in the value keeps the help and the
         // parser's error messages ("Missing value for '--export <distro> <file>'") accurate.
-        help: ArgumentHelp("Export <distro> to <file>, a tar archive.", valueName: "distro> <file"),
+        help: ArgumentHelp(
+            "Export the stopped <distro> to <file>, a tar archive, or - for standard output.",
+            valueName: "distro> <file"),
         transform: { try DistroName($0) })
     var export: DistroName?
+
+    @Option(
+        name: CLIOption.format.names,
+        parsing: .unconditional,
+        help: ArgumentHelp(
+            "With --export: write tar, tar.gz, or tar.xz, whatever the file's name.",
+            valueName: "format"))
+    var format: ArchiveFormat?
 
     @Option(
         name: CLIOption.import.names,
@@ -336,9 +368,15 @@ struct ManagingOptions: ParsableArguments {
         name: CLIOption.unregister.names,
         parsing: .unconditional,
         help: ArgumentHelp(
-            "Remove <distro> and permanently delete its disk.", valueName: "distro"),
+            "Remove <distro> and permanently delete its disk and every file in it.",
+            discussion: "On a terminal, maw asks first.", valueName: "distro"),
         transform: { try DistroName($0) })
     var unregister: DistroName?
+
+    @Flag(
+        name: CLIOption.yes.names,
+        help: "With --unregister: delete without asking.")
+    var yes = false
 }
 
 struct GeneralOptions: ParsableArguments {
@@ -352,3 +390,5 @@ struct GeneralOptions: ParsableArguments {
         help: "Show version information. -v does the same when it does not follow --list.")
     var version = false
 }
+
+extension ArchiveFormat: ExpressibleByArgument {}

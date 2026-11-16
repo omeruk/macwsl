@@ -1,6 +1,7 @@
 #if os(macOS)
     import Foundation
     import MawCore
+    import MawProtocol
 
     /// The installed distributions on disk, and which one is the default.
     ///
@@ -14,6 +15,11 @@
         struct State: Codable, Equatable {
             var defaultDistribution: DistroName?
         }
+
+        /// Serializes every change of `state.json` in this process, so that a check and the write
+        /// that depends on it happen in one step: `setDefault` cannot record a distribution that a
+        /// removal has just moved away, and two changes cannot lose one of them.
+        private static let stateLock = ConditionLock()
 
         public let paths: MawPaths
         /// The label of the daemon that uses this store, which names its staging directories.
@@ -137,9 +143,52 @@
             return metadata.name == name
         }
 
+        /// Records `name` as the default, whether or not it is installed.
         public func setDefaultDistribution(_ name: DistroName) throws(MawError) {
-            var state = readState()
-            state.defaultDistribution = name
+            try Self.stateLock.withLock { () throws(MawError) in
+                var state = readState()
+                state.defaultDistribution = name
+                try writeState(state)
+            }
+        }
+
+        /// Records `name` as the default if it is installed, checked in the same step as the
+        /// write, so that a removal that moves `name` away cannot come between them. Throws
+        /// `distributionNotInstalled` otherwise.
+        public func setInstalledDefaultDistribution(_ name: DistroName) throws(MawError) {
+            try Self.stateLock.withLock { () throws(MawError) in
+                guard isInstalled(name) else { throw .distributionNotInstalled(name) }
+                var state = readState()
+                state.defaultDistribution = name
+                try writeState(state)
+            }
+        }
+
+        /// After the removal of `name`: if `state.json` records `name` as the default, compared
+        /// without regard to case, or records none while `name` was the effective default
+        /// (`wasDefault`), records the first installed distribution instead, or none if nothing
+        /// is installed. A later distribution of that name therefore never becomes the default
+        /// by accident, and the new default stays when another one is installed. Returns whether
+        /// it changed `state.json`.
+        @discardableResult
+        public func replaceDefaultDistribution(removed name: DistroName, wasDefault: Bool)
+            throws(MawError) -> Bool
+        {
+            try Self.stateLock.withLock { () throws(MawError) -> Bool in
+                var state = readState()
+                let namesIt =
+                    state.defaultDistribution.map {
+                        $0.rawValue.lowercased() == name.rawValue.lowercased()
+                    } ?? wasDefault
+                guard namesIt else { return false }
+                state.defaultDistribution = installed().first?.name
+                try writeState(state)
+                return true
+            }
+        }
+
+        /// Writes `state.json` atomically.
+        private func writeState(_ state: State) throws(MawError) {
             do {
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

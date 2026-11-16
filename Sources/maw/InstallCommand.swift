@@ -184,8 +184,8 @@ struct InstallCommand {
                 error = .installationCancelled(name)
             case .alreadyFinished:
                 // The installation ended before the daemon received the cancellation. Its own
-                // reply says how (`reply(of:timeout:)`).
-                switch await reply(of: installation, timeout: installReplyTimeout) {
+                // reply says how (`OperationReply`).
+                switch await OperationReply.reply(of: installation, timeout: installReplyTimeout) {
                 case .success:
                     output.write(
                         "The installation had already finished. Run maw -d \(name) to use it.\n")
@@ -211,30 +211,6 @@ struct InstallCommand {
         }
     }
 
-    /// The installation's reply, or `nil` if it has not arrived within `timeout`.
-    ///
-    /// When the daemon answers `cancelInstall` that the installation was no longer running, it
-    /// has already sent the reply to `install`: the installation's task sends that reply before
-    /// it ends, and the daemon answers `cancelInstall` only after the task has ended
-    /// (`DaemonService.serve`). The two replies resume tasks of their own here, though, which
-    /// can run in either order, so maw waits for the installation's reply instead of assuming
-    /// that it has arrived.
-    static func reply(
-        of installation: Task<Result<InstallSummary, MawError>, Never>, timeout: Duration
-    ) async -> Result<InstallSummary, MawError>? {
-        let first = FirstResult<Result<InstallSummary, MawError>?>()
-        return await withCheckedContinuation { continuation in
-            first.onResult { continuation.resume(returning: $0) }
-            Task {
-                first.settle(await installation.value)
-            }
-            Task {
-                try? await Task.sleep(for: timeout)
-                first.settle(nil)
-            }
-        }
-    }
-
     /// Gives SIGINT, SIGTERM, and SIGHUP their default action again, which ends maw.
     private static func restoreDefaultSignalActions() {
         for number in [SIGINT, SIGTERM, SIGHUP] {
@@ -252,7 +228,7 @@ struct InstallCommand {
     ///
     /// The three run as tasks of their own rather than in a task group, which would wait for
     /// the installation's request to return even after a signal: that request cannot be
-    /// cancelled from here, only by `cancelInstall`, which must be sent at once.
+    /// cancelled from here, only by `cancel`, which must be sent at once.
     static func firstOutcome(
         installation: Task<Result<InstallSummary, MawError>, Never>,
         events: AsyncStream<DaemonClient.Event>, view: InstallProgressView,
@@ -317,7 +293,7 @@ struct InstallCommand {
         return await withCheckedContinuation { continuation in
             first.onResult { continuation.resume(returning: $0) }
             Task {
-                switch try? await client.cancelInstall() {
+                switch try? await client.cancel() {
                 case true: first.settle(.cancelled)
                 case false: first.settle(.alreadyFinished)
                 case nil: first.settle(.requestFailed)
@@ -555,7 +531,7 @@ protocol InstallDaemon: Sendable {
     var events: AsyncStream<DaemonClient.Event> { get }
     func checkInstall(distribution: String?, name: DistroName?) async throws(MawError)
     func install(_ request: InstallRequest) async throws(MawError) -> InstallSummary
-    func cancelInstall() async throws(MawError) -> Bool
+    func cancel() async throws(MawError) -> Bool
     func close()
 }
 

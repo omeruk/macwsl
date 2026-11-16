@@ -80,6 +80,8 @@ struct Serve: AsyncParsableCommand {
             of: Void.self, bufferingPolicy: .bufferingNewest(1))
         let store = DistributionStore(paths: paths, daemonLabel: daemonLabel)
         removeStagingLeftovers(store: store, label: label, paths: paths, log: log)
+        // The names that installations, exports, and removals hold, for every part below.
+        let operations = DistributionOperations()
         let registry = MachineRegistry(
             clock: clock, idleTimeout: settings.machineIdleDuration, log: log,
             factory: VirtualMachineHandle.factory(
@@ -87,7 +89,7 @@ struct Serve: AsyncParsableCommand {
                 store: store, log: log, canRunVirtualMachines: canRunVirtualMachines,
                 samplesWithInfo: sampleWithInfo),
             activityChanged: { activityContinuation.yield($0) },
-            stateChanged: { changesContinuation.yield() })
+            stateChanged: { changesContinuation.yield() }, operations: operations)
         let sampler = FigureSampler(
             clock: clock, registry: registry, store: store,
             interval: sampleInterval.map { .milliseconds($0) }
@@ -111,17 +113,30 @@ struct Serve: AsyncParsableCommand {
             freeSpace: FreeSpace.probe,
             startMachine: { machine throws(MawError) in try await registry.start(machine) },
             makeMACAddress: { VZMACAddress.randomLocallyAdministered().string },
-            log: log)
+            operations: operations, log: log)
+        let exporter = Exporter(
+            store: store, operations: operations,
+            makeMachine: { (name: DistroName) throws(MawError) -> any ExportingMachine in
+                guard canRunVirtualMachines else { throw .virtualizationEntitlementMissing }
+                return VirtualProvisioningMachine(
+                    kernelDirectory: paths.kernelDirectory,
+                    consoleLog: MawPaths.exportLogFile(for: name, in: settings.logDirectoryURL),
+                    log: log)
+            },
+            isStopped: { machine in await registry.isStopped(machine) },
+            logDirectory: settings.logDirectoryURL, log: log)
         let service = DaemonService(
             clock: clock, registry: registry, lifetime: lifetime,
             canRunVirtualMachines: canRunVirtualMachines, store: store, installer: installer,
-            sampler: sampler, log: log)
+            exporter: exporter, sampler: sampler, operations: operations,
+            logDirectory: settings.logDirectoryURL,
+            log: log)
 
         let signals = SignalMonitor([SIGTERM, SIGINT, SIGHUP])
         Task {
             for await number in signals.signals {
                 log.notice("received signal \(number); stopping every machine")
-                await service.cancelInstallations()
+                await service.cancelOperations()
                 let summary = await registry.shutdown(reason: "the maw daemon is stopping")
                 log.notice(
                     "stopped \(summary.stoppedMachines.count) machines and "
@@ -137,17 +152,19 @@ struct Serve: AsyncParsableCommand {
         withExtendedLifetime(lock) {}
     }
 
-    /// Removes the staging directories that an installation left behind when the daemon could
-    /// not clean up, such as one interrupted by a crash or a power loss: this daemon's own,
-    /// which no other process uses while it holds its lock, and those of earlier builds, whose
-    /// names carry no label, only while no other daemon runs. A daemon creates staging
-    /// directories only while it holds its lock, so with no other lock held, none of them
-    /// belongs to an installation in progress.
+    /// Removes the staging directories that an installation or a removal left behind when the
+    /// daemon could not clean up, such as one interrupted by a crash or a power loss: this
+    /// daemon's own, which no other process uses while it holds its lock, and those of earlier
+    /// builds, whose names carry no label, only while no other daemon runs. A daemon creates
+    /// staging directories only while it holds its lock, so with no other lock held, none of
+    /// them belongs to an installation in progress.
     private func removeStagingLeftovers(
         store: DistributionStore, label: String, paths: MawPaths, log: DaemonLog
     ) {
         for leftover in store.removeStagingLeftovers() {
-            log.notice("removed \(leftover), left by an interrupted installation")
+            let operation =
+                leftover.hasSuffix(DistributionStore.removalSuffix) ? "removal" : "installation"
+            log.notice("removed \(leftover), left by an interrupted \(operation)")
         }
         let legacy = store.legacyStagingDirectories()
         guard !legacy.isEmpty else { return }

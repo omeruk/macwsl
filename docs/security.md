@@ -57,6 +57,20 @@ code signing requirement
   `scripts/integration-test.sh` signs its probe as `dev.maw.maw`. Nothing installs it, and it
   refuses to run unless `MAW_DAEMON_LABEL` names a daemon other than the installed one. It gains
   nothing that the same-user check does not already allow.
+- **Removal and export (interface version 6).** A client can delete a distribution with its
+  disk (`unregister`), and have the daemon write a distribution's whole root file system,
+  `/etc/shadow` and every user's files included, to a descriptor that the client supplies
+  (`export`). Any process of the same user can already do both to the files in `distros/`,
+  which belong to that user: delete them, or read the disk image. The same-user check therefore
+  stays the boundary. Both accept only names of installed distributions, resolved by the
+  daemon; `unregister` never touches a directory without a valid `distro.json`.
+- **The export's descriptor.** The daemon never opens a path for an export: `maw` opens the
+  file and passes the descriptor in the message's `descriptor` field. The daemon accepts it only
+  if it is open for writing, refuses a terminal, and closes its copy before it replies. It
+  changes nothing about the descriptor's open file description, which the client's other
+  processes share; the daemon ignores SIGPIPE, so a reader that closes its end cannot end it. A descriptor in any other request is ignored. Because the client opens the file,
+  the daemon, a LaunchAgent without the user's privacy permissions, needs no access to
+  `~/Desktop` or `~/Documents`, and the privacy prompt never names it.
 - Every message carries the interface version, which is checked before the body is decoded.
   Bodies are JSON decoded into fixed types; a malformed body fails the request.
 - Phase 13 adds the team identifier to the requirement, which only Apple's certificate chain
@@ -254,8 +268,10 @@ provisioning machine by `bsdtar`, as root, with `--numeric-owner`, into the new 
   pinned by SHA-256 (`Guest/initramfs/SOURCES`), whose OpenPGP signature by libarchive's release
   maintainer was checked when it was pinned. It is linked statically, without compression
   libraries.
-- `/usr/bin/tar` runs with only its standard descriptors and `/dev/null` as input, so it cannot
-  reach the daemon's connections.
+- `/usr/bin/tar` runs with only its standard descriptors (`POSIX_SPAWN_CLOEXEC_DEFAULT`), so it
+  cannot reach the daemon's connections or a client's descriptor. For an installation its input
+  is `/dev/null`; for an export's compression, a pipe from the daemon, and its output a pipe that
+  the daemon copies to the client's descriptor.
 
 ### The password
 
@@ -305,6 +321,20 @@ From phase 05 each distribution has a virtio network device with
   `distro.json` after a partial manual removal, and leaves that entry as it is. It builds the
   new distribution in its own staging directory, which it creates and removes without
   following symbolic links (docs/daemon.md).
+- `maw --export` creates its file with `O_CREAT | O_EXCL` and mode 600, because the archive
+  holds the password hashes in `/etc/shadow` and every user's files. It never replaces an
+  existing file and never follows a symbolic link in its place, dangling or not. It creates the
+  file only after the daemon has accepted the export. On a failure or a cancellation it removes
+  the file only if the path still names the device and inode that it created, so that it never
+  removes a file that replaced its own. A `maw` killed with SIGKILL leaves the partial file
+  behind ([docs/known-limitations.md](known-limitations.md)).
+- An export mounts the distribution's file system read-only and without replaying its journal
+  (`ro,noload`); only the check before it, `e2fsck -p`, may repair it, as at every start. The
+  provisioning machine has that disk only, and no access to the Mac's files.
+- `maw --unregister` asks before it deletes, on a terminal, and the daemon removes a
+  distribution by renaming its directory into its own staging directory first, so that a
+  removal that stops halfway leaves no partly deleted distribution under its name; the daemon
+  deletes the rest at its next start.
 - A distribution whose root file system fails its check at boot is not changed further. The
   initramfs does not mount it, and the daemon neither deletes, reformats, nor writes to its
   disk image; only `e2fsck -p` may have repaired parts of it before it stopped

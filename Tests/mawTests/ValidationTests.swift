@@ -214,6 +214,58 @@ import Testing
                 == "--import needs a file to read: maw --import <distro> <file>.")
     }
 
+    /// `--format` belongs to `--export`, and `--yes` to `--unregister`.
+    @Test(arguments: [
+        ["--format", "tar"], ["--format", "tar", "-l"], ["--format", "tar", "--unregister", "U"],
+        ["--format", "tar.gz", "--import", "U", "u.tar"], ["--format", "tar", "--", "ls"],
+    ])
+    func rejectsFormatWithoutExport(_ arguments: [String]) {
+        #expect(failure(arguments) == "--format can only be used with --export.")
+    }
+
+    @Test(arguments: [
+        ["--yes"], ["--yes", "--export", "U", "u.tar"], ["--yes", "--shutdown"],
+        ["--yes", "-t", "U"], ["--yes", "--", "ls"],
+    ])
+    func rejectsYesWithoutUnregister(_ arguments: [String]) {
+        #expect(failure(arguments) == "--yes can only be used with --unregister.")
+    }
+
+    @Test func acceptsOnlyTheThreeFormats() {
+        let message = failure("--export", "U", "u.tar", "--format", "zip")
+        #expect(message?.contains("'zip'") == true, "\(message ?? "")")
+        for value in ["tar", "tar.gz", "tar.xz"] {
+            #expect(message?.contains(value) == true, "\(message ?? "")")
+        }
+        #expect(failure("--export", "U", "u.tar", "--format", "TAR.GZ") != nil)
+        #expect(failure("--export", "U", "u.tar", "--format") != nil)
+    }
+
+    /// The three commands name their distribution after the option, never with -d, and take
+    /// no session options.
+    @Test(arguments: [
+        ["-d", "A", "--unregister", "B"], ["-d", "A", "--export", "B", "b.tar"],
+        ["-u", "root", "--unregister", "B"], ["-u", "root", "--export", "B", "-"],
+        ["--cd", "/root", "--export", "B", "-"],
+    ])
+    func rejectsSessionOptionsWithRemovalAndExport(_ arguments: [String]) {
+        #expect(failure(arguments)?.contains("cannot be combined with") == true)
+    }
+
+    @Test func rejectsRemovalAndExportWithOtherActions() {
+        #expect(
+            failure("--unregister", "A", "--export", "B", "b.tar")
+                == "--export cannot be combined with --unregister.")
+        #expect(
+            failure("--unregister", "A", "-l")
+                == "--list (-l) cannot be combined with --unregister.")
+        #expect(failure("--unregister") != nil)
+        #expect(
+            failure("--unregister", "A", "extra")
+                == "Unexpected argument 'extra' after --unregister.")
+        #expect(failure("--export", "A", "a.tar", "extra") == "Unexpected argument 'extra'")
+    }
+
     @Test func rejectsOperandsForActionsThatTakeNone() {
         #expect(failure("--shutdown", "now") == "Unexpected argument 'now' after --shutdown.")
         #expect(failure("-l", "x") == "Unexpected argument 'x' after --list (-l).")
@@ -248,7 +300,8 @@ import Testing
             "-- <command>", "-e <command>", "--install [<distro>]",
             "--list [--running] [--verbose | --quiet]", "--list --online",
             "--set-default <distro>", "--terminate <distro>", "--shutdown",
-            "--export <distro> <file>", "--import <distro> <file>", "--unregister <distro>",
+            "--export <distro> <file> [--format tar | tar.gz | tar.xz]", "--import <distro> <file>",
+            "--unregister <distro> [--yes]",
             "--status", "--version",
         ] {
             #expect(usage.contains(form), "usage does not show \(form)")

@@ -34,11 +34,21 @@
 # processes that were already running when the run started are not counted. Anything left
 # behind makes the run fail.
 #
+# The tests write the archives of `maw --export` only into exports/ in the run's temporary
+# directory, and each test deletes its own. An archive still there on exit makes the run fail;
+# the script deletes it all the same, because a kept directory is for the logs, not for copies
+# of a distribution. The test daemon writes every log into the run's temporary directory, so a
+# log of a test distribution in ~/Library/Logs/maw (<prefix>*.log, install/<prefix>*.log, or
+# export/<prefix>*.log) means that a daemon wrote to the wrong place: the run fails, and the
+# file is reported and left where it is.
+#
 # It also fails the run if the guest agent started more than once during one boot of any
 # machine, according to the console logs: the test daemon's, and what `mawd debug-boot` added
 # to its own during the run. Each boot starts the agent once, from busybox init on the
 # initramfs machine and from systemd on a distribution machine, and each start prints
 # "maw-agent ready". A second start means the agent exited, which ends every session it served.
+# `maw --unregister` deletes a distribution's console logs, so the tests copy them into
+# unregistered/ in the log directory first, and the check reads those copies too.
 #
 # When a test fails or the check above finds a restart, the script saves the agent's journal
 # from the test distribution into the test daemon's log directory, keeps that directory (the
@@ -69,6 +79,10 @@ codesign --force --sign - --identifier dev.maw.maw "$probe"
 
 log_directory=$(mktemp -d "${TMPDIR:-/tmp}/maw-integration.XXXXXX")
 image_cache="$log_directory/images"
+# The only place where the tests write archives (MawIntegration.withExportDirectory).
+export_directory="$log_directory/exports"
+# The owner's log directory, which the test daemon never writes to.
+owner_logs="$HOME/Library/Logs/maw"
 owner_cache="$HOME/Library/Caches/maw/images"
 distros="$HOME/Library/Application Support/maw/distros"
 # The daemon's settings, such as the default distribution (MawPaths.stateFile).
@@ -125,11 +139,14 @@ check_agent_starts_in() {
     '
 }
 
-# Checks every console log of the run, the installations' in install/ included. Returns
-# non-zero if a boot started the agent twice.
+# Checks every console log of the run, the installations' in install/ and the exports' in
+# export/ included, and the copies in unregistered/ of the logs of removed distributions.
+# Returns non-zero if a boot started the agent twice.
 check_agent_starts() {
     restarted=0
-    for console_log in "$log_directory"/*.log "$log_directory"/install/*.log; do
+    for console_log in "$log_directory"/*.log "$log_directory"/install/*.log \
+        "$log_directory"/export/*.log "$log_directory"/unregistered/*.log \
+        "$log_directory"/unregistered/install/*.log "$log_directory"/unregistered/export/*.log; do
         case "$console_log" in
             */mawd.log) continue ;;
         esac
@@ -200,6 +217,34 @@ check_nothing_left() {
     done
 }
 
+# Prints every archive left in the export directory. Returns non-zero if there is one.
+check_no_archives() {
+    [ -d "$export_directory" ] || return 0
+    archives=$(find "$export_directory" -mindepth 1 ! -type d)
+    if [ -n "$archives" ]; then
+        echo "integration-test.sh: the tests left these files in $export_directory:" >&2
+        printf '%s\n' "$archives" >&2
+        return 1
+    fi
+}
+
+# Prints every log of a test distribution in the owner's log directory, which the test daemon
+# must never write to. Returns non-zero if there is one. Nothing is deleted.
+check_no_owner_logs() {
+    found=""
+    for owner_log in "$owner_logs/$prefix"*.log "$owner_logs/install/$prefix"*.log \
+        "$owner_logs/export/$prefix"*.log; do
+        if [ -e "$owner_log" ] || [ -L "$owner_log" ]; then
+            found="$found $owner_log;"
+        fi
+    done
+    if [ -n "$found" ]; then
+        echo "integration-test.sh: logs of test distributions are in $owner_logs, where the" \
+            "test daemon must not write; they were left in place:$found" >&2
+        return 1
+    fi
+}
+
 # Puts state.json back as it was before the run, through a rename, so that the daemons never
 # read a partial file. Does nothing if the run ended before it was saved. Returns non-zero if
 # the file could not be put back.
@@ -267,6 +312,18 @@ cleanup() {
         keep_logs=true
         exit_status=1
     fi
+    if ! check_no_archives; then
+        nothing_left=false
+        keep_logs=true
+        exit_status=1
+    fi
+    # Archives are never kept, not even with the logs of a failed run.
+    rm -rf "$export_directory"
+    if ! check_no_owner_logs; then
+        nothing_left=false
+        keep_logs=true
+        exit_status=1
+    fi
     if [ "$keep_logs" = true ]; then
         echo "integration-test.sh: kept the daemon's log, the console logs, and the agent's" \
             "journal in $log_directory" >&2
@@ -319,7 +376,7 @@ with_test_environment() {
         MAW_TEST_MACHINE_IDLE_TIMEOUT="$machine_idle_timeout" \
         MAW_TEST_DISTRIBUTION="$test_distribution" MAW_TEST_USER="$test_user" \
         MAW_TEST_PASSWORD="$test_password" MAW_TEST_IMAGE_CACHE="$image_cache" \
-        MAW_TEST_PREFIX="$prefix" "$@"
+        MAW_TEST_PREFIX="$prefix" MAW_TEST_EXPORT_DIRECTORY="$export_directory" "$@"
 }
 status=0
 if [ "$#" -eq 0 ]; then

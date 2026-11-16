@@ -157,13 +157,89 @@ and [docs/protocol.md](protocol.md) specifies the environment a session gets.
 | `~/Library/Caches/maw/images/<sha256>.tar.gz` | Verified images, and `.partial` downloads with their validator. |
 | `~/Library/Logs/maw/<name>.log` | Each distribution's console. |
 | `~/Library/Logs/maw/install/<name>.log` | The console of the machine that provisioned the distribution. |
+| `~/Library/Logs/maw/export/<name>.log` | The console of the machine that ran the distribution's last export. |
 
-## Removing a distribution by hand
+`maw --unregister` deletes the distribution's directory and its three logs. When it removes the
+default, `state.json` records the new default instead. The image cache is kept.
 
-Phase 06b adds `maw --unregister`. Until then, a distribution is removed by stopping its machine
-and deleting its directory:
+## Removing a distribution
 
-```sh
-maw --terminate <name>
-rm -r "$HOME/Library/Application Support/maw/distros/<name>"
-```
+`maw --unregister <name>` stops the distribution's machine, if it runs, and deletes the
+distribution with its disk. On a terminal it first asks "Delete <name> and its disk for good?
+[y/N]", and only `y` or `yes`, in any case, goes on; anything else, an empty line, or Ctrl-D
+changes nothing and exits with status 1. Without a terminal on standard input, and with
+`--yes`, it asks nothing, as `wsl.exe --unregister` does. A name that is not installed fails
+before the question.
+
+The daemon then:
+
+1. holds the name, so that every other request that names the distribution fails with "<name>
+   is being removed by maw --unregister." until the removal is done;
+2. stops its machine, which ends its sessions with the reason "maw --unregister was run";
+3. renames its directory into the daemon's staging directory,
+   `distros/.staging/<label>/<name>-<UUID>.removed`, which is the moment it stops being
+   installed;
+4. if the distribution was the default, records the first distribution that `maw --list`
+   shows as the default in `state.json`, which maw names on standard error, so that a later
+   installation does not take its place;
+5. deletes the distribution's logs, and then the renamed directory.
+
+Nothing after the rename is undone or interrupted, by Ctrl-C or by the daemon's exit. A
+directory that could not be deleted, for example because the daemon exited, is deleted at the
+daemon's next start. maw removes only installed distributions: a directory in `distros/`
+without a `distro.json` is never touched. [docs/daemon.md, "Removing a
+distribution"](daemon.md#removing-a-distribution) describes the sequence in the daemon.
+
+A distribution can still be removed by hand, with `maw --terminate <name>` and then deleting
+its directory, but the terminal app's distributions screen may keep showing it for a while
+([docs/known-limitations.md](known-limitations.md)).
+
+## Exporting a distribution
+
+`maw --export <name> <file>` writes the root file system of a stopped distribution to a tar
+archive, and `maw --export <name> -` writes it to standard output. A running distribution is
+refused with the suggestion to stop it with `maw --terminate`. The format follows the file's
+extension, as `tar -a` does:
+
+| Name | Format |
+|------|--------|
+| `.tar.gz`, `.tgz`, `.gz`, in any case | `tar.gz`, gzip |
+| `.tar.xz`, `.txz`, `.xz`, in any case | `tar.xz`, xz |
+| any other name, and `-` | `tar`, uncompressed |
+
+`--format tar`, `--format tar.gz`, or `--format tar.xz` chooses the format whatever the name
+is.
+
+maw opens the file itself and passes the open descriptor to the daemon, which, as a
+LaunchAgent, lacks the privacy permissions that Terminal has for folders such as `~/Desktop`
+and `~/Documents`. It creates the file only after the daemon has accepted the export, with mode
+600, because the archive holds `/etc/shadow` and every user's files, and it never replaces an
+existing file or follows a symbolic link in its place. When the export fails or is cancelled,
+maw removes the file, but only if its path still names the file that maw created. Progress goes
+to standard error, so that `-` keeps standard output for the archive alone; `-` is refused when
+standard output is a terminal.
+
+The export boots the provisioning machine, the initramfs, with the distribution's disk
+attached, and:
+
+1. checks the file system with `e2fsck -p`, as a start of the distribution does; a file system
+   that fails the check is reported as at a start, and nothing is exported;
+2. mounts it read-only, without replaying its journal (`ro,noload`);
+3. runs `bsdtar -c --format pax --numeric-owner --xattrs` in the guest, whose output reaches
+   the daemon over vsock; for `tar.gz` and `tar.xz` the daemon compresses it on the Mac with
+   `/usr/bin/tar`;
+4. writes the archive to maw's descriptor, and stops the machine.
+
+The archive keeps numeric owners and groups, permissions with the set-user-ID, set-group-ID,
+and sticky bits, extended attributes of the `user`, `trusted`, and `security` namespaces, file
+capabilities among them, hard links, symbolic links, device files, FIFOs, and names with
+non-ASCII characters. It does not keep POSIX ACLs ([docs/known-limitations.md](known-limitations.md)). A
+reader that stops early, as `maw --export <name> - | head -c 1` does, ends the export with a
+message that names the closed pipe. A slow reader holds the machine back instead of making the
+daemon buffer, because each write to the descriptor waits for the reader.
+
+While a distribution is being exported, a session on it, `maw --unregister`, and a second export
+fail with "<name> is being exported by maw --export."; `maw --terminate` and `maw --set-default`
+work as for any stopped distribution, and the list shows it as `Stopped`. Ctrl-C asks the
+daemon to cancel, which stops the provisioning machine, and maw removes the file. The machine's
+console goes to `~/Library/Logs/maw/export/<name>.log`.

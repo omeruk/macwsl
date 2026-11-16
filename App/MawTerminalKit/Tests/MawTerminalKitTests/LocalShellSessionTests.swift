@@ -220,8 +220,12 @@ import Testing
             ArraySlice("trap 'echo hup > \(marker); exit 0' HUP; echo trap-$((1 + 1))\n".utf8))
         #expect(await waitUntil(seconds: 5) { recorder.text.contains("trap-2\r\n") })
         session.terminate()
-        #expect(await waitUntil(seconds: 5) { FileManager.default.fileExists(atPath: marker) })
-        #expect((try? String(contentsOfFile: marker, encoding: .utf8)) == "hup\n")
+        // The shell's redirection creates the file before echo writes to it, so the test waits
+        // for the content, not for the file.
+        #expect(
+            await waitUntil(seconds: 5) {
+                (try? String(contentsOfFile: marker, encoding: .utf8)) == "hup\n"
+            })
     }
 
     /// An app may itself ignore SIGINT and SIGPIPE, as a background command of a shell does,

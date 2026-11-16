@@ -23,7 +23,9 @@ import os
             at: store.paths.distrosDirectory, withIntermediateDirectories: true)
     }
 
-    func installer(freeSpace: UInt64 = 100 << 30) -> Installer {
+    func installer(
+        freeSpace: UInt64 = 100 << 30, operations: DistributionOperations = DistributionOperations()
+    ) -> Installer {
         let machine = self.machine
         let started = self.started
         return Installer(
@@ -31,7 +33,7 @@ import os
             makeMachine: { (_: DistroName) throws(MawError) -> any ProvisioningMachine in machine },
             freeSpace: { _ in (freeSpace, "Macintosh HD") },
             startMachine: { machine throws(MawError) in started.withLock { $0.append(machine) } },
-            makeMACAddress: { "02:00:00:00:00:01" })
+            makeMACAddress: { "02:00:00:00:00:01" }, operations: operations)
     }
 
     func request(
@@ -368,6 +370,21 @@ import os
         }
         first.cancel()
         _ = await first.result
+    }
+
+    /// A removal that has moved a distribution away holds its name until it has deleted the
+    /// files, so that a new installation of the name waits for none of them.
+    @Test func refusesANameThatARemovalHolds() async throws {
+        let operations = DistributionOperations()
+        let installer = installer(operations: operations)
+        let claim = try operations.claim(try DistroName("ubuntu-24.04"), for: .removal)
+        let busy = MawError.distributionBusy(try DistroName("Ubuntu-24.04"), operation: .removal)
+        await #expect(throws: busy) { try await installer.check(distribution: nil, name: nil) }
+        await #expect(throws: busy) { try await installer.install(request(), progress: { _ in }) }
+        #expect(machine.calls.isEmpty)
+        #expect(stagingDirectories.isEmpty)
+        operations.release(claim)
+        _ = try await installer.install(request(), progress: { _ in })
     }
 
     // MARK: Rules

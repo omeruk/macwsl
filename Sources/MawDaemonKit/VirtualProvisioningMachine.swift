@@ -13,7 +13,9 @@
     /// Every step is a command run as root through the guest agent. The image is decompressed
     /// on the Mac by `/usr/bin/tar` (libarchive) and streamed to `bsdtar` in the guest as a
     /// plain tar archive; decompressing on the Mac measured faster than in the guest.
-    public final class VirtualProvisioningMachine: ProvisioningMachine, @unchecked Sendable {
+    public final class VirtualProvisioningMachine: ProvisioningMachine, ExportingMachine,
+        @unchecked Sendable
+    {
         /// The provisioning machine's memory: enough for the page cache of an extraction.
         static let memorySize = ByteSize.gibibytes(4)
         /// Whether new users linger, so that their user manager keeps running between
@@ -161,7 +163,96 @@
 
         public func discard() async {
             guard let machine = handle.withLock({ $0 }) else { return }
-            await machine.forceStop(reason: "the installation was cancelled or failed")
+            await machine.forceStop(reason: "the operation was cancelled or failed")
+        }
+
+        // MARK: Export
+
+        /// Runs the check that a distribution's start runs, `maw-check-root` with `e2fsck -p`,
+        /// and returns its marker. e2fsck's messages go to the console log as well, as at a start.
+        public func checkFileSystem() async throws(MawError) -> RootFileSystemCheck {
+            let step = "checking the file system"
+            let output = OutputCollector()
+            let process = try await client().exec(
+                ExecRequest(argv: [
+                    "/bin/sh", "-c", "/sbin/maw-check-root /dev/vda 2>&1 | tee /dev/console",
+                ]),
+                output: output.handler)
+            process.closeInput()
+            _ = try await process.waitForExit()
+            // Only the exact marker line counts, as at a start (RootFileSystemCheckScanner).
+            var scanner = RootFileSystemCheckScanner()
+            for line in output.text.split(separator: "\n", omittingEmptySubsequences: false) {
+                scanner.read(String(line))
+            }
+            guard let check = scanner.check else {
+                throw .provisioningFailed(
+                    step: step, reason: "maw-check-root reported no status: \(output.tail)")
+            }
+            return check
+        }
+
+        /// Mounts the checked disk at `/mnt/root`, read-only and without replaying the journal,
+        /// which the check has replayed already, so that nothing writes to it any more.
+        public func mountReadOnly() async throws(MawError) {
+            try await run(
+                "mounting the file system",
+                [
+                    "/bin/sh", "-c",
+                    "mkdir -p /mnt/root && mount -t ext4 -o ro,noload /dev/vda /mnt/root",
+                ])
+        }
+
+        /// Writes `/mnt/root` as a pax archive with `bsdtar`, with the options that keep what
+        /// the extraction keeps, and hands its standard output to `consume` chunk by chunk, on
+        /// one thread and in order. `consume` may block, which holds `bsdtar` back. When it
+        /// returns false, the command is hung up and this returns without an error; the caller
+        /// knows why it stopped.
+        public func archive(into consume: @escaping @Sendable (UnsafeRawBufferPointer) -> Bool)
+            async throws(MawError)
+        {
+            let errors = OutputCollector()
+            let state = OSAllocatedUnfairLock(
+                initialState: (stopped: false, process: GuestProcess?.none))
+            let process = try await client().exec(
+                ExecRequest(argv: [
+                    "bsdtar", "-c", "-f", "-", "--format", "pax", "--numeric-owner", "--xattrs",
+                    "-C", "/mnt/root", ".",
+                ]),
+                output: { stream, buffer in
+                    guard stream == .stdout else {
+                        errors.handler(stream, buffer)
+                        return
+                    }
+                    guard !state.withLock({ $0.stopped }) else { return }
+                    if !consume(buffer) {
+                        let process = state.withLock { state -> GuestProcess? in
+                            state.stopped = true
+                            return state.process
+                        }
+                        process?.hangUp()
+                    }
+                })
+            let stoppedEarly = state.withLock { state -> Bool in
+                state.process = process
+                return state.stopped
+            }
+            if stoppedEarly {
+                process.hangUp()
+            }
+            process.closeInput()
+            let status: ExitStatus
+            do throws(MawError) {
+                status = try await process.waitForExit()
+            } catch {
+                if state.withLock({ $0.stopped }) { return }
+                throw error
+            }
+            if state.withLock({ $0.stopped }) { return }
+            guard status == .exited(code: 0) else {
+                throw .provisioningFailed(
+                    step: "writing the archive", reason: "bsdtar \(status): \(errors.tail)")
+            }
         }
 
         // MARK: Commands
@@ -197,7 +288,7 @@
     }
 
     /// The last 2 KiB of a command's output, for an error message.
-    private final class OutputCollector: Sendable {
+    final class OutputCollector: Sendable {
         private let bytes = OSAllocatedUnfairLock(initialState: [UInt8]())
 
         var handler: GuestAgentClient.OutputHandler {
@@ -212,9 +303,13 @@
             }
         }
 
+        /// The bytes kept, as text.
+        var text: String {
+            String(decoding: bytes.withLock { $0 }, as: UTF8.self)
+        }
+
         var tail: String {
-            let text = String(decoding: bytes.withLock { $0 }, as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = self.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? "no output" : text
         }
     }

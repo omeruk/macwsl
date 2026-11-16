@@ -67,7 +67,7 @@ import Testing
 
     @Test(arguments: [
         "-d", "--distribution", "-u", "--user", "--cd", "-s", "--set-default",
-        "-t", "--terminate", "--export", "--import", "--unregister", "--name",
+        "-t", "--terminate", "--export", "--import", "--unregister", "--name", "--format",
     ])
     func skipsTheValueOfOptionsThatTakeOne(_ option: String) {
         #expect(ArgumentNormalizer.normalize([option, "-v"]) == [option, "-v"])

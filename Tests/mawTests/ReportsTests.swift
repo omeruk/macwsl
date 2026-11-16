@@ -155,32 +155,3 @@ import Testing
         #expect(InstallProgressText.duration(milliseconds: milliseconds) == expected)
     }
 }
-
-@Suite struct UnimplementedActionTests {
-    /// The actions that phase 06a implements leave the `notImplemented` path; `SessionPlan`
-    /// still names their phase if it is ever given one.
-    @Test(arguments: [
-        Action.list(.installed(ListOptions())), .setDefault(try! DistroName("Ubuntu")),
-        .terminate(try! DistroName("Ubuntu")),
-    ])
-    func namesPhase06aForTheDistributionActions(_ action: Action) {
-        #expect(action.phase == "06a")
-        #expect(throws: MawError.notImplemented(feature: action.displayName, phase: "06a")) {
-            try SessionPlan(action)
-        }
-    }
-
-    @Test(arguments: [
-        (["--export", "Ubuntu", "u.tar"], "--export", "06b"),
-        (["--import", "Ubuntu", "u.tar"], "--import", "06b"),
-        (["--unregister", "Ubuntu"], "--unregister", "06b"),
-    ])
-    func namesThePhaseThatAddsIt(_ arguments: [String], _ feature: String, _ phase: String)
-        async throws
-    {
-        let command = try Maw.parse(ArgumentNormalizer.normalize(arguments))
-        await #expect(throws: MawError.notImplemented(feature: feature, phase: phase)) {
-            try await command.run()
-        }
-    }
-}

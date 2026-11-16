@@ -270,6 +270,8 @@ public final class LinuxSession: TerminalSession {
         case .virtualizationEntitlementMissing:
             "Sign the daemon with scripts/sign-dev.sh and run mawd install, so that launchd "
                 + "starts the signed build. Then press Enter to start a new session."
+        case .machineStopped(_, let reason) where reason == MawError.unregisterReason:
+            error.recoverySuggestion
         case .machineStopped:
             "Press Enter to start a new session, which starts the virtual machine again."
         case .launchctlTimedOut:
@@ -294,7 +296,7 @@ public final class LinuxSession: TerminalSession {
                 + "as root through maw -d <name> -u root."
         case .diskImageNotFound:
             "Restore the distribution's disk image from a backup, or remove the distribution "
-                + "as the README explains and install it again with maw --install."
+                + "with maw --unregister and install it again with maw --install."
         default: error.recoverySuggestion
         }
     }

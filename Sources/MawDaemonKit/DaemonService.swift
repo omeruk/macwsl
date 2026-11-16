@@ -14,37 +14,56 @@
         static var shutdownReason: String { "maw --shutdown was run" }
         /// Why sessions end on `terminate`; shown to their clients.
         static var terminateReason: String { "maw --terminate was run" }
+        /// The answer to an export when the daemon has no exporter, as in unit tests that wire
+        /// none; `mawd serve` always has one.
+        static var noExporter: MawError {
+            .daemonProtocolError(reason: "this daemon was started without exports")
+        }
+        /// Why sessions end on `unregister`; shown to their clients.
+        static var unregisterReason: String { MawError.unregisterReason }
 
         public let registry: MachineRegistry<C>
         public let lifetime: DaemonLifetime<C>
         /// The installed distributions, which resolve the names and the default.
         public let store: DistributionStore?
         public let installer: Installer?
+        public let exporter: Exporter?
         /// Samples the figures for `watchDistributions`.
         public let sampler: FigureSampler<C>?
+        /// The names that installations, exports, and removals hold, shared with the installer
+        /// and the registry.
+        public let operations: DistributionOperations
+        /// Where the machines' console logs are, whose distribution logs a removal deletes.
+        /// `nil` in unit tests that have none.
+        private let logDirectory: URL?
         private let clock: C
         private let started: C.Instant
         private let info: DaemonInfo
         private let canRunVirtualMachines: Bool
         private let log: DaemonLog
-        /// Every connection's running installation, so that the daemon can cancel them all when
-        /// it stops. An installation that finishes before it is registered is remembered in
+        /// Every connection's running installation or export, so that the daemon can cancel them
+        /// all when it stops. One that finishes before it is registered is remembered in
         /// `finished` until then.
-        private let installations = OSAllocatedUnfairLock(
+        private let operationTasks = OSAllocatedUnfairLock(
             initialState: (running: [UUID: Task<Bool, Never>](), finished: Set<UUID>()))
 
         public init(
             clock: C, registry: MachineRegistry<C>, lifetime: DaemonLifetime<C>,
             canRunVirtualMachines: Bool, store: DistributionStore? = nil,
-            installer: Installer? = nil, sampler: FigureSampler<C>? = nil,
-            log: DaemonLog = DaemonLog()
+            installer: Installer? = nil, exporter: Exporter? = nil,
+            sampler: FigureSampler<C>? = nil,
+            operations: DistributionOperations = DistributionOperations(),
+            logDirectory: URL? = nil, log: DaemonLog = DaemonLog()
         ) {
             self.clock = clock
+            self.operations = operations
+            self.logDirectory = logDirectory
             self.sampler = sampler
             self.registry = registry
             self.lifetime = lifetime
             self.store = store
             self.installer = installer
+            self.exporter = exporter
             self.canRunVirtualMachines = canRunVirtualMachines
             self.log = log
             started = clock.now
@@ -69,8 +88,8 @@
             let processID = peer.peerProcessID
             var greeted = false
             var leases: [Lease] = []
-            // This connection's installation; at most one at a time.
-            var installation: (id: UUID, task: Task<Bool, Never>)?
+            // This connection's installation or export; at most one at a time.
+            var running: (id: UUID, task: Task<Bool, Never>)?
             // Whether this connection watches the distributions, and its outstanding request.
             var watching = false
             var watch: Task<Void, Never>?
@@ -120,12 +139,15 @@
                         guard let installer else {
                             throw .notImplemented(feature: "--install", phase: "05")
                         }
-                        if let installation, isRunning(installation.id) {
-                            throw .daemonProtocolError(
-                                reason: "this connection is already installing a distribution")
+                        try refuseASecondOperation(running)
+                        running = startOperation(replyingTo: message, on: peer) {
+                            () throws(MawError) -> DaemonReply in
+                            let summary = try await installer.install(request) { progress in
+                                Self.send(progress, to: peer)
+                            }
+                            await self.sampler?.distributionsChanged()
+                            return .installed(summary)
                         }
-                        installation = startInstallation(
-                            request, with: installer, replyingTo: message, on: peer)
                         continue
                     case .checkInstall(let distribution, let name):
                         guard let installer else {
@@ -133,27 +155,30 @@
                         }
                         try await installer.check(distribution: distribution, name: name)
                         reply = .installPossible
-                    case .cancelInstall:
+                    case .cancel:
                         var wasCancelled = false
-                        if let installation, isRunning(installation.id) {
-                            log.notice("process \(processID) cancelled its installation")
-                            installation.task.cancel()
+                        if let running, isRunning(running.id) {
+                            log.notice("process \(processID) cancelled its installation or export")
+                            running.task.cancel()
                             // An installation that had already registered the distribution
                             // finishes regardless, and reports it as installed.
-                            wasCancelled = !(await installation.task.value)
+                            wasCancelled = !(await running.task.value)
                         }
-                        installation = nil
-                        reply = .installCancelled(wasRunning: wasCancelled)
+                        running = nil
+                        reply = .cancelled(wasRunning: wasCancelled)
                     case .listDistributions:
                         reply = .distributions(await distributions())
                     case .setDefault(let requested):
                         let name = try installedName(requested)
-                        try store?.setDefaultDistribution(name)
+                        try refuseDuringRemoval(name)
+                        try store?.setInstalledDefaultDistribution(name)
                         await sampler?.distributionsChanged()
                         log.notice("process \(processID) made \(name) the default distribution")
                         reply = .defaultSet(name)
                     case .terminate(let requested):
-                        let machine = MachineID.distribution(try installedName(requested))
+                        let name = try installedName(requested)
+                        try refuseDuringRemoval(name)
+                        let machine = MachineID.distribution(name)
                         log.notice("\(machine): terminate requested by process \(processID)")
                         reply = .terminated(
                             await registry.terminate(machine, reason: Self.terminateReason))
@@ -186,6 +211,32 @@
                                 descriptor: nil)
                         }
                         continue
+                    case .checkUnregister(let requested):
+                        let name = try installedName(requested)
+                        try operations.check(name, for: .removal)
+                        reply = .unregisterPossible(name)
+                    case .unregister(let requested):
+                        reply = .unregistered(try await unregister(requested, for: processID))
+                    case .checkExport(let requested):
+                        guard let exporter else { throw Self.noExporter }
+                        reply = .exportPossible(try await exporter.check(requested))
+                    case .export(let request):
+                        guard let exporter else { throw Self.noExporter }
+                        let destination = try Self.archiveDestination(in: message)
+                        do throws(MawError) {
+                            try refuseASecondOperation(running)
+                        } catch {
+                            destination.close()
+                            throw error
+                        }
+                        running = startOperation(replyingTo: message, on: peer) {
+                            () throws(MawError) -> DaemonReply in
+                            .exported(
+                                try await exporter.export(
+                                    request, to: destination, for: processID
+                                ) { progress in Self.send(progress, to: peer) })
+                        }
+                        continue
                     }
                 } catch {
                     reply = .failure(error)
@@ -199,12 +250,13 @@
                 await sampler.removeWatcher()
                 log.notice("process \(processID) stopped watching the distributions")
             }
-            if let installation, isRunning(installation.id) {
-                // The client went away: the installation stops and removes its traces.
+            if let running, isRunning(running.id) {
+                // The client went away: the installation or export stops and removes its traces.
                 log.notice(
-                    "process \(processID) closed its connection; cancelling its installation")
-                installation.task.cancel()
-                _ = await installation.task.value
+                    "process \(processID) closed its connection; cancelling its installation "
+                        + "or export")
+                running.task.cancel()
+                _ = await running.task.value
             }
             for lease in leases {
                 await registry.release(lease)
@@ -241,6 +293,84 @@
             return metadata.name
         }
 
+        /// Throws `distributionBusy` while a removal holds `name`: every request that names a
+        /// distribution being removed fails until the removal is done.
+        private func refuseDuringRemoval(_ name: DistroName) throws(MawError) {
+            if operations.operation(on: name) == .removal {
+                throw .distributionBusy(name, operation: .removal)
+            }
+        }
+
+        // MARK: Removal
+
+        /// Removes the installed distribution that `requested` names (docs/daemon.md,
+        /// "Removing a distribution"): stops its machine, ending its sessions with
+        /// `unregisterReason`, moves its directory into the staging directory, which is the
+        /// moment it stops being installed, records the first installed distribution as the default
+        /// if the removed one was the default, deletes its logs, and then the moved directory. Nothing after the move is undone or
+        /// interrupted; a directory that the daemon could not delete is removed at its next
+        /// start.
+        func unregister(_ requested: DistroName, for processID: Int32) async throws(MawError)
+            -> UnregisterSummary
+        {
+            let name = try installedName(requested)
+            guard let store else { throw .distributionNotInstalled(requested) }
+            let claim = try operations.claim(name, for: .removal)
+            defer { operations.release(claim) }
+            log.notice("\(name): removal requested by process \(processID)")
+            let defaultBefore = store.defaultDistribution()
+
+            let machine = MachineID.distribution(name)
+            let stopped = await registry.terminate(machine, reason: Self.unregisterReason)
+            let moved: URL
+            do throws(MawError) {
+                moved = try store.moveForRemoval(name)
+            } catch {
+                log.error("\(name): removal for process \(processID) failed: \(error.description)")
+                throw error
+            }
+            // From here on the distribution is not installed.
+            do throws(MawError) {
+                try store.replaceDefaultDistribution(
+                    removed: name, wasDefault: defaultBefore == name)
+            } catch {
+                log.error("\(name): the default could not be recorded: \(error.description)")
+            }
+            if let logDirectory {
+                for file in MawPaths.distributionLogFiles(for: name, in: logDirectory) {
+                    removeLog(file, of: name)
+                }
+            }
+            store.removeStagingDirectory(moved)
+            let leftOver = FileManager.default.fileExists(atPath: moved.path(percentEncoded: false))
+            await sampler?.distributionsChanged()
+
+            let defaultAfter = store.defaultDistribution()
+            let newDefault = defaultBefore == name ? defaultAfter : nil
+            log.notice(
+                "\(name): removed for process \(processID); "
+                    + (stopped.wasRunning
+                        ? "its machine was stopped and \(stopped.endedSessions) "
+                            + (stopped.endedSessions == 1 ? "session" : "sessions") + " ended"
+                        : "its machine was not running")
+                    + (leftOver ? "; \(moved.lastPathComponent) is removed at the next start" : "")
+                    + (newDefault.map { "; \($0) is now the default" } ?? ""))
+            return UnregisterSummary(
+                name: name, newDefault: newDefault, endedSessions: stopped.endedSessions)
+        }
+
+        /// Deletes one of a removed distribution's logs. A log that does not exist is not an
+        /// error; one that cannot be deleted is logged and left.
+        private func removeLog(_ file: URL, of name: DistroName) {
+            let path = file.path(percentEncoded: false)
+            guard unlink(path) == 0 || errno == ENOENT else {
+                log.error(
+                    "\(name): \(file.lastPathComponent) could not be deleted: "
+                        + SystemError("unlink").description)
+                return
+            }
+        }
+
         /// Every installed distribution with its machine's state, and the default.
         func distributions() async -> DistributionList {
             guard let store else {
@@ -258,16 +388,17 @@
                 distributions: entries, defaultDistribution: store.defaultDistribution())
         }
 
-        /// Runs an installation on a task of its own, so that this connection can still cancel
-        /// it, and replies to `request` when it ends.
-        private func startInstallation(
-            _ install: InstallRequest, with installer: Installer, replyingTo request: XPCObject,
-            on peer: XPCConnection
+        /// Runs an installation or an export on a task of its own, so that this connection can
+        /// still cancel it, and replies to `request` when it ends. The task's value is whether it
+        /// succeeded.
+        private func startOperation(
+            replyingTo request: XPCObject, on peer: XPCConnection,
+            _ body: @escaping @Sendable () async throws(MawError) -> DaemonReply
         ) -> (id: UUID, task: Task<Bool, Never>) {
             let id = UUID()
             let task = Task {
                 defer {
-                    installations.withLock {
+                    operationTasks.withLock {
                         if $0.running.removeValue(forKey: id) == nil {
                             $0.finished.insert(id)
                         }
@@ -275,23 +406,15 @@
                 }
                 let reply: DaemonReply
                 do throws(MawError) {
-                    let summary = try await installer.install(install) { progress in
-                        if let object = try? InterfaceCoding.encode(
-                            DaemonEvent.installProgress(progress))
-                        {
-                            peer.send(object)
-                        }
-                    }
-                    reply = .installed(summary)
+                    reply = try await body()
                 } catch {
                     reply = .failure(error)
                 }
                 self.send(reply, to: request, on: peer, descriptor: nil)
-                guard case .installed = reply else { return false }
-                await self.sampler?.distributionsChanged()
+                if case .failure = reply { return false }
                 return true
             }
-            installations.withLock {
+            operationTasks.withLock {
                 if $0.finished.remove(id) == nil {
                     $0.running[id] = task
                 }
@@ -299,14 +422,50 @@
             return (id, task)
         }
 
-        /// Whether the installation `id` has not finished yet.
-        private func isRunning(_ id: UUID) -> Bool {
-            installations.withLock { $0.running[id] != nil }
+        /// A connection runs at most one installation or export at a time.
+        private func refuseASecondOperation(_ running: (id: UUID, task: Task<Bool, Never>)?)
+            throws(MawError)
+        {
+            if let running, isRunning(running.id) {
+                throw .daemonProtocolError(
+                    reason: "this connection is already installing or exporting a distribution")
+            }
         }
 
-        /// Cancels every installation and waits until each has removed its traces.
-        public func cancelInstallations() async {
-            let running = installations.withLock { Array($0.running.values) }
+        /// The descriptor that an `export` request carries, which must be open for writing and
+        /// must not be a terminal.
+        static func archiveDestination(in message: XPCObject) throws(MawError) -> OwnedDescriptor {
+            guard let descriptor = try InterfaceCoding.descriptor(in: message) else {
+                throw .daemonProtocolError(reason: "the export request carries no descriptor")
+            }
+            let mode = fcntl(descriptor.rawValue, F_GETFL) & O_ACCMODE
+            guard mode == O_WRONLY || mode == O_RDWR else {
+                descriptor.close()
+                throw .daemonProtocolError(
+                    reason: "the export request's descriptor is not open for writing")
+            }
+            if isatty(descriptor.rawValue) == 1 {
+                descriptor.close()
+                throw .exportToTerminal
+            }
+            return descriptor
+        }
+
+        /// Sends this connection's installation or export progress as an event.
+        private static func send(_ progress: InstallProgress, to peer: XPCConnection) {
+            if let object = try? InterfaceCoding.encode(DaemonEvent.installProgress(progress)) {
+                peer.send(object)
+            }
+        }
+
+        /// Whether the installation or export `id` has not finished yet.
+        private func isRunning(_ id: UUID) -> Bool {
+            operationTasks.withLock { $0.running[id] != nil }
+        }
+
+        /// Cancels every installation and export and waits until each has removed its traces.
+        public func cancelOperations() async {
+            let running = operationTasks.withLock { Array($0.running.values) }
             for task in running {
                 task.cancel()
             }
