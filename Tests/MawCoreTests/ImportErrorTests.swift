@@ -14,7 +14,9 @@ import Testing
         .importInputNotReadable,
         .importNotARootFileSystem(name, found: "its top level holds only the directory rootfs/"),
         .importInitNotSystemd(name, reason: "/sbin/init is /bin/busybox"),
-        .importPathNotResolvable(name, path: "/etc/netplan", reason: "its links form a loop"),
+        .importPathNotResolvable(
+            name, path: "/etc/systemd/journald.conf.d/50-maw.conf",
+            reason: "it has more than 40 links, or a loop"),
         .importFailed(name, step: "extracting the archive", reason: "Truncated tar archive"),
         .importCancelled(name),
         .importStartFailed(

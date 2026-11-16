@@ -335,8 +335,8 @@ extension MawError: LocalizedError {
         case .importInitNotSystemd(let name, let reason):
             "\(name) cannot be imported, because its /sbin/init is not systemd:\n\(reason)."
         case .importPathNotResolvable(let name, let path, let reason):
-            "\(name) cannot be imported, because \(path) in the archive\n"
-                + "cannot be resolved inside it: \(reason)."
+            "\(name) cannot be imported, because a path in the archive\n"
+                + "cannot be resolved inside it: \(path)\n\(reason)."
         case .importFailed(let name, let step, let reason):
             "The import of \(name) failed while \(step):\n\(reason)."
         case .importCancelled(let name):

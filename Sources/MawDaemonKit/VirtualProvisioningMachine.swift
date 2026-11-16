@@ -146,6 +146,10 @@
             try await run(
                 step, ["/bin/sh", "-s", "--"] + arguments,
                 input: Data(ProvisioningScript.text.utf8))
+            try await run(
+                step,
+                ["/bin/sh", "-c", ProvisioningScript.mawConfWriter, "sh", ProvisioningScript.root],
+                input: Data(MawConf.contents(defaultUser: configuration.user).utf8))
             // The password travels only as chpasswd's standard input.
             try await run(
                 "setting the password", ["chroot", "/mnt/root", "/usr/sbin/chpasswd"],
