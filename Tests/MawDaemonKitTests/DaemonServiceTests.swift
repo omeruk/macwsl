@@ -29,7 +29,8 @@ import Testing
             makeExporter: (
                 @Sendable (MachineRegistry<TestClock>, DistributionOperations, DaemonLog) ->
                     Exporter
-            )? = nil
+            )? = nil,
+            makeImporter: (@Sendable (DistributionOperations, DaemonLog) -> Importer)? = nil
         ) {
             self.factory = factory
             self.operations = operations
@@ -43,7 +44,7 @@ import Testing
                 clock: clock, registry: registry,
                 lifetime: DaemonLifetime(clock: clock) {}, canRunVirtualMachines: true,
                 store: store, exporter: makeExporter?(registry, operations, lines.log),
-                sampler: sampler,
+                importer: makeImporter?(operations, lines.log), sampler: sampler,
                 operations: operations,
                 logDirectory: logDirectory, log: lines.log)
             task = Task { [service, listener] in await service.serve(listener) }

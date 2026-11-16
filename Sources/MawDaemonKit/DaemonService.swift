@@ -33,10 +33,11 @@
         public let store: DistributionStore?
         public let installer: Installer?
         public let exporter: Exporter?
+        public let importer: Importer?
         /// Samples the figures for `watchDistributions`.
         public let sampler: FigureSampler<C>?
-        /// The names that installations, exports, and removals hold, shared with the installer
-        /// and the registry.
+        /// The names that installations, exports, imports, and removals hold, shared with the
+        /// installer, the exporter, the importer, and the registry.
         public let operations: DistributionOperations
         /// Where the machines' console logs are, whose distribution logs a removal deletes.
         /// `nil` in unit tests that have none.
@@ -46,7 +47,8 @@
         private let info: DaemonInfo
         private let canRunVirtualMachines: Bool
         private let log: DaemonLog
-        /// Every connection's running installation or export, so that the daemon can cancel them
+        /// Every connection's running installation, export, or import, so that the daemon can
+        /// cancel them
         /// all when it stops. One that finishes before it is registered is remembered in
         /// `finished` until then.
         private let operationTasks = OSAllocatedUnfairLock(
@@ -55,7 +57,7 @@
         public init(
             clock: C, registry: MachineRegistry<C>, lifetime: DaemonLifetime<C>,
             canRunVirtualMachines: Bool, store: DistributionStore? = nil,
-            installer: Installer? = nil, exporter: Exporter? = nil,
+            installer: Installer? = nil, exporter: Exporter? = nil, importer: Importer? = nil,
             sampler: FigureSampler<C>? = nil,
             operations: DistributionOperations = DistributionOperations(),
             logDirectory: URL? = nil, log: DaemonLog = DaemonLog()
@@ -69,6 +71,7 @@
             self.store = store
             self.installer = installer
             self.exporter = exporter
+            self.importer = importer
             self.canRunVirtualMachines = canRunVirtualMachines
             self.log = log
             started = clock.now
@@ -93,7 +96,7 @@
             let processID = peer.peerProcessID
             var greeted = false
             var leases: [Lease] = []
-            // This connection's installation or export; at most one at a time.
+            // This connection's installation, export, or import; at most one at a time.
             var running: (id: UUID, task: Task<Bool, Never>)?
             // Whether this connection watches the distributions, and its outstanding request.
             var watching = false
@@ -163,10 +166,12 @@
                     case .cancel:
                         var wasCancelled = false
                         if let running, isRunning(running.id) {
-                            log.notice("process \(processID) cancelled its installation or export")
+                            log.notice(
+                                "process \(processID) cancelled its installation, export, or import"
+                            )
                             running.task.cancel()
-                            // An installation that had already registered the distribution
-                            // finishes regardless, and reports it as installed.
+                            // An installation or an import that had already registered the
+                            // distribution finishes regardless, and reports it as such.
                             wasCancelled = !(await running.task.value)
                         }
                         running = nil
@@ -242,8 +247,23 @@
                                 ) { progress in Self.send(progress, to: peer) })
                         }
                         continue
-                    case .import:
-                        throw Self.noImporter
+                    case .import(let request):
+                        guard let importer else { throw Self.noImporter }
+                        let source = try Self.archiveSource(in: message)
+                        do throws(MawError) {
+                            try refuseASecondOperation(running)
+                        } catch {
+                            source.close()
+                            throw error
+                        }
+                        running = startOperation(replyingTo: message, on: peer) {
+                            () throws(MawError) -> DaemonReply in
+                            .imported(
+                                try await importer.import(
+                                    request, from: source, for: processID
+                                ) { progress in Self.send(progress, to: peer) })
+                        }
+                        continue
                     }
                 } catch {
                     reply = .failure(error)
@@ -258,10 +278,10 @@
                 log.notice("process \(processID) stopped watching the distributions")
             }
             if let running, isRunning(running.id) {
-                // The client went away: the installation or export stops and removes its traces.
+                // The client went away: the operation stops and removes its traces.
                 log.notice(
-                    "process \(processID) closed its connection; cancelling its installation "
-                        + "or export")
+                    "process \(processID) closed its connection; cancelling its installation, "
+                        + "export, or import")
                 running.task.cancel()
                 _ = await running.task.value
             }
@@ -395,7 +415,8 @@
                 distributions: entries, defaultDistribution: store.defaultDistribution())
         }
 
-        /// Runs an installation or an export on a task of its own, so that this connection can
+        /// Runs an installation, an export, or an import on a task of its own, so that this
+        /// connection can
         /// still cancel it, and replies to `request` when it ends. The task's value is whether it
         /// succeeded.
         private func startOperation(
@@ -429,13 +450,15 @@
             return (id, task)
         }
 
-        /// A connection runs at most one installation or export at a time.
+        /// A connection runs at most one installation, export, or import at a time.
         private func refuseASecondOperation(_ running: (id: UUID, task: Task<Bool, Never>)?)
             throws(MawError)
         {
             if let running, isRunning(running.id) {
                 throw .daemonProtocolError(
-                    reason: "this connection is already installing or exporting a distribution")
+                    reason:
+                        "this connection is already installing, exporting, or importing a "
+                        + "distribution")
             }
         }
 
@@ -458,19 +481,39 @@
             return descriptor
         }
 
-        /// Sends this connection's installation or export progress as an event.
+        /// The descriptor that an `import` request carries, which must be open for reading and
+        /// must not be a terminal.
+        static func archiveSource(in message: XPCObject) throws(MawError) -> OwnedDescriptor {
+            guard let descriptor = try InterfaceCoding.descriptor(in: message) else {
+                throw .daemonProtocolError(reason: "the import request carries no descriptor")
+            }
+            let mode = fcntl(descriptor.rawValue, F_GETFL) & O_ACCMODE
+            guard mode == O_RDONLY || mode == O_RDWR else {
+                descriptor.close()
+                throw .daemonProtocolError(
+                    reason: "the import request's descriptor is not open for reading")
+            }
+            if isatty(descriptor.rawValue) == 1 {
+                descriptor.close()
+                throw .importFromTerminal
+            }
+            return descriptor
+        }
+
+        /// Sends this connection's installation, export, or import progress as an event.
         private static func send(_ progress: InstallProgress, to peer: XPCConnection) {
             if let object = try? InterfaceCoding.encode(DaemonEvent.installProgress(progress)) {
                 peer.send(object)
             }
         }
 
-        /// Whether the installation or export `id` has not finished yet.
+        /// Whether the installation, export, or import `id` has not finished yet.
         private func isRunning(_ id: UUID) -> Bool {
             operationTasks.withLock { $0.running[id] != nil }
         }
 
-        /// Cancels every installation and export and waits until each has removed its traces.
+        /// Cancels every installation, export, and import, and waits until each has removed its
+        /// traces.
         public func cancelOperations() async {
             let running = operationTasks.withLock { Array($0.running.values) }
             for task in running {

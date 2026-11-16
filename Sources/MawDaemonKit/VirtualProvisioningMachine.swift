@@ -14,7 +14,7 @@
     /// on the Mac by `/usr/bin/tar` (libarchive) and streamed to `bsdtar` in the guest as a
     /// plain tar archive; decompressing on the Mac measured faster than in the guest.
     public final class VirtualProvisioningMachine: ProvisioningMachine, ExportingMachine,
-        @unchecked Sendable
+        ImportingMachine, @unchecked Sendable
     {
         /// The provisioning machine's memory: enough for the page cache of an extraction.
         static let memorySize = ByteSize.gibibytes(4)
@@ -26,6 +26,9 @@
         private let consoleLog: URL
         private let log: DaemonLog
         private let handle = OSAllocatedUnfairLock<VirtualMachineHandle?>(initialState: nil)
+        /// Ends the extraction's `/usr/bin/tar` when the machine is discarded, also while it
+        /// waits for its input.
+        private let extraction = StreamingProcess.Stopper()
 
         public init(kernelDirectory: URL, consoleLog: URL, log: DaemonLog = DaemonLog()) {
             self.kernelDirectory = kernelDirectory
@@ -66,6 +69,21 @@
         }
 
         public func extract(image: URL, format: CatalogImage.Format) async throws(MawError) {
+            _ = try await extract(tarInput: "@" + image.path(percentEncoded: false), from: nil)
+        }
+
+        /// Re-encodes the archive that `source` reads with `/usr/bin/tar` on the Mac, in any
+        /// compression that it reads, and extracts it in the guest as an installation's image
+        /// is extracted. Returns the bytes of the uncompressed archive that reached the guest.
+        public func extract(archive source: OwnedDescriptor) async throws(MawError) -> UInt64 {
+            try await extract(tarInput: "@-", from: source)
+        }
+
+        /// Runs `/usr/bin/tar` with `tarInput`, `@<path>` or `@-` with `source` as its standard
+        /// input, and streams its output to bsdtar in the guest.
+        private func extract(tarInput: String, from source: OwnedDescriptor?)
+            async throws(MawError) -> UInt64
+        {
             let step = "extracting the root file system"
             let errors = OutputCollector()
             let process = try await client().exec(
@@ -79,6 +97,10 @@
             // extended attributes. Its output goes to bsdtar's standard input on a thread of
             // its own, because reading the pipe and `GuestProcess.write` both block. `nil`: the
             // thread could not be started, and bsdtar's input is closed, so that it ends.
+            // `GuestProcess.write` waits while 256 KiB are queued for the guest, so a guest that
+            // writes slowly holds /usr/bin/tar back, and with it the reading of `source`.
+            let extraction = self.extraction
+            let bytes = OSAllocatedUnfairLock(initialState: UInt64(0))
             let tar = await withCheckedContinuation {
                 (
                     continuation: CheckedContinuation<
@@ -88,17 +110,18 @@
                 let started = startDetachedThread {
                     let outcome = Result {
                         try StreamingProcess.run(
-                            "/usr/bin/tar",
-                            [
-                                "-c", "-f", "-", "--format", "pax",
-                                "@" + image.path(percentEncoded: false),
-                            ]
-                        ) { chunk in process.write(chunk) }
+                            "/usr/bin/tar", ["-c", "-f", "-", "--format", "pax", tarInput],
+                            input: source, stopper: extraction
+                        ) { chunk in
+                            bytes.withLock { $0 += UInt64(chunk.count) }
+                            return process.write(chunk)
+                        }
                     }
                     process.closeInput()
                     continuation.resume(returning: outcome)
                 }
                 if !started {
+                    source?.close()
                     process.closeInput()
                     continuation.resume(returning: nil)
                 }
@@ -113,6 +136,7 @@
             {
                 throw .provisioningFailed(step: step, reason: reason)
             }
+            return bytes.withLock { $0 }
         }
 
         /// Why an extraction failed, or `nil` if both programs succeeded. When both failed,
@@ -166,6 +190,7 @@
         }
 
         public func discard() async {
+            extraction.stop()
             guard let machine = handle.withLock({ $0 }) else { return }
             await machine.forceStop(reason: "the operation was cancelled or failed")
         }
@@ -259,6 +284,80 @@
             }
         }
 
+        // MARK: Import
+
+        /// The most that the import reads of `/etc/passwd`, `/etc/maw.conf`, or `/etc/wsl.conf`.
+        static let importFileLimit = 4 << 20
+
+        /// Runs `ImportInspection.script` on the extracted root and returns its output.
+        public func inspect() async throws(MawError) -> String {
+            let step = "checking the root file system"
+            let output = BoundedOutput(limit: 64 << 10)
+            let status = try await run(
+                ["/bin/sh", "-s", "--", ProvisioningScript.root],
+                input: Data(ImportInspection.script.utf8), output: output)
+            guard status == .exited(code: 0), !output.overflowed else {
+                throw .provisioningFailed(step: step, reason: "\(status): \(output.tail)")
+            }
+            return output.text
+        }
+
+        /// The text of the file at `path`, a path that the inspection resolved inside the root.
+        public func readFile(_ path: String) async throws(MawError) -> String {
+            let step = "reading \(path)"
+            let output = BoundedOutput(limit: Self.importFileLimit)
+            let status = try await run(
+                ["cat", "--", ProvisioningScript.root + path], input: nil, output: output)
+            guard !output.overflowed else {
+                throw .provisioningFailed(
+                    step: step, reason: "it is larger than \(Self.importFileLimit >> 20) MiB")
+            }
+            guard status == .exited(code: 0) else {
+                throw .provisioningFailed(step: step, reason: "\(status): \(output.tail)")
+            }
+            return output.text
+        }
+
+        /// Runs `ProvisioningScript` in its `import` mode, and writes `mawConf` as
+        /// `/etc/maw.conf` unless it is `nil`. Returns the path that could not be resolved
+        /// inside the root and the reason, or `nil` when everything was written.
+        public func configureImport(
+            hostname: String, defaultUser: DefaultUserChoice, mawConf: String?
+        ) async throws(MawError) -> (path: String, reason: String)? {
+            let step = "configuring the distribution"
+            let arguments = try ProvisioningScript.importArguments(
+                hostname: hostname, defaultUser: defaultUser)
+            let output = BoundedOutput(limit: 64 << 10)
+            let status = try await run(
+                ["/bin/sh", "-s", "--"] + arguments, input: Data(ProvisioningScript.text.utf8),
+                output: output)
+            if status == .exited(code: ProvisioningScript.unresolvableStatus),
+                let unresolvable = ProvisioningScript.unresolvablePath(in: output.text)
+            {
+                return unresolvable
+            }
+            guard status == .exited(code: 0) else {
+                throw .provisioningFailed(step: step, reason: "\(status): \(output.tail)")
+            }
+            if let mawConf {
+                let output = BoundedOutput(limit: 64 << 10)
+                let status = try await run(
+                    [
+                        "/bin/sh", "-c", ProvisioningScript.mawConfWriter, "sh",
+                        ProvisioningScript.root,
+                    ], input: Data(mawConf.utf8), output: output)
+                if status == .exited(code: ProvisioningScript.unresolvableStatus),
+                    let unresolvable = ProvisioningScript.unresolvablePath(in: output.text)
+                {
+                    return unresolvable
+                }
+                guard status == .exited(code: 0) else {
+                    throw .provisioningFailed(step: step, reason: "\(status): \(output.tail)")
+                }
+            }
+            return nil
+        }
+
         // MARK: Commands
 
         private func client() throws(MawError) -> GuestAgentClient {
@@ -270,6 +369,19 @@
                 () throws(MawError) in
                 try await machine.openSessionConnection()
             }
+        }
+
+        /// Runs `argv` as root with `input` on its standard input, collects its standard output
+        /// and error in `output`, and returns its exit status.
+        private func run(_ argv: [String], input: Data?, output: BoundedOutput)
+            async throws(MawError) -> ExitStatus
+        {
+            let process = try await client().exec(ExecRequest(argv: argv), output: output.handler)
+            if let input {
+                process.write(input)
+            }
+            process.closeInput()
+            return try await process.waitForExit()
         }
 
         /// Runs `argv` as root and throws `provisioningFailed` unless it exits with 0. The
@@ -314,6 +426,53 @@
 
         var tail: String {
             let text = self.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? "no output" : text
+        }
+    }
+
+    /// A command's standard output and error, up to `limit` bytes; what comes after is dropped
+    /// and `overflowed` set.
+    final class BoundedOutput: Sendable {
+        private struct State {
+            var bytes: [UInt8] = []
+            var overflowed = false
+        }
+
+        private let limit: Int
+        private let state = OSAllocatedUnfairLock(initialState: State())
+
+        init(limit: Int) {
+            self.limit = limit
+        }
+
+        var handler: GuestAgentClient.OutputHandler {
+            { [state, limit] _, buffer in
+                // At most `limit` bytes of each chunk, and one more to tell an overflow.
+                let received = Array(buffer.prefix(limit + 1))
+                state.withLock { state in
+                    let room = limit - state.bytes.count
+                    if received.count > room {
+                        state.overflowed = true
+                    }
+                    state.bytes.append(contentsOf: received.prefix(max(0, room)))
+                }
+            }
+        }
+
+        var overflowed: Bool {
+            state.withLock { $0.overflowed }
+        }
+
+        var text: String {
+            String(decoding: state.withLock { $0.bytes }, as: UTF8.self)
+        }
+
+        /// The last 2 KiB, for an error message.
+        var tail: String {
+            let text = String(
+                String(decoding: state.withLock { $0.bytes.suffix(2048) }, as: UTF8.self)
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? "no output" : text
         }
     }
