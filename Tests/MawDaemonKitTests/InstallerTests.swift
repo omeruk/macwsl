@@ -225,7 +225,8 @@ import os
         let required = InstallSpace.required(for: entry.image, alreadyDownloaded: 0)
         await #expect(
             throws: MawError.insufficientDiskSpace(
-                required: required.bytes, available: 1 << 30, volume: "Macintosh HD")
+                required: required.bytes, available: 1 << 30, volume: "Macintosh HD",
+                for: .install)
         ) {
             try await installer(freeSpace: 1 << 30).install(request(), progress: { _ in })
         }
@@ -245,7 +246,7 @@ import os
         await #expect(
             throws: MawError.insufficientDiskSpace(
                 required: InstallSpace.required(for: entryImage, alreadyDownloaded: 0).bytes,
-                available: 1 << 30, volume: "Macintosh HD")
+                available: 1 << 30, volume: "Macintosh HD", for: .install)
         ) {
             try await installer(freeSpace: 1 << 30).check(distribution: nil, name: nil)
         }
@@ -358,15 +359,21 @@ import os
         }
         let machine = self.machine
         try await eventually("the extract step") { machine.calls.contains("extract") }
-        await #expect(throws: MawError.installationInProgress(try DistroName("Ubuntu-24.04"))) {
+        await #expect(
+            throws: MawError.installationInProgress(try DistroName("Ubuntu-24.04"), by: .install)
+        ) {
             try await installer.install(request(), progress: { _ in })
         }
         // APFS ignores case, so another spelling would end in the same directory.
-        await #expect(throws: MawError.installationInProgress(try DistroName("ubuntu-24.04"))) {
+        await #expect(
+            throws: MawError.installationInProgress(try DistroName("ubuntu-24.04"), by: .install)
+        ) {
             try await installer.install(request(name: "ubuntu-24.04"), progress: { _ in })
         }
         // The check that maw --install makes before it asks for the account sees it as well.
-        await #expect(throws: MawError.installationInProgress(try DistroName("Ubuntu-24.04"))) {
+        await #expect(
+            throws: MawError.installationInProgress(try DistroName("Ubuntu-24.04"), by: .install)
+        ) {
             try await installer.check(distribution: nil, name: nil)
         }
         first.cancel()

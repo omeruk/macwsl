@@ -327,7 +327,7 @@
             guard let space = freeSpace(store.paths.homeDirectory) else { return }
             try InstallSpace.check(
                 required: required, available: ByteSize(bytes: space.available),
-                volume: space.volume)
+                volume: space.volume, for: .install)
         }
 
         private func removeStaging(_ staging: URL) {

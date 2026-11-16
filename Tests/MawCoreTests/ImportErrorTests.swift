@@ -21,6 +21,10 @@ import Testing
             name, consoleLog: "~/Library/Logs/maw/Ubuntu-24.04.log",
             reason: "the guest agent did not answer"),
         .distributionBusy(name, operation: .import),
+        .installationInProgress(name, by: .import),
+        .installationInProgress(name, by: .install),
+        .insufficientDiskSpace(
+            required: 5 << 30, available: 1 << 30, volume: "Macintosh HD", for: .import),
         .userNotFound("ayse", distribution: DefaultUserChoice.archiveDescription),
     ]
 
@@ -72,6 +76,17 @@ import Testing
         #expect(
             MawError.distributionBusy(Self.name, operation: .import).errorDescription
                 == "Ubuntu-24.04 is being imported by maw --import.")
+    }
+
+    /// An installation and an import of one name exclude each other, and the error names the
+    /// one that holds the name.
+    @Test func namesWhatCreatesTheDistributionAlready() {
+        let byImport = MawError.installationInProgress(Self.name, by: .import)
+        #expect(byImport.errorDescription == "Ubuntu-24.04 is being imported by maw --import.")
+        #expect(byImport.recoverySuggestion == "Wait for the other import to finish.")
+        let byInstall = MawError.installationInProgress(Self.name, by: .install)
+        #expect(byInstall.errorDescription == "Ubuntu-24.04 is being installed by maw --install.")
+        #expect(byInstall.recoverySuggestion == "Wait for the other installation to finish.")
     }
 
     @Test func saysWhatTheArchiveHoldsInsteadOfARootFileSystem() {

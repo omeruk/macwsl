@@ -9,13 +9,15 @@ public enum InstallSpace {
         return ByteSize(bytes: remaining + image.installedSize + margin.bytes)
     }
 
-    /// Throws `insufficientDiskSpace` unless `available` covers `required`.
+    /// Throws `insufficientDiskSpace` for `operation` unless `available` covers `required`.
     public static func check(
-        required: ByteSize, available: ByteSize, volume: String
+        required: ByteSize, available: ByteSize, volume: String,
+        for operation: DistributionOperation
     ) throws(MawError) {
         guard available >= required else {
             throw .insufficientDiskSpace(
-                required: required.bytes, available: available.bytes, volume: volume)
+                required: required.bytes, available: available.bytes, volume: volume,
+                for: operation)
         }
     }
 }

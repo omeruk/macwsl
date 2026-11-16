@@ -19,6 +19,11 @@
         static var noExporter: MawError {
             .daemonProtocolError(reason: "this daemon was started without exports")
         }
+        /// The answer to an import when the daemon has no importer, as in unit tests that wire
+        /// none.
+        static var noImporter: MawError {
+            .daemonProtocolError(reason: "this daemon was started without imports")
+        }
         /// Why sessions end on `unregister`; shown to their clients.
         static var unregisterReason: String { MawError.unregisterReason }
 
@@ -237,6 +242,8 @@
                                 ) { progress in Self.send(progress, to: peer) })
                         }
                         continue
+                    case .import:
+                        throw Self.noImporter
                     }
                 } catch {
                     reply = .failure(error)

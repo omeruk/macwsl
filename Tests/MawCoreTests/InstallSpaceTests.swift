@@ -23,26 +23,45 @@ import Testing
         let required = InstallSpace.required(for: image, alreadyDownloaded: 0)
         #expect(
             throws: MawError.insufficientDiskSpace(
-                required: required.bytes, available: 2_000_000_000, volume: "Macintosh HD")
+                required: required.bytes, available: 2_000_000_000, volume: "Macintosh HD",
+                for: .install)
         ) {
             try InstallSpace.check(
                 required: required, available: ByteSize(bytes: 2_000_000_000),
-                volume: "Macintosh HD")
+                volume: "Macintosh HD", for: .install)
         }
         #expect(throws: Never.self) {
             try InstallSpace.check(
                 required: required, available: ByteSize(bytes: required.bytes),
-                volume: "Macintosh HD")
+                volume: "Macintosh HD", for: .install)
         }
     }
 
     @Test func describesTheErrorWithReadableSizes() {
         let error = MawError.insufficientDiskSpace(
-            required: 2_873_741_824, available: 2_000_000_000, volume: "Macintosh HD")
+            required: 2_873_741_824, available: 2_000_000_000, volume: "Macintosh HD",
+            for: .install)
         #expect(
             error.errorDescription
-                == "The installation needs 2.9 GB of free space on Macintosh HD, but only 2 GB "
+                == "The installation needs 2.9 GB of free space on Macintosh HD,\nbut only 2 GB "
                 + "is available.")
+        #expect(
+            error.recoverySuggestion
+                == "Free up space on the volume, then run maw --install again.")
+    }
+
+    /// An import's error names the import and its command.
+    @Test func namesTheOperationThatNeedsTheSpace() {
+        let error = MawError.insufficientDiskSpace(
+            required: 2_873_741_824, available: 2_000_000_000, volume: "Macintosh HD",
+            for: .import)
+        #expect(
+            error.errorDescription
+                == "The import needs 2.9 GB of free space on Macintosh HD,\nbut only 2 GB "
+                + "is available.")
+        #expect(
+            error.recoverySuggestion
+                == "Free up space on the volume, then run maw --import again.")
     }
 
     @Test(arguments: [

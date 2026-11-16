@@ -31,6 +31,16 @@ public enum DistributionOperation: String, Codable, Equatable, Sendable, CaseIte
         }
     }
 
+    /// The operation as a noun, as in "Wait for the other installation to finish".
+    public var noun: String {
+        switch self {
+        case .install: "installation"
+        case .export: "export"
+        case .removal: "removal"
+        case .import: "import"
+        }
+    }
+
     /// Whether the operation creates the distribution: an installation or an import. It holds
     /// a name that is not installed yet, starts the new distribution's machine itself, and
     /// excludes another operation of the same kind on that name.

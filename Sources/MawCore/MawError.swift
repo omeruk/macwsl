@@ -46,8 +46,9 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case unknownDistribution(String)
     /// `--install` names a distribution that is already installed.
     case distributionAlreadyInstalled(DistroName)
-    /// Another `maw --install` is installing the same distribution.
-    case installationInProgress(DistroName)
+    /// Another `maw --install` or `maw --import`, `operation`, is creating a distribution of
+    /// the same name.
+    case installationInProgress(DistroName, by: DistributionOperation)
     /// The distribution's directory, `path`, exists but holds no `distro.json`, as a partial
     /// manual removal leaves it. maw never changes it: it may hold the distribution's disk.
     case distributionDirectoryExists(path: String)
@@ -68,8 +69,10 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case imageChecksumMismatch(path: String, expected: String, actual: String)
     /// A downloaded image that should be in the cache is not there.
     case imageMissing(path: String)
-    /// The Mac's volume has less free space than the installation needs.
-    case insufficientDiskSpace(required: UInt64, available: UInt64, volume: String)
+    /// The Mac's volume has less free space than the installation or the import, `operation`,
+    /// needs.
+    case insufficientDiskSpace(
+        required: UInt64, available: UInt64, volume: String, for: DistributionOperation)
     /// A provisioning step failed. `step` names it.
     case provisioningFailed(step: String, reason: String)
     /// The installation was cancelled, because its client went away or the daemon stopped.
@@ -262,8 +265,8 @@ extension MawError: LocalizedError {
             "There is no distribution named '\(name)' that maw can install."
         case .distributionAlreadyInstalled(let name):
             "\(name) is already installed."
-        case .installationInProgress(let name):
-            "\(name) is being installed by another maw --install."
+        case .installationInProgress(let name, let operation):
+            "\(name) is being \(operation.participle) by \(operation.command)."
         case .distributionDirectoryExists(let path):
             "\(path) already exists, but it holds no installed distribution: its distro.json is "
                 + "missing."
@@ -285,9 +288,9 @@ extension MawError: LocalizedError {
                 + "but it should be \(expected)."
         case .imageMissing(let path):
             "The downloaded image \(path) is missing."
-        case .insufficientDiskSpace(let required, let available, let volume):
-            "The installation needs \(ByteSize(bytes: required).approximateDescription) of free "
-                + "space on \(volume), but only \(ByteSize(bytes: available).approximateDescription) "
+        case .insufficientDiskSpace(let required, let available, let volume, let operation):
+            "The \(operation.noun) needs \(ByteSize(bytes: required).approximateDescription) of free "
+                + "space on \(volume),\nbut only \(ByteSize(bytes: available).approximateDescription) "
                 + "is available."
         case .provisioningFailed(let step, let reason):
             "The installation failed while \(step): \(reason)."
@@ -479,8 +482,8 @@ extension MawError: LocalizedError {
             "maw --list --online shows the distributions that can be installed."
         case .distributionAlreadyInstalled(let name):
             "Use it with maw -d \(name), or remove it with\nmaw --unregister \(name)."
-        case .installationInProgress:
-            "Wait for the other installation to finish."
+        case .installationInProgress(_, let operation):
+            "Wait for the other \(operation.noun) to finish."
         case .distributionDirectoryExists:
             "maw leaves the directory as it is, because it may hold a distribution's disk.img. "
                 + "Move it elsewhere, or delete it if you no longer need what it holds, then run "
@@ -505,8 +508,8 @@ extension MawError: LocalizedError {
                 + "happens again, the download is being altered on its way to this Mac."
         case .imageMissing:
             "Run maw --install again to download it again."
-        case .insufficientDiskSpace:
-            "Free up space on the volume, then run maw --install again."
+        case .insufficientDiskSpace(_, _, _, let operation):
+            "Free up space on the volume, then run \(operation.command) again."
         case .provisioningFailed:
             "Nothing was installed. The installation's console log in ~/Library/Logs/maw has "
                 + "details."

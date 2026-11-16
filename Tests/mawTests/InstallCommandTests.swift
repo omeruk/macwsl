@@ -210,8 +210,9 @@ import os
 
     @Test(arguments: [
         MawError.distributionAlreadyInstalled(try! DistroName("Ubuntu-24.04")),
-        .insufficientDiskSpace(required: 5 << 30, available: 1 << 30, volume: "Macintosh HD"),
-        .installationInProgress(try! DistroName("Ubuntu-24.04")),
+        .insufficientDiskSpace(
+            required: 5 << 30, available: 1 << 30, volume: "Macintosh HD", for: .install),
+        .installationInProgress(try! DistroName("Ubuntu-24.04"), by: .install),
     ])
     func asksForNothingWhenTheDaemonsCheckFails(_ error: MawError) async {
         await #expect(throws: error) {

@@ -8,7 +8,7 @@
     /// (see `InterfaceCoding`). The client's first request on every connection is `hello`.
     public enum DaemonInterface {
         /// Incremented on every change to the messages below, their fields, or their meaning.
-        public static let version: UInt32 = 6
+        public static let version: UInt32 = 7
 
         /// The LaunchAgent label, which is also the name of the daemon's Mach service.
         public static let defaultLabel = "dev.maw.mawd"
@@ -49,9 +49,9 @@
         /// that nobody types a password for an installation that cannot start; `install`
         /// checks the same again.
         case checkInstall(distribution: String?, name: DistroName?)
-        /// Cancels this connection's installation or export. Replied to once its traces are
-        /// removed, or once it has finished if it could no longer be cancelled: an installation
-        /// that had already registered the distribution.
+        /// Cancels this connection's installation, export, or import. Replied to once its traces
+        /// are removed, or once it has finished if it could no longer be cancelled: an
+        /// installation or an import that had already registered the distribution.
         case cancel
         /// Lists every installed distribution with its machine's state, and the default. It
         /// starts no machine.
@@ -85,6 +85,12 @@
         /// `installProgress` events while it works and replies when the export has finished,
         /// failed, or been cancelled. It cancels the export if this XPC connection closes.
         case export(ExportRequest)
+        /// Creates a distribution from the archive that the descriptor in the message reads,
+        /// which the client opened for reading. The daemon sends `installProgress` events while
+        /// it works and replies when the distribution is registered and its first start has
+        /// ended, or when the import has failed or been cancelled. It cancels the import if this
+        /// XPC connection closes before the registration.
+        case `import`(ImportRequest)
 
         /// How the request is named in error messages.
         public var displayName: String {
@@ -104,6 +110,7 @@
             case .unregister: "the removal"
             case .checkExport: "checking the export"
             case .export: "the export"
+            case .import: "the import"
             }
         }
     }
@@ -167,24 +174,27 @@
             reason: "it is longer than sudo's limit of \(maximumPasswordBytes) bytes")
     }
 
-    /// The steps of an installation and of an export. Each operation's steps, in order, are in
-    /// `installation` and `export`.
+    /// The steps of an installation, an export, and an import. Each operation's steps, in order,
+    /// are in `installation`, `export`, and `import`.
     public enum InstallStep: String, Codable, Equatable, Sendable, CaseIterable {
         case download
         case verify
-        /// Installation: the new disk and the provisioning machine. Export: the provisioning
-        /// machine with the distribution's disk attached.
+        /// Installation and import: the new disk and the provisioning machine. Export: the
+        /// provisioning machine with the distribution's disk attached.
         case prepare
         case format
         case extract
         case configure
-        /// Installation: writing the disk. Export: stopping the provisioning machine.
+        /// Installation and import: writing the disk. Export: stopping the provisioning machine.
         case finish
         case start
         /// Export: the root file system's check, as at a start, and its read-only mount.
         case check
         /// Export: writing the archive.
         case archive
+        /// Import: the checks of the extracted root file system before it is configured: its
+        /// top level, its `/sbin/init`, and the files that choose its default user.
+        case inspect
 
         /// An installation's steps, in order. `download` and `verify` are the only ones that a
         /// cached image skips; `verify` runs for every installation.
@@ -193,9 +203,13 @@
         ]
         /// An export's steps, in order.
         public static let export: [InstallStep] = [.prepare, .check, .archive, .finish]
+        /// An import's steps, in order.
+        public static let `import`: [InstallStep] = [
+            .prepare, .format, .extract, .inspect, .configure, .finish, .start,
+        ]
     }
 
-    /// The progress of an installation or an export.
+    /// The progress of an installation, an export, or an import.
     public enum InstallProgress: Codable, Equatable, Sendable {
         case started(InstallStep)
         case finished(InstallStep, milliseconds: UInt64)
@@ -252,9 +266,9 @@
         case installed(InstallSummary)
         /// The reply to `checkInstall`: nothing known prevents the installation.
         case installPossible
-        /// The reply to `cancel`. `wasRunning` is true if an installation or an export was stopped
-        /// and its traces removed, and false if nothing was running or the installation had
-        /// already registered the distribution and finished.
+        /// The reply to `cancel`. `wasRunning` is true if an installation, an export, or an
+        /// import was stopped and its traces removed, and false if nothing was running or the
+        /// installation or import had already registered the distribution and finished.
         case cancelled(wasRunning: Bool)
         /// The reply to `listDistributions`.
         case distributions(DistributionList)
@@ -272,6 +286,9 @@
         case exportPossible(DistroName)
         /// The reply to `export`, once the archive is complete.
         case exported(ExportSummary)
+        /// The reply to `import`, once the distribution is registered and its first start has
+        /// ended, whether or not that start succeeded.
+        case imported(ImportSummary)
         case failure(MawError)
     }
 
@@ -279,7 +296,7 @@
     public enum DaemonEvent: Codable, Equatable, Sendable {
         /// The session's machine stopped. The guest agent connection closes with it.
         case sessionEnded(SessionEnded)
-        /// The installation or the export that this connection requested moved on.
+        /// The installation, export, or import that this connection requested moved on.
         case installProgress(InstallProgress)
     }
 
@@ -523,6 +540,68 @@
             self.format = format
             self.bytes = bytes
             self.milliseconds = milliseconds
+        }
+    }
+
+    /// What `import` imports. The archive's descriptor travels next to the body.
+    public struct ImportRequest: Codable, Equatable, Sendable {
+        /// The longest `archive`, in bytes of UTF-8: macOS's `MAXPATHLEN`, the longest path
+        /// that `fcntl(F_GETPATH)` returns.
+        public static let maximumArchiveBytes = 1024
+
+        /// The new distribution's name, under the installation's naming rules.
+        public var name: DistroName
+        /// The user that `-u` names, if given: the default user, which must exist in the
+        /// archive.
+        public var user: String?
+        /// Where the archive comes from, recorded in `distro.json`: the absolute path of the
+        /// file that the client opened, or `DistroMetadata.ImportOrigin.standardInput`. The
+        /// daemon records it and never opens it.
+        public var archive: String
+
+        public init(name: DistroName, user: String?, archive: String) {
+            self.name = name
+            self.user = user
+            self.archive = archive
+        }
+
+        /// Whether `archive` is one the daemon records: standard input, or an absolute path of
+        /// at most `maximumArchiveBytes` bytes.
+        public var hasValidArchive: Bool {
+            archive == DistroMetadata.ImportOrigin.standardInput
+                || (archive.hasPrefix("/") && archive.utf8.count <= Self.maximumArchiveBytes)
+        }
+    }
+
+    /// The reply to `import`.
+    public struct ImportSummary: Codable, Equatable, Sendable {
+        /// The new distribution's name.
+        public var name: DistroName
+        /// The user that sessions run as when none is given, and what chose it.
+        public var defaultUser: String
+        public var defaultUserSource: DefaultUserChoice.Source
+        /// Whether it became the default distribution.
+        public var isDefault: Bool
+        /// The bytes of the uncompressed archive that reached the provisioning machine.
+        public var extractedBytes: UInt64
+        /// From the request to the end of the first start.
+        public var milliseconds: UInt64
+        /// Why the first start failed, as `importStartFailed`; `nil` if it succeeded. The
+        /// distribution stays installed either way.
+        public var firstStartFailure: MawError?
+
+        public init(
+            name: DistroName, defaultUser: String, defaultUserSource: DefaultUserChoice.Source,
+            isDefault: Bool, extractedBytes: UInt64, milliseconds: UInt64,
+            firstStartFailure: MawError?
+        ) {
+            self.name = name
+            self.defaultUser = defaultUser
+            self.defaultUserSource = defaultUserSource
+            self.isDefault = isDefault
+            self.extractedBytes = extractedBytes
+            self.milliseconds = milliseconds
+            self.firstStartFailure = firstStartFailure
         }
     }
 #endif

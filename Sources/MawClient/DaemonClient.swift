@@ -300,6 +300,24 @@
             return summary
         }
 
+        /// Creates a distribution from the archive that `descriptor` reads, which this process
+        /// opened for reading and still owns, and returns when the distribution is registered
+        /// and its first start has ended. `events` carries the progress meanwhile. Closing the
+        /// client, or `cancel()`, cancels it until the registration.
+        public func `import`(_ request: ImportRequest, from descriptor: Int32)
+            async throws(MawError)
+            -> ImportSummary
+        {
+            guard
+                case .imported(let summary) = try await send(
+                    .import(request), descriptor: descriptor
+                ).reply
+            else {
+                throw .daemonProtocolError(reason: "the reply to import is not imported")
+            }
+            return summary
+        }
+
         /// Closes the connection, which ends its sessions.
         public func close() {
             state.withLock { $0.isClosed = true }

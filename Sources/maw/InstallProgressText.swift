@@ -53,6 +53,7 @@ struct InstallProgressText {
         case .start: "Starting \(name)"
         case .check: "Checking the file system"
         case .archive: "Writing the archive"
+        case .inspect: "Checking the root file system"
         }
     }
 
