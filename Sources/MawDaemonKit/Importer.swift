@@ -141,7 +141,8 @@
                 isDefault = try store.register(staging: staging, metadata: outcome.metadata)
             } catch {
                 store.removeStagingDirectory(staging)
-                if Task.isCancelled {
+                // A refusal keeps its reason when a cancellation comes while the machine stops.
+                if Task.isCancelled, Self.isCausedByStopping(error) {
                     log.notice(
                         "\(name): import for process \(processID) cancelled; its files were removed"
                     )
@@ -322,6 +323,18 @@
         }
 
         // MARK: Errors
+
+        /// Whether `error` is what a step fails with when the machine is stopped under it, as a
+        /// cancellation stops it, rather than a refusal or a failure with a reason of its own.
+        static func isCausedByStopping(_ error: MawError) -> Bool {
+            switch error {
+            case .importCancelled, .provisioningFailed, .vmFailed, .vmStartFailed,
+                .guestAgentFailed, .guestAgentUnavailable, .guestStopTimedOut:
+                true
+            default:
+                false
+            }
+        }
 
         /// A provisioning step's failure, named as the import's.
         static func importError(_ error: MawError, of name: DistroName) -> MawError {

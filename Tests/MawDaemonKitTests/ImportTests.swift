@@ -141,10 +141,21 @@ final class FakeImportingMachine: ImportingMachine, @unchecked Sendable {
         try await step("finish")
     }
 
+    /// Whether `discard()` waits until `release()`, as a machine's forced stop takes time.
+    var holdsDiscard = false
+    private let discardReleased = OneTimeSignal()
+
+    func releaseDiscard() {
+        discardReleased.fire()
+    }
+
     func discard() async {
         state.withLock { $0.calls.append("discard") }
         discarded.fire()
         released.fire()
+        if holdsDiscard {
+            await discardReleased.wait()
+        }
     }
 }
 
@@ -405,6 +416,31 @@ final class FakeImportingMachine: ImportingMachine, @unchecked Sendable {
         #expect(machine.calls.contains("discard"))
         #expect(source.rawValue == -1, "The descriptor was not closed.")
         try expectNothingLeft()
+    }
+
+    /// A refusal keeps its reason when a cancellation arrives while the machine is stopped
+    /// after it.
+    @Test func keepsTheReasonOfARefusalThatACancellationFollows() async throws {
+        let tests = try ImporterTests(
+            machine: FakeImportingMachine(
+                inspection: FakeImportingMachine.inspection(initProgram: "/bin/busybox")))
+        tests.machine.holdsDiscard = true
+        let importer = tests.importer
+        let source = try tests.source()
+        let request = try tests.request()
+        let running = Task { () async throws -> ImportSummary in
+            try await importer.import(request, from: source, for: 42) { _ in }
+        }
+        await tests.machine.discarded.wait()
+        running.cancel()
+        tests.machine.releaseDiscard()
+        await #expect(
+            throws: MawError.importInitNotSystemd(
+                Self.copy, reason: "/sbin/init leads to /bin/busybox")
+        ) {
+            try await running.value
+        }
+        try tests.expectNothingLeft()
     }
 
     /// The refusals that come before anything is created.
