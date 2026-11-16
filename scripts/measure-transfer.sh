@@ -1,8 +1,8 @@
 #!/bin/sh
-# The measurements of maw --unregister and maw --export (prompts/06b-distro-removal-and-transfer.md,
-# "Speed targets"). For the owner's official run, restart the Mac, connect it to AC power, turn
-# Low Power Mode off, leave only Terminal open, wait until the one-minute load average is under
-# 2, and run:
+# The measurements of maw --unregister, maw --export, and maw --import
+# (prompts/06b-distro-removal-and-transfer.md, "Speed targets"). For the owner's official run,
+# restart the Mac, connect it to AC power, turn Low Power Mode off, leave only Terminal open,
+# wait until the one-minute load average is under 2, and run:
 #
 #   caffeinate -dims scripts/measure-transfer.sh
 #
@@ -15,7 +15,7 @@
 # that temporary directory, each deleted after its run; state.json restored; and the same check
 # on exit that nothing is left behind. The suite runs only here, never with the other
 # integration tests. Each measurement runs 5 times and prints its median and its slowest run on
-# lines that start with "measurement:".
+# lines that start with "measurement:"; for a throughput, the slowest run is the lowest figure.
 #
 # Usage: scripts/measure-transfer.sh [<measurement>]
 #

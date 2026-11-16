@@ -6,7 +6,7 @@ import Testing
 import os
 
 /// The measurements of `prompts/06b-distro-removal-and-transfer.md`, "Speed targets", for
-/// `maw --unregister` and `maw --export`, which scripts/measure-transfer.sh runs through
+/// `maw --unregister`, `maw --export`, and `maw --import`, which scripts/measure-transfer.sh runs through
 /// scripts/integration-test.sh with `MAW_MEASURE=1`. They never run with the other integration
 /// tests, because each installs distributions of its own and the compressed exports take
 /// minutes.
@@ -110,7 +110,8 @@ struct TransferMeasurements {
             let median = MawIntegration.report(
                 "maw --export of a freshly installed test distribution to an uncompressed tar "
                     + "file, to maw's exit", times)
-            MawIntegration.report("the same export's throughput", throughput, unit: "MB/s")
+            MawIntegration.report(
+                "the same export's throughput", throughput, unit: "MB/s", higherIsFaster: true)
             MawIntegration.report(
                 "the daemon's footprint growth during an export to a file", growth, unit: "MiB")
             #expect(median < 30_000)
@@ -150,7 +151,8 @@ struct TransferMeasurements {
                 growth.append(grew)
             }
             MawIntegration.report("maw --export - | wc -c, to the pipeline's exit", times)
-            MawIntegration.report("the same export's throughput", throughput, unit: "MB/s")
+            MawIntegration.report(
+                "the same export's throughput", throughput, unit: "MB/s", higherIsFaster: true)
             MawIntegration.report(
                 "the daemon's footprint growth during an export through a pipe", growth,
                 unit: "MiB")
@@ -182,7 +184,99 @@ struct TransferMeasurements {
         }
     }
 
+    /// `--import` of the uncompressed tar archive of a freshly installed test distribution, to
+    /// maw's exit, which comes after the first start: the time, the archive's throughput, and
+    /// how much the daemon's footprint grows meanwhile. Each run imports under a name of its
+    /// own and removes that distribution afterwards.
+    @Test func measuresImportFromAFile() async throws {
+        try await withExportedArchive("measure-import-source-file") { file, bytes in
+            let daemon = try await maw.daemonProcessID()
+            var times: [Double] = []
+            var throughput: [Double] = []
+            var growth: [Double] = []
+            for run in 1...Self.runs {
+                let name = "\(maw.prefix)-measure-import-file-\(run)"
+                try maw.willCreate(name)
+                let (timed, grew) = try await Self.footprintGrowth(of: daemon) {
+                    try await maw.timed(["--import", name, file], timeout: .seconds(600))
+                }
+                try await maw.remove(name)
+                try #require(timed.status == 0, "run \(run)")
+                times.append(timed.milliseconds)
+                throughput.append(bytes / 1e6 / (timed.milliseconds / 1e3))
+                growth.append(grew)
+            }
+            let median = MawIntegration.report(
+                "maw --import of the exported test archive from a file, to the end of the first "
+                    + "start", times)
+            MawIntegration.report(
+                "the same import's throughput", throughput, unit: "MB/s", higherIsFaster: true)
+            MawIntegration.report(
+                "the daemon's footprint growth during an import from a file", growth, unit: "MiB")
+            #expect(median < 30_000)
+            #expect((growth.max() ?? .infinity) < 64)
+        }
+    }
+
+    /// `cat <archive> | maw --import <name> -`: the same through a pipe, to the pipeline's exit.
+    @Test func measuresImportThroughAPipe() async throws {
+        try await withExportedArchive("measure-import-source-pipe") { file, bytes in
+            let daemon = try await maw.daemonProcessID()
+            var times: [Double] = []
+            var throughput: [Double] = []
+            var growth: [Double] = []
+            for run in 1...Self.runs {
+                let name = "\(maw.prefix)-measure-import-pipe-\(run)"
+                try maw.willCreate(name)
+                let started = ContinuousClock.now
+                let (result, grew) = try await Self.footprintGrowth(of: daemon) {
+                    let shell = try DebugBootProcess(
+                        executable: URL(filePath: "/bin/sh"),
+                        arguments: [
+                            "-c", "cat \"$1\" | \"$0\" --import \"$2\" -",
+                            maw.maw.path(percentEncoded: false), file, name,
+                        ], separateStandardError: true, environment: maw.mawEnvironment)
+                    return await shell.waitForExit(timeout: .seconds(600))
+                }
+                let elapsed = (ContinuousClock.now - started).fractionalMilliseconds
+                try await maw.remove(name)
+                try #require(result.status == 0, "run \(run): \(result.standardError)")
+                times.append(elapsed)
+                throughput.append(bytes / 1e6 / (elapsed / 1e3))
+                growth.append(grew)
+            }
+            let median = MawIntegration.report(
+                "cat <archive> | maw --import -, to the end of the first start", times)
+            MawIntegration.report(
+                "the same import's throughput", throughput, unit: "MB/s", higherIsFaster: true)
+            MawIntegration.report(
+                "the daemon's footprint growth during an import through a pipe", growth,
+                unit: "MiB")
+            #expect(median < 30_000)
+            #expect((growth.max() ?? .infinity) < 64)
+        }
+    }
+
     // MARK: Helpers
+
+    /// Installs a test distribution, exports it to an uncompressed tar file in the run's export
+    /// directory, removes the distribution, and runs `body` with the archive's path and size.
+    /// The archive is deleted afterwards, also when `body` throws.
+    func withExportedArchive(
+        _ suffix: String, _ body: (_ file: String, _ bytes: Double) async throws -> Void
+    ) async throws {
+        try await maw.withExportDirectory { directory in
+            let file = directory.appending(path: "\(suffix).tar").path(percentEncoded: false)
+            try await maw.withDistribution(suffix) { name in
+                try await stop(name)
+                let exported = try await maw.run(["--export", name, file], timeout: .seconds(600))
+                try #require(exported.status == 0, "\(exported.standardError)")
+            }
+            let bytes = Double(try Self.size(of: URL(filePath: file)))
+            print("import archive: \(Int(bytes)) bytes")
+            try await body(file, bytes)
+        }
+    }
 
     /// Requires the daemon's log line of the removal of `name` to contain `outcome`, so that each
     /// run measured the case it names.
