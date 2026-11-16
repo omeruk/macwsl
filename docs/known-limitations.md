@@ -326,6 +326,15 @@ from `main`.
     distribution running, is at every sample; every window's views observe that array. Reduce
     the work where the profile shows it.
 
+- **Three copies of an operation's step timing and cancellation.**
+  - **Seen:** `timed(_:progress:_:)`, `checkCancellation(_:)`, the computation of
+    milliseconds, and the pattern that runs the steps under `withTaskCancellationHandler` exist
+    in `Installer`, `Exporter`, and `Importer`. A change to how steps are timed, logged, or
+    mapped to a cancellation must be made three times.
+  - **Evidence:** `Sources/MawDaemonKit/Installer.swift`, `Exporter.swift`, and
+    `Importer.swift`; pull request #32, code review.
+  - **Phase:** 12b: one helper for an operation's steps in `MawDaemonKit`.
+
 ## Phase 13: Packaging and release
 
 - **The ad-hoc code signing requirement does not identify maw's builds.**
@@ -393,6 +402,18 @@ from `main`.
     maw --import <name> -`.
   - **Phase:** None yet. A zstd decoder that reads no archive format, on the Mac or in the
     guest, would add it.
+- **The network of an import without netplan is verified on Ubuntu only.**
+  - **Seen:** For an archive without netplan, the import enables `systemd-networkd` and
+    `systemd-resolved` with links in `multi-user.target.wants` only. It does not create what
+    `systemctl enable` also creates: `systemd-networkd.socket`, which the unit names with
+    `Also=`, and the `dbus-org.freedesktop.network1` and `resolve1` aliases. On Ubuntu 24.04
+    without netplan, the copy got a DHCP address, its gateway answered a ping, and
+    systemd-resolved had a DNS server. On a distribution whose units need the socket or the
+    aliases, `networkctl` and `resolvectl` may not answer until `systemctl enable` runs.
+  - **Evidence:** `ProvisioningScript.text`, the `import` mode's fallback;
+    `ImportIntegrationTests.configuresTheNetworkWithoutNetplan`; pull request #32, code review.
+  - **Phase:** None yet. `systemctl --root` from the imported root file system, if it has one,
+    would enable the units completely.
 - **An imported distribution without systemd-resolved has no DNS.**
   - **Seen:** `maw --import` links `/etc/resolv.conf` to systemd-resolved's stub resolver, as
     the installation does. An archive without systemd-resolved, such as one of Debian, which
