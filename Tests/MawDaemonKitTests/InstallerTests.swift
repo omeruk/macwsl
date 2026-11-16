@@ -108,7 +108,8 @@ import os
         #expect(!store.isInstalled(try DistroName("Ubuntu-24.04")))
         #expect(machine.configuration?.hostname == "work")
         #expect(
-            try store.metadata(for: try DistroName("Work"))?.catalogEntry.rawValue == "Ubuntu-24.04"
+            try store.metadata(for: try DistroName("Work"))?.catalogEntry?.rawValue
+                == "Ubuntu-24.04"
         )
     }
 
