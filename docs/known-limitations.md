@@ -383,6 +383,16 @@ from `main`.
     beside them is (pull request #32).
   - **Phase:** None yet. Building `bsdtar` with ACL support needs libacl in the guest build;
     the import would need the same to restore them.
+- **`maw --import` reads no zstd archive and no tar archive without the ustar magic.**
+  - **Seen:** An archive compressed with zstd, and an old (v7) tar archive, whose header has no
+    `ustar` at offset 257, are refused with "is not a tar archive".
+  - **Evidence:** The import decompresses with `/usr/bin/gzip -dcf`, which has no zstd, and
+    forwards only a stream whose first block has the magic (`Sources/MawDaemonKit/ImportStream.swift`),
+    because `/usr/bin/tar` would follow an mtree archive's names to files of the Mac (pull request
+    #32, security review). Decompress a zstd archive first, with `zstd -dc archive.tar.zst |
+    maw --import <name> -`.
+  - **Phase:** None yet. A zstd decoder that reads no archive format, on the Mac or in the
+    guest, would add it.
 - **An imported distribution without systemd-resolved has no DNS.**
   - **Seen:** `maw --import` links `/etc/resolv.conf` to systemd-resolved's stub resolver, as
     the installation does. An archive without systemd-resolved, such as one of Debian, which

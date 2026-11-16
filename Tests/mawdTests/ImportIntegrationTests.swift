@@ -135,8 +135,9 @@ struct ImportIntegrationTests {
 
     // MARK: Refusals
 
-    /// An archive whose `/sbin/init` is not systemd, one whose root is under one directory, and
-    /// a truncated one: each is refused before the registration, and nothing is left.
+    /// An archive whose `/sbin/init` is not systemd, an mtree archive that names a file of the
+    /// Mac, one whose root is under one directory, and a truncated one: each is refused before
+    /// the registration, and nothing is left.
     @Test func refusesArchivesThatAreNotARootFileSystemWithSystemd() async throws {
         try await maw.withExportDirectory { directory in
             let cases: [(suffix: String, archive: Data, error: (String) -> String)] = [
@@ -146,6 +147,17 @@ struct ImportIntegrationTests {
                         "maw: \(name) cannot be imported, because its /sbin/init is not "
                             + "systemd:\n/sbin/init leads to /usr/bin/busybox.\n"
                             + "Nothing was installed. maw starts every distribution with systemd.\n"
+                    }
+                ),
+                (
+                    // An mtree archive names files of the Mac, which /usr/bin/tar would read.
+                    "import-mtree",
+                    Data("#mtree\n./etc/passwd type=file contents=/etc/hosts\n".utf8),
+                    { name in
+                        "maw: The archive for \(name) is not a tar archive.\n"
+                            + "Nothing was installed. maw --import reads tar archives, "
+                            + "uncompressed or\ncompressed with gzip, bzip2, xz, or lzip, as "
+                            + "maw --export and wsl --export\nwrite them.\n"
                     }
                 ),
                 (

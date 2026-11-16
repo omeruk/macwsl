@@ -69,50 +69,82 @@
         }
 
         public func extract(image: URL, format: CatalogImage.Format) async throws(MawError) {
-            _ = try await extract(tarInput: "@" + image.path(percentEncoded: false), from: nil)
+            // The image's size and SHA-256 were verified against the catalog's pins, so
+            // /usr/bin/tar may read it: it re-encodes it as an uncompressed pax archive, which
+            // keeps the extended attributes.
+            let path = image.path(percentEncoded: false)
+            let extraction = self.extraction
+            _ = try await extract(program: "/usr/bin/tar") { write in
+                let outcome = try StreamingProcess.run(
+                    "/usr/bin/tar", ["-c", "-f", "-", "--format", "pax", "@" + path],
+                    stopper: extraction, consume: write)
+                return .decompressed(outcome)
+            }
         }
 
-        /// Re-encodes the archive that `source` reads with `/usr/bin/tar` on the Mac, in any
-        /// compression that it reads, and extracts it in the guest as an installation's image
-        /// is extracted. Returns the bytes of the uncompressed archive that reached the guest.
-        public func extract(archive source: OwnedDescriptor) async throws(MawError) -> UInt64 {
-            try await extract(tarInput: "@-", from: source)
-        }
-
-        /// Runs `/usr/bin/tar` with `tarInput`, `@<path>` or `@-` with `source` as its standard
-        /// input, and streams its output to bsdtar in the guest.
-        private func extract(tarInput: String, from source: OwnedDescriptor?)
-            async throws(MawError) -> UInt64
+        /// Decompresses the archive that `source` reads on the Mac, with `ImportStream`, which
+        /// reads no archive format, and extracts it in the guest as an installation's image is
+        /// extracted, if it is a tar archive.
+        public func extract(archive source: OwnedDescriptor) async throws(MawError)
+            -> ArchiveExtraction
         {
+            let extraction = self.extraction
+            let produced = try await extract(program: ImportStream.decompressor, source: source) {
+                write in
+                switch try ImportStream.run(source: source, stopper: extraction, forward: write) {
+                case .streamed(_, let outcome): return .decompressed(outcome)
+                case .notATarArchive: return .notATarArchive
+                case .stopped: return .stopped
+                }
+            }
+            if case .notATarArchive = produced.outcome {
+                return .notATarArchive
+            }
+            return .extracted(bytes: produced.bytes)
+        }
+
+        /// What the Mac's side of an extraction ended with.
+        enum Production: Sendable {
+            /// The program ran to its end, with this outcome.
+            case decompressed(StreamingProcess.Outcome)
+            /// The stream was not a tar archive; nothing reached the guest.
+            case notATarArchive
+            /// The guest's process stopped taking input.
+            case stopped
+        }
+
+        /// Starts bsdtar in the guest and runs `produce` on a thread of its own, which hands its
+        /// chunks to bsdtar's standard input through `write`, because reading a pipe and
+        /// `GuestProcess.write` both block. `GuestProcess.write` waits while 256 KiB are queued
+        /// for the guest, so a guest that writes slowly holds `program` back, and with it the
+        /// reading of its input. Returns the outcome and the bytes that reached the guest.
+        private func extract(
+            program: String, source: OwnedDescriptor? = nil,
+            produce: @escaping @Sendable (_ write: (Data) -> Bool) throws -> Production
+        ) async throws(MawError) -> (outcome: Production, bytes: UInt64) {
             let step = "extracting the root file system"
             let errors = OutputCollector()
-            let process = try await client().exec(
-                ExecRequest(
-                    argv: [
-                        "bsdtar", "-x", "-p", "--numeric-owner", "--xattrs", "-f", "-", "-C",
-                        "/mnt/root",
-                    ]),
-                output: errors.handler)
-            // /usr/bin/tar re-encodes the image as an uncompressed pax archive, which keeps the
-            // extended attributes. Its output goes to bsdtar's standard input on a thread of
-            // its own, because reading the pipe and `GuestProcess.write` both block. `nil`: the
-            // thread could not be started, and bsdtar's input is closed, so that it ends.
-            // `GuestProcess.write` waits while 256 KiB are queued for the guest, so a guest that
-            // writes slowly holds /usr/bin/tar back, and with it the reading of `source`.
-            let extraction = self.extraction
+            let process: GuestProcess
+            do throws(MawError) {
+                process = try await client().exec(
+                    ExecRequest(
+                        argv: [
+                            "bsdtar", "-x", "-p", "--numeric-owner", "--xattrs", "-f", "-", "-C",
+                            "/mnt/root",
+                        ]),
+                    output: errors.handler)
+            } catch {
+                source?.close()
+                throw error
+            }
             let bytes = OSAllocatedUnfairLock(initialState: UInt64(0))
-            let tar = await withCheckedContinuation {
-                (
-                    continuation: CheckedContinuation<
-                        Result<StreamingProcess.Outcome, any Error>?, Never
-                    >
-                ) in
+            // `nil`: the thread could not be started, and bsdtar's input is closed, so that it
+            // ends.
+            let produced = await withCheckedContinuation {
+                (continuation: CheckedContinuation<Result<Production, any Error>?, Never>) in
                 let started = startDetachedThread {
                     let outcome = Result {
-                        try StreamingProcess.run(
-                            "/usr/bin/tar", ["-c", "-f", "-", "--format", "pax", tarInput],
-                            input: source, stopper: extraction
-                        ) { chunk in
+                        try produce { chunk in
                             bytes.withLock { $0 += UInt64(chunk.count) }
                             return process.write(chunk)
                         }
@@ -127,33 +159,47 @@
                 }
             }
             let status = try await process.waitForExit()
-            guard let tar else {
+            guard let produced else {
                 throw .provisioningFailed(
-                    step: step, reason: "could not start the thread that runs /usr/bin/tar")
+                    step: step, reason: "could not start the thread that runs \(program)")
+            }
+            if case .success(.notATarArchive) = produced {
+                return (.notATarArchive, 0)
+            }
+            let outcome: Result<StreamingProcess.Outcome, any Error> = produced.map {
+                switch $0 {
+                case .decompressed(let outcome): outcome
+                // bsdtar stopped taking input; its own status says why.
+                case .stopped, .notATarArchive: StreamingProcess.Outcome(status: 0, errors: "")
+                }
             }
             if let reason = Self.extractionFailure(
-                tar: tar, bsdtar: status, bsdtarErrors: errors.tail)
+                program: program, tar: outcome, bsdtar: status, bsdtarErrors: errors.tail)
             {
                 throw .provisioningFailed(step: step, reason: reason)
             }
-            return bytes.withLock { $0 }
+            guard case .success(let production) = produced else {
+                // extractionFailure(...) names every failure of the program.
+                throw .provisioningFailed(step: step, reason: "\(program) failed")
+            }
+            return (production, bytes.withLock { $0 })
         }
 
         /// Why an extraction failed, or `nil` if both programs succeeded. When both failed,
-        /// both are named, `/usr/bin/tar` first: either can be the cause, since a failure of
-        /// `/usr/bin/tar` cuts bsdtar's input off, and a failure of bsdtar, such as a full
-        /// disk, closes `/usr/bin/tar`'s output.
+        /// both are named, `program` on the Mac first: either can be the cause, since a failure
+        /// of `program` cuts bsdtar's input off, and a failure of bsdtar, such as a full disk,
+        /// closes `program`'s output.
         static func extractionFailure(
-            tar: Result<StreamingProcess.Outcome, any Error>, bsdtar status: ExitStatus,
-            bsdtarErrors: String
+            program: String = "/usr/bin/tar", tar: Result<StreamingProcess.Outcome, any Error>,
+            bsdtar status: ExitStatus, bsdtarErrors: String
         ) -> String? {
             var reasons: [String] = []
             switch tar {
             case .failure(let error):
-                reasons.append("/usr/bin/tar cannot start: \(error.localizedDescription)")
+                reasons.append("\(program) cannot start: \(error.localizedDescription)")
             case .success(let outcome) where outcome.status != 0:
                 reasons.append(
-                    "/usr/bin/tar exited with status \(outcome.status): \(outcome.errors)")
+                    "\(program) exited with status \(outcome.status): \(outcome.errors)")
             case .success:
                 break
             }

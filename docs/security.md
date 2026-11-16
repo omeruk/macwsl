@@ -278,18 +278,25 @@ provisioning machine by `bsdtar`, as root, with `--numeric-owner`, into the new 
   pinned by SHA-256 (`Guest/initramfs/SOURCES`), whose OpenPGP signature by libarchive's release
   maintainer was checked when it was pinned. It is linked statically, without compression
   libraries.
-- `/usr/bin/tar` runs with only its standard descriptors (`POSIX_SPAWN_CLOEXEC_DEFAULT`), so it
-  cannot reach the daemon's connections or any other descriptor of the daemon. For an
-  installation its input is `/dev/null`; for an export's compression, a pipe from the daemon, and
-  its output a pipe that the daemon copies to the client's descriptor; for an import, its input
-  is the client's descriptor, which the daemon closes as soon as tar has started, and its output
-  a pipe to the daemon.
-- **An imported archive is input from outside maw, and it is never extracted on the Mac.**
-  `/usr/bin/tar` re-encodes it as a stream, without `-P`, and `bsdtar` extracts it in the
-  provisioning machine, also without `-P`, so absolute paths, `..` components, links, and
-  special files in it act only inside that machine and on the new disk. The machine has no
-  access to the Mac's files and no other disk. An archive that `/usr/bin/tar` cannot read, such
-  as a truncated one, fails the import before anything is registered.
+- `/usr/bin/tar` and `/usr/bin/gzip` run with only their standard descriptors
+  (`POSIX_SPAWN_CLOEXEC_DEFAULT`), so they cannot reach the daemon's connections or any other
+  descriptor of the daemon. For an installation, tar's input is `/dev/null`; for an export's
+  compression, a pipe from the daemon, and its output a pipe that the daemon copies to the
+  client's descriptor. For an import, gzip's input is the client's descriptor, which the daemon
+  closes as soon as gzip has started, and its output a pipe to the daemon.
+- **An imported archive is input from outside maw, and no program on the Mac reads its
+  format.** libarchive, behind `/usr/bin/tar`, reads every archive format it knows, mtree
+  among them, and an mtree entry names a file on the disk whose contents libarchive reads: an
+  archive could have made the daemon copy any file that the user can read into the new
+  distribution. The import therefore passes the archive on the Mac only through
+  `/usr/bin/gzip -dcf`, which decompresses gzip, bzip2, xz, compress, and lzip and passes
+  anything else through unchanged, and forwards the result only if its first block is a tar
+  header (`ustar` at offset 257, `ImportStream`); anything else fails with
+  `importNotATarArchive`. `bsdtar` reads the archive in the provisioning machine, without `-P`,
+  so absolute paths lose their leading `/`, `..` components and extraction through links are
+  refused, and links and special files act only inside that machine and on the new disk. The
+  machine has no access to the Mac's files and no other disk. A truncated or corrupt archive
+  fails the import before anything is registered.
 - **The import's checks and configuration resolve every path inside the new root.** The
   inspection and `ProvisioningScript` follow each link of a path as the imported system would:
   an absolute target starts again at the root, and `..` stops there. The configuration replaces

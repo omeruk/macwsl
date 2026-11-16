@@ -248,11 +248,13 @@ console goes to `~/Library/Logs/maw/export/<name>.log`.
 
 `maw --import <name> <file>` creates the distribution `<name>` from a tar archive, and
 `maw --import <name> -` reads the archive from standard input, so that
-`maw --export Ubuntu-24.04 - | maw --import Copy -` copies a distribution. The archive can be in
-any compression that `/usr/bin/tar` reads, such as one from `maw --export`, from
-`wsl.exe --export`, or a distribution's published root file system. The new name follows the
-installation's rules, and an archive in which every file is under one directory, or one that is
-not a tar archive, such as a `.vhdx` from `wsl.exe --export --vhd`, is refused. `-` is refused
+`maw --export Ubuntu-24.04 - | maw --import Copy -` copies a distribution. The archive is a
+tar archive in the ustar, pax, or GNU format, uncompressed or compressed with gzip, bzip2, xz,
+compress, or lzip, such as one from `maw --export`, from `wsl.exe --export`, or a
+distribution's published root file system. The new name follows the installation's rules. An
+archive in which every file is under one directory is refused, and so is anything that is not
+such a tar archive: a `.vhdx` from `wsl.exe --export --vhd`, a zstd-compressed archive, an old
+tar archive without the ustar magic, or another archive format. `-` is refused
 when standard input is a terminal.
 
 As for `--export`, maw opens the file itself and hands the daemon its descriptor, so that the
@@ -267,7 +269,7 @@ The steps are those of an installation, with the archive in place of the image:
 |------|--------------|
 | Creating the virtual disk | A sparse 256 GiB disk in the staging directory, and the provisioning machine. |
 | Formatting the disk | As at installation. |
-| Extracting the archive | `/usr/bin/tar` on the Mac reads the archive and writes it, uncompressed, to `bsdtar` in the provisioning machine, which extracts it without `-P`: absolute paths and `..` are stripped or refused. Nothing is extracted on the Mac. |
+| Extracting the archive | `/usr/bin/gzip` on the Mac decompresses the archive, and `bsdtar` in the provisioning machine extracts it without `-P`: absolute paths lose their leading `/`, and `..` and extraction through links are refused. No program on the Mac reads the archive's format. |
 | Checking the root file system | The archive must hold `etc/passwd` and `usr/` at its top level, and `/sbin/init` must lead to systemd. Links are followed inside the imported root, as the imported system follows them. The default user is chosen. |
 | Configuring `<name>` | The system files below. |
 | Writing the disk | As at installation. |

@@ -45,8 +45,9 @@ struct Maw: AsyncParsableCommand {
             in .tar.gz, .tgz, or .gz, and with xz when it ends in .tar.xz, .txz, or .xz; \
             --format chooses instead.
 
-            --import creates a distribution from a tar archive in any compression, such as \
-            one from --export or wsl.exe --export, or from standard input for -. Its sessions \
+            --import creates a distribution from a tar archive, uncompressed or compressed \
+            with gzip, bzip2, xz, or lzip, such as one from --export or wsl.exe --export, or \
+            from standard input for -. Its sessions \
             run as the user that -u names, or else the default user of the archive's \
             /etc/maw.conf or /etc/wsl.conf, or else root.
 

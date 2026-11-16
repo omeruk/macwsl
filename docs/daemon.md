@@ -427,14 +427,18 @@ The steps, with the provisioning machine's console in `install/<name>.log`:
 
 1. **prepare**: a new sparse disk in the import's staging directory and the provisioning machine.
 2. **format**: as at installation.
-3. **extract**: `/usr/bin/tar -c -f - --format pax @-` on the Mac reads the client's descriptor
-   as its standard input, in any compression that it reads, and its uncompressed output goes to
-   `bsdtar -x -p --numeric-owner --xattrs -C /mnt/root` in the guest, as an installation's image
-   does. A thread of its own reads tar's output and writes each chunk to the guest agent; the
-   write waits while 256 KiB are queued for the guest, so a slow disk in the guest stops the
-   reading of tar's pipe, tar stops reading the descriptor, and the writer of a pipe waits. A
-   slow writer makes tar wait for input, and bsdtar for its own. The daemon holds at most one
-   chunk of 1 MiB and the agent's queue.
+3. **extract**: `/usr/bin/gzip -dcf` on the Mac reads the client's descriptor as its standard
+   input and decompresses gzip, bzip2, xz, compress, and lzip; it passes anything else through
+   unchanged. No program on the Mac reads the archive's format: `/usr/bin/tar` would follow an
+   mtree archive's names to files of the Mac (docs/security.md, "The extraction").
+   `ImportStream` holds back the start of the output until its first block shows the tar magic,
+   `ustar` at offset 257, and refuses anything else with `importNotATarArchive`. The tar stream
+   goes to `bsdtar -x -p --numeric-owner --xattrs -C /mnt/root` in the guest, as an
+   installation's image does. A thread of its own reads gzip's output and writes each chunk to
+   the guest agent; the write waits while 256 KiB are queued for the guest, so a slow disk in
+   the guest stops the reading of gzip's pipe, gzip stops reading the descriptor, and the writer
+   of a pipe waits. A slow writer makes gzip wait for input, and bsdtar for its own. The daemon
+   holds at most one chunk of 1 MiB and the agent's queue.
 4. **inspect**: a script resolves `/etc/passwd`, `/usr`, `/sbin/init`, `/etc/maw.conf`, and
    `/etc/wsl.conf` inside the extracted root, following links as the imported system would,
    never into the provisioning machine's files. It refuses an archive without `etc/passwd` and
@@ -453,8 +457,9 @@ starts the distribution. A failed start does not undo the registration: the repl
 `importStartFailed`, which names the console log, and `maw` prints it and exits with status 1.
 
 A refusal, a failure, or a cancellation before the registration stops the provisioning machine,
-sends SIGTERM to `/usr/bin/tar`, also while it waits on an idle pipe, and removes the staging
-directory. A truncated or unreadable archive fails the extraction with `/usr/bin/tar`'s message.
+sends SIGTERM to `/usr/bin/gzip`, also while it waits on an idle pipe, and removes the staging
+directory. A truncated or corrupt archive fails the extraction with the messages of gzip and
+bsdtar.
 The daemon closes its copy of the descriptor before it replies, and it records the archive's
 path but never opens it; `mawd.log` shows it with control characters escaped.
 

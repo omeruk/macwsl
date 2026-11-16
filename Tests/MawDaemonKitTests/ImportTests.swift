@@ -104,10 +104,13 @@ final class FakeImportingMachine: ImportingMachine, @unchecked Sendable {
         try await step("format")
     }
 
-    func extract(archive source: OwnedDescriptor) async throws(MawError) -> UInt64 {
+    /// Whether the archive is not a tar archive once decompressed.
+    var isNotATarArchive = false
+
+    func extract(archive source: OwnedDescriptor) async throws(MawError) -> ArchiveExtraction {
         source.close()
         try await step("extract")
-        return 1_234
+        return isNotATarArchive ? .notATarArchive : .extracted(bytes: 1_234)
     }
 
     func inspect() async throws(MawError) -> String {
@@ -346,6 +349,17 @@ final class FakeImportingMachine: ImportingMachine, @unchecked Sendable {
             try await tests.run(try tests.request())
         }
         try tests.expectNothingLeft()
+    }
+
+    /// An archive that is not a tar archive once decompressed is refused at the extraction.
+    @Test func refusesAnArchiveThatIsNotTar() async throws {
+        machine.isNotATarArchive = true
+        await #expect(throws: MawError.importNotATarArchive(Self.copy)) {
+            try await run(try request())
+        }
+        #expect(!machine.calls.contains("inspect"))
+        #expect(machine.calls.last == "discard")
+        try expectNothingLeft()
     }
 
     @Test func refusesAPathThatTheConfigurationCannotResolve() async throws {

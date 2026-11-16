@@ -118,6 +118,9 @@ public enum MawError: Error, Equatable, Sendable, Codable {
     case importFromTerminal
     /// `maw --import <distro> -` was run with standard input closed or open only for writing.
     case importInputNotReadable
+    /// The archive, once decompressed, is not a tar archive: its first block has no `ustar`
+    /// at offset 257. maw does not let the Mac read any other archive format.
+    case importNotATarArchive(DistroName)
     /// The archive holds no root file system at its top level, for example because all of its
     /// files are under one directory. `found` says what its top level holds.
     case importNotARootFileSystem(DistroName, found: String)
@@ -330,6 +333,8 @@ extension MawError: LocalizedError {
             "maw --import - would read the archive from a terminal."
         case .importInputNotReadable:
             "Standard input is not open for reading, so maw --import - cannot use it."
+        case .importNotATarArchive(let name):
+            "The archive for \(name) is not a tar archive."
         case .importNotARootFileSystem(let name, let found):
             "The archive for \(name) holds no root file system at its top level:\n\(found)."
         case .importInitNotSystemd(let name, let reason):
@@ -548,6 +553,10 @@ extension MawError: LocalizedError {
                 + "with - in place of the file name."
         case .importFromTerminal, .importInputNotReadable:
             "Redirect standard input from a file or a pipe, or give a file name instead of -."
+        case .importNotATarArchive:
+            "Nothing was installed. maw --import reads tar archives, uncompressed or\n"
+                + "compressed with gzip, bzip2, xz, or lzip, as maw --export and wsl --export\n"
+                + "write them."
         case .importNotARootFileSystem:
             "Nothing was installed. maw --import needs etc/passwd and usr/ at the archive's\n"
                 + "top level, as maw --export and wsl --export write them."

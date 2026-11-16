@@ -11,9 +11,10 @@
     public protocol ImportingMachine: Sendable {
         func boot(disk: URL) async throws(MawError)
         func format() async throws(MawError)
-        /// Extracts the archive that `source` reads, and returns the bytes of the uncompressed
-        /// archive that reached the guest. Takes over `source`.
-        func extract(archive source: OwnedDescriptor) async throws(MawError) -> UInt64
+        /// Extracts the archive that `source` reads, if it is a tar archive once decompressed,
+        /// and returns the bytes of the uncompressed archive that reached the guest. Takes over
+        /// `source`.
+        func extract(archive source: OwnedDescriptor) async throws(MawError) -> ArchiveExtraction
         /// Runs `ImportInspection.script` and returns its output.
         func inspect() async throws(MawError) -> String
         /// The text of a file that the inspection resolved inside the root.
@@ -28,6 +29,14 @@
         func discard() async
     }
 
+    /// How an import's extraction ended.
+    public enum ArchiveExtraction: Equatable, Sendable {
+        /// The archive was extracted; `bytes` of it, uncompressed, reached the guest.
+        case extracted(bytes: UInt64)
+        /// Once decompressed, it is not a tar archive, and nothing of it reached the guest.
+        case notATarArchive
+    }
+
     /// Creates the machine that imports the distribution `name`.
     public typealias ImportingMachineFactory =
         @Sendable (DistroName) throws(MawError) -> any ImportingMachine
@@ -35,7 +44,7 @@
     /// Imports distributions from archives (docs/daemon.md, "Importing a distribution").
     ///
     /// The steps run in order: prepare (a new disk and the provisioning machine), format,
-    /// extract (`/usr/bin/tar` on the Mac re-encodes the client's archive, and `bsdtar`
+    /// extract (`ImportStream` decompresses the client's archive on the Mac, and `bsdtar`
     /// extracts it in the guest), inspect (the checks of the root file system, and the choice
     /// of its default user), configure, finish, register, start. Until the registration,
     /// everything lives in a staging directory; on a refusal, a failure, or a cancellation the
@@ -196,7 +205,10 @@
                 try checkCancellation(name)
                 bytes = try await timed(.extract, progress: progress) {
                     () throws(MawError) -> UInt64 in
-                    try await machine.extract(archive: source)
+                    switch try await machine.extract(archive: source) {
+                    case .extracted(let bytes): return bytes
+                    case .notATarArchive: throw .importNotATarArchive(name)
+                    }
                 }
                 try checkCancellation(name)
                 let mawConf: String?

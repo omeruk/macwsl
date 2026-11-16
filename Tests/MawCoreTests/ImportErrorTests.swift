@@ -12,6 +12,7 @@ import Testing
         .importArchiveNotReadable(path: "ubuntu.tar", reason: "No such file or directory"),
         .importFromTerminal,
         .importInputNotReadable,
+        .importNotATarArchive(name),
         .importNotARootFileSystem(name, found: "its top level holds only the directory rootfs/"),
         .importInitNotSystemd(name, reason: "/sbin/init is /bin/busybox"),
         .importPathNotResolvable(

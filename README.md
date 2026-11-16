@@ -227,7 +227,7 @@ maw --export Work work.tar               # write Work's root file system to a ta
 maw --export Work work.tar.gz            # compressed, chosen by the file's extension
 maw --export Work work.tar --format tar.xz   # or by --format: tar, tar.gz, or tar.xz
 maw --export Work - | ssh other-mac 'cat > work.tar'   # the archive to standard output
-maw --import Copy work.tar               # create Copy from an archive, in any compression
+maw --import Copy work.tar.xz            # create Copy from a tar archive
 maw --import Copy work.tar -u ayse       # with ayse, a user in the archive, as its default user
 maw --export Work - | maw --import Copy -   # copy Work through a pipe
 ```
@@ -249,7 +249,8 @@ and Ctrl-C cancels the export and removes the file. POSIX ACLs are not kept
 ([`docs/known-limitations.md`](docs/known-limitations.md)).
 
 `--import` creates a distribution from a tar archive, such as one from `maw --export` or
-`wsl.exe --export`, in any compression, or from standard input for `-`. It keeps the archive's
+`wsl.exe --export`, uncompressed or compressed with gzip, bzip2, xz, compress, or lzip, or from
+standard input for `-`. It keeps the archive's
 users, files, and locale, and changes only what the distribution needs to boot in maw: its host
 name, its network, its machine ID, and a new MAC address. No user is created and no password is
 asked. Sessions run as the user that `-u` names, or else as the default user of the archive's
