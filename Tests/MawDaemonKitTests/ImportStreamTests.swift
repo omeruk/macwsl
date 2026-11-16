@@ -108,6 +108,32 @@ import os
         #expect(forwarded == archive)
     }
 
+    /// A gzip stream padded with zeros to a record size, as a compressing tar writes it, is
+    /// complete; gzip's warning about the padding is not a failure.
+    @Test func acceptsAGzipStreamPaddedWithZeros() async throws {
+        let archive = Self.tarArchive()
+        let padded = try gzipped(archive) + Data(count: 10_240)
+        let (outcome, forwarded) = try await run(try source(padded))
+        guard case .streamed(_, let decompressor) = outcome else {
+            Issue.record("\(outcome)")
+            return
+        }
+        #expect(decompressor.status == 0, "\(decompressor.errors)")
+        #expect(forwarded == archive)
+    }
+
+    /// Only that warning is accepted: any other complaint with status 2 stays a failure.
+    @Test func acceptsNoOtherWarning() {
+        let truncated = StreamingProcess.Outcome(status: 2, errors: "gzip: Unexpected end of input")
+        #expect(ImportStream.acceptingPadding(truncated) == truncated)
+        let padding = StreamingProcess.Outcome(
+            status: 2, errors: "gzip: (stdin): trailing garbage ignored")
+        #expect(ImportStream.acceptingPadding(padding).status == 0)
+        let both = StreamingProcess.Outcome(
+            status: 2, errors: "gzip: (stdin): trailing garbage ignored\ngzip: something else")
+        #expect(ImportStream.acceptingPadding(both) == both)
+    }
+
     /// A truncated compressed archive forwards what was decompressed, and the decompressor's
     /// status reports the failure.
     @Test func reportsATruncatedCompressedArchive() async throws {

@@ -73,7 +73,25 @@
             if !send(rest) {
                 return .stopped(bytes: bytes)
             }
-            return .streamed(bytes: bytes, decompressor: outcome)
+            return .streamed(bytes: bytes, decompressor: acceptingPadding(outcome))
+        }
+
+        /// gzip's warning about data after the compressed stream, exit status 2. A compressing
+        /// tar pads the stream to its record size with zeros, as `maw --export --format tar.gz`
+        /// does, and gzip decompresses everything before it warns.
+        static let paddingWarning = "trailing garbage ignored"
+
+        /// `outcome` with status 0 if gzip's only complaint is `paddingWarning`. Status 2 alone
+        /// is not enough: a truncated xz stream ends with it as well.
+        static func acceptingPadding(_ outcome: StreamingProcess.Outcome)
+            -> StreamingProcess
+            .Outcome
+        {
+            let lines = outcome.errors.split(whereSeparator: \.isNewline)
+            guard outcome.status == 2, !lines.isEmpty,
+                lines.allSatisfy({ $0.hasSuffix(paddingWarning) })
+            else { return outcome }
+            return StreamingProcess.Outcome(status: 0, errors: outcome.errors)
         }
     }
 
