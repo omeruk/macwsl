@@ -349,9 +349,9 @@ directory.
   says how).
 - B: `maw -- pwd` from the test directory prints its `/mnt/mac` path; from `/tmp` it prints the
   Linux home directory and the warning; `--cd '~'`, `--cd '~/<path>'`, `--cd` with a Linux
-  path, and with a Mac path outside the home directory; a login shell from the test directory is listed by `loginctl` and
-  starts in that directory (extend `registersShellsWithLogind`); `mawpath` in both directions,
-  inside a session.
+  path, and with a Mac path outside the home directory; a login shell from the test directory
+  is listed by `loginctl` and starts in that directory (extend `registersShellsWithLogind`);
+  `mawpath` in both directions, inside a session.
 - The measurements under "Speed targets", tagged as described there.
 
 ## Docs
