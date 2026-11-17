@@ -21,6 +21,8 @@
 #include <unistd.h>
 
 #if defined(__linux__)
+#include <stdio.h>
+#include <sys/mount.h>
 #include <sys/syscall.h>
 #include <linux/vm_sockets.h>
 // musl does not wrap these system calls; their numbers are the same on every architecture.
@@ -470,4 +472,32 @@ int maw_vsock_connect(int fd, uint32_t cid, uint32_t port) {
 int maw_socket_error(int fd, int *error) {
     socklen_t length = sizeof *error;
     return getsockopt(fd, SOL_SOCKET, SO_ERROR, error, &length) == 0 ? 0 : errno;
+}
+
+int maw_openat(int directory, const char *path, int flags, int *fd) {
+    int result;
+    do {
+        result = openat(directory, path, flags);
+    } while (result < 0 && errno == EINTR);
+    if (result < 0) {
+        return errno;
+    }
+    *fd = result;
+    return 0;
+}
+
+int maw_mount_virtiofs(const char *tag, int directory, const char *options) {
+#if defined(__linux__)
+    char target[64];
+    int length = snprintf(target, sizeof target, "/proc/self/fd/%d", directory);
+    if (length < 0 || (size_t)length >= sizeof target) {
+        return EINVAL;
+    }
+    return mount(tag, target, "virtiofs", MS_NOSUID | MS_NODEV, options) == 0 ? 0 : errno;
+#else
+    (void)tag;
+    (void)directory;
+    (void)options;
+    return ENOSYS;
+#endif
 }

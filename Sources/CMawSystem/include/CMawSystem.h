@@ -131,6 +131,16 @@ int maw_vsock_connect(int fd, uint32_t cid, uint32_t port);
 /// non-blocking connect. Returns 0 and sets `*error`, or returns an errno value.
 int maw_socket_error(int fd, int *error);
 
+/// `openat(directory, path, flags)`, retried on EINTR, without a mode: it never creates a
+/// file. Returns the new descriptor and sets `*fd`, or returns an errno value.
+int maw_openat(int directory, const char *path, int flags, int *fd);
+
+/// Mounts the virtiofs share `tag` on the directory that `directory` refers to, with
+/// MS_NOSUID and MS_NODEV and the mount data `options` (such as "uid=1000,gid=1000"). The
+/// mount is made on `/proc/self/fd/<directory>`, which names that directory itself, so that no
+/// symbolic link in its path is followed. Linux only; ENOSYS elsewhere.
+int maw_mount_virtiofs(const char *tag, int directory, const char *options);
+
 #ifdef __cplusplus
 }
 #endif

@@ -16,6 +16,9 @@ import MawProtocol
 //
 //   maw-agent             serve on vsock port AgentProtocol.vsockPort
 //   maw-agent self-test   run the self-test (maw.test=agent); exit 0 on success
+//   maw-agent mount-mac-share <root> <tag>
+//                         mount the Mac's home directory at <root>/mnt/mac, from /init before
+//                         switch_root; exit 0 if it is mounted
 //   maw-agent --version   print the version
 
 /// Writes a line to standard error, which busybox `init` connects to the console (hvc0).
@@ -83,7 +86,19 @@ case nil:
         exit(69)
     #endif
 
+case "mount-mac-share":
+    let operands = Array(arguments.dropFirst())
+    guard operands.count == 2 else {
+        writeLine("usage: maw-agent mount-mac-share <root> <tag>")
+        exit(64)
+    }
+    let result = MacShareMount.mount(root: operands[0], tag: operands[1])
+    for line in result.lines {
+        writeLine(line)
+    }
+    exit(result.mounted ? 0 : 1)
+
 default:
-    writeLine("usage: maw-agent [self-test | --version]")
+    writeLine("usage: maw-agent [self-test | mount-mac-share <root> <tag> | --version]")
     exit(64)
 }
