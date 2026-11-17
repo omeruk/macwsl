@@ -28,6 +28,19 @@ mkdir -p "$src"
 tar -xf "$tarball" -C "$src" --strip-components=1
 cd "$src"
 
+# maw's patches, in name order. Each must apply with no fuzz: every line of a hunk's context
+# must match, although the hunk may have moved, so that a kernel bump that changes the patched
+# code fails here instead of building something else. Guest/README.md, "Bumping the kernel",
+# describes how to refresh them.
+for patch_file in "$kernel_dir"/patches/*.patch; do
+    [ -e "$patch_file" ] || continue
+    echo "build-kernel: applying $(basename "$patch_file")"
+    if ! patch -p1 --fuzz=0 --forward --batch --no-backup-if-mismatch < "$patch_file"; then
+        echo "build-kernel: $(basename "$patch_file") does not apply cleanly to this kernel" >&2
+        exit 1
+    fi
+done
+
 make_kernel() {
     make ARCH=arm64 "$@"
 }

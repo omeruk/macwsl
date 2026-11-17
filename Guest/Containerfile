@@ -35,6 +35,7 @@ RUN set -eu; \
         libssl-dev \
         make \
         musl-tools \
+        patch \
         perl \
         python3 \
         rsync \

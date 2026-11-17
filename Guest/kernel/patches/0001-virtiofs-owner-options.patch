@@ -1,0 +1,176 @@
+SPDX-License-Identifier: GPL-2.0
+
+virtiofs: Add uid= and gid= mount options that set every file's owner
+
+Made against Linux 6.18.57 (Guest/kernel/VERSION). Guest/kernel/build-kernel.sh applies it
+with `patch -p1 --fuzz=0` and fails the build if it does not apply cleanly.
+
+maw mounts the owner's macOS home directory at /mnt/mac through virtiofs. Apple's virtiofs
+server reports as the owner of a file the uid and gid of the guest process whose request
+fetched its attributes, and the guest caches that answer: a file that root looked up first
+shows as root's to every user until the cache expires. Programs that check ownership, such as
+git, then refuse a directory of the default user. docs/decisions/0021-mac-share.md records the
+measurements.
+
+With uid=<uid> and gid=<gid>, every inode of the mount shows that uid and gid, whoever looks
+first, as WSL's drvfs shows its uid= and gid= for /mnt/c. The values are checked as any mount's
+uid= and gid= are (fsparam_uid, fsparam_gid). virtiofs already mounts with default_permissions,
+so the guest checks each access against these owners and the file's mode: the named user is the
+owner, root is root, and other users get the group and other bits. The server still performs
+every access with the macOS user's rights. Without the options, nothing changes.
+
+Only virtiofs accepts the options; the other FUSE file systems never set the fields.
+
+Tests: MacShareIntegrationTests in Tests/mawdTests, through scripts/integration-test.sh.
+
+--- a/fs/fuse/dir.c
++++ b/fs/fuse/dir.c
+@@ -1179,9 +1179,9 @@
+ 	unsigned int blkbits;
+ 	struct fuse_conn *fc = get_fuse_conn(inode);
+ 	vfsuid_t vfsuid = make_vfsuid(idmap, fc->user_ns,
+-				      make_kuid(fc->user_ns, attr->uid));
++				      fuse_attr_uid(fc, attr));
+ 	vfsgid_t vfsgid = make_vfsgid(idmap, fc->user_ns,
+-				      make_kgid(fc->user_ns, attr->gid));
++				      fuse_attr_gid(fc, attr));
+ 
+ 	stat->dev = inode->i_sb->s_dev;
+ 	stat->ino = attr->ino;
+--- a/fs/fuse/fuse_i.h
++++ b/fs/fuse/fuse_i.h
+@@ -542,11 +542,15 @@
+ 	unsigned int rootmode;
+ 	kuid_t user_id;
+ 	kgid_t group_id;
++	kuid_t owner_uid;
++	kgid_t owner_gid;
+ 	bool is_bdev:1;
+ 	bool fd_present:1;
+ 	bool rootmode_present:1;
+ 	bool user_id_present:1;
+ 	bool group_id_present:1;
++	bool owner_uid_present:1;
++	bool owner_gid_present:1;
+ 	bool default_permissions:1;
+ 	bool allow_other:1;
+ 	bool destroy:1;
+@@ -600,6 +604,12 @@
+ 	/** The group id for this mount */
+ 	kgid_t group_id;
+ 
++	/** The owner that every inode shows, if owner_uid_set */
++	kuid_t owner_uid;
++
++	/** The group that every inode shows, if owner_gid_set */
++	kgid_t owner_gid;
++
+ 	/** The pid namespace for this mount */
+ 	struct pid_namespace *pid_ns;
+ 
+@@ -700,6 +710,12 @@
+ 	/* show legacy mount options */
+ 	unsigned int legacy_opts_show:1;
+ 
++	/* Every inode shows owner_uid as its owner (virtiofs uid=) */
++	unsigned int owner_uid_set:1;
++
++	/* Every inode shows owner_gid as its group (virtiofs gid=) */
++	unsigned int owner_gid_set:1;
++
+ 	/*
+ 	 * fs kills suid/sgid/cap on write/chown/trunc. suid is killed on
+ 	 * write/trunc only if caller did not have CAP_FSETID.  sgid is killed
+@@ -994,6 +1010,22 @@
+ static inline struct fuse_conn *get_fuse_conn(struct inode *inode)
+ {
+ 	return get_fuse_mount_super(inode->i_sb)->fc;
++}
++
++/* The owner of an inode with these attributes: the mount's, if it sets one */
++static inline kuid_t fuse_attr_uid(struct fuse_conn *fc,
++				   const struct fuse_attr *attr)
++{
++	return fc->owner_uid_set ? fc->owner_uid :
++				   make_kuid(fc->user_ns, attr->uid);
++}
++
++/* The group of an inode with these attributes: the mount's, if it sets one */
++static inline kgid_t fuse_attr_gid(struct fuse_conn *fc,
++				   const struct fuse_attr *attr)
++{
++	return fc->owner_gid_set ? fc->owner_gid :
++				   make_kgid(fc->user_ns, attr->gid);
+ }
+ 
+ static inline struct fuse_inode *get_fuse_inode(struct inode *inode)
+--- a/fs/fuse/inode.c
++++ b/fs/fuse/inode.c
+@@ -251,8 +251,8 @@
+ 	inode->i_ino     = fuse_squash_ino(attr->ino);
+ 	inode->i_mode    = (inode->i_mode & S_IFMT) | (attr->mode & 07777);
+ 	set_nlink(inode, attr->nlink);
+-	inode->i_uid     = make_kuid(fc->user_ns, attr->uid);
+-	inode->i_gid     = make_kgid(fc->user_ns, attr->gid);
++	inode->i_uid     = fuse_attr_uid(fc, attr);
++	inode->i_gid     = fuse_attr_gid(fc, attr);
+ 	inode->i_blocks  = attr->blocks;
+ 
+ 	/* Sanitize nsecs */
+@@ -928,6 +928,12 @@
+ 		if (sb->s_bdev && sb->s_blocksize != FUSE_DEFAULT_BLKSIZE)
+ 			seq_printf(m, ",blksize=%lu", sb->s_blocksize);
+ 	}
++	if (fc->owner_uid_set)
++		seq_printf(m, ",uid=%u",
++			   from_kuid_munged(fc->user_ns, fc->owner_uid));
++	if (fc->owner_gid_set)
++		seq_printf(m, ",gid=%u",
++			   from_kgid_munged(fc->user_ns, fc->owner_gid));
+ #ifdef CONFIG_FUSE_DAX
+ 	if (fc->dax_mode == FUSE_DAX_ALWAYS)
+ 		seq_puts(m, ",dax=always");
+@@ -1888,6 +1894,10 @@
+ 	fc->allow_other = ctx->allow_other;
+ 	fc->user_id = ctx->user_id;
+ 	fc->group_id = ctx->group_id;
++	fc->owner_uid = ctx->owner_uid;
++	fc->owner_gid = ctx->owner_gid;
++	fc->owner_uid_set = ctx->owner_uid_present;
++	fc->owner_gid_set = ctx->owner_gid_present;
+ 	fc->legacy_opts_show = ctx->legacy_opts_show;
+ 	fc->max_read = max_t(unsigned int, 4096, ctx->max_read);
+ 	fc->destroy = ctx->destroy;
+--- a/fs/fuse/virtio_fs.c
++++ b/fs/fuse/virtio_fs.c
+@@ -110,11 +110,15 @@
+ enum {
+ 	OPT_DAX,
+ 	OPT_DAX_ENUM,
++	OPT_UID,
++	OPT_GID,
+ };
+ 
+ static const struct fs_parameter_spec virtio_fs_parameters[] = {
+ 	fsparam_flag("dax", OPT_DAX),
+ 	fsparam_enum("dax", OPT_DAX_ENUM, dax_param_enums),
++	fsparam_uid("uid", OPT_UID),
++	fsparam_gid("gid", OPT_GID),
+ 	{}
+ };
+ 
+@@ -135,6 +139,14 @@
+ 		break;
+ 	case OPT_DAX_ENUM:
+ 		ctx->dax_mode = result.uint_32;
++		break;
++	case OPT_UID:
++		ctx->owner_uid = result.uid;
++		ctx->owner_uid_present = true;
++		break;
++	case OPT_GID:
++		ctx->owner_gid = result.gid;
++		ctx->owner_gid_present = true;
+ 		break;
+ 	default:
+ 		return -EINVAL;
