@@ -359,6 +359,7 @@
                 entry.uptimeMilliseconds = machine.status.uptimeMilliseconds
                 entry.bootMilliseconds = machine.handle.bootMilliseconds
                 entry.memoryLimitBytes = machine.handle.memoryBytes
+                entry.macShare = machine.handle.macShare
                 if let run = runs[name], run.id == machine.run {
                     entry.memoryUsedBytes = run.figures.memoryUsedBytes
                     entry.ipv4Address = run.figures.ipv4Address

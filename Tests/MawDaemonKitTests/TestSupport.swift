@@ -3,6 +3,7 @@ import Foundation
 import MawCore
 import MawDaemonKit
 import MawProtocol
+import MawXPC
 import os
 
 /// A clock that moves only when a test calls `advance(by:)`, so that timeouts of a minute
@@ -119,6 +120,7 @@ final class FakeMachine: MachineHandle, @unchecked Sendable {
     let memoryBytes: UInt64 = 1 << 30
     let kernelRelease: String? = "6.18.57-maw"
     let bootMilliseconds: UInt64? = 271
+    let macShare: SharedDirectory?
     let unexpectedStops: AsyncStream<String>
 
     private let lock = OSAllocatedUnfairLock(
@@ -136,9 +138,10 @@ final class FakeMachine: MachineHandle, @unchecked Sendable {
 
     init(
         machine: MachineID, startError: MawError? = nil, holdsStart: Bool = false,
-        holdsStop: Bool = false
+        holdsStop: Bool = false, macShare: SharedDirectory? = nil
     ) {
         self.machine = machine
+        self.macShare = macShare
         self.startError = startError
         self.holdsStart = holdsStart
         self.holdsStop = holdsStop
@@ -268,15 +271,18 @@ final class FakeFactory: Sendable {
     private let made = OSAllocatedUnfairLock(initialState: [FakeMachine]())
     private let configure: @Sendable (Int) -> (startError: MawError?, holdsStart: Bool)
     private let holdsStop: Bool
+    private let macShare: SharedDirectory?
 
     /// - Parameter holdsStop: Whether every machine's stop waits for `finishStop()`.
+    /// - Parameter macShare: What every machine reports as its share once it runs.
     init(
-        holdsStop: Bool = false,
+        holdsStop: Bool = false, macShare: SharedDirectory? = nil,
         _ configure: @escaping @Sendable (Int) -> (startError: MawError?, holdsStart: Bool) = {
             _ in (nil, false)
         }
     ) {
         self.holdsStop = holdsStop
+        self.macShare = macShare
         self.configure = configure
     }
 
@@ -288,7 +294,7 @@ final class FakeFactory: Sendable {
             let (startError, holdsStart) = configure(index)
             let fake = FakeMachine(
                 machine: machine, startError: startError, holdsStart: holdsStart,
-                holdsStop: holdsStop)
+                holdsStop: holdsStop, macShare: macShare)
             made.withLock { $0.append(fake) }
             return fake
         }

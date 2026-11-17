@@ -3,6 +3,7 @@
     import MawCore
     import MawProtocol
     import MawVirtualization
+    import MawXPC
     import os
 
     /// A `MachineHandle` backed by a real virtual machine.
@@ -25,12 +26,30 @@
         public var kernelRelease: String? { boot.withLock { $0.kernelRelease } }
         public var bootMilliseconds: UInt64? { boot.withLock { $0.milliseconds } }
 
+        /// The share of the home directory, if the machine has one and its guest agent reported
+        /// it mounted when it started. The Mac's path is the daemon's own, never the guest's.
+        public var macShare: SharedDirectory? {
+            guard boot.withLock({ $0.macShareMounted }),
+                let share = settings.directoryShares.first(where: { $0.tag == MacShare.tag })
+            else { return nil }
+            return SharedDirectory(
+                macPath: Self.displayPath(share.url), linuxPath: MacShare.linuxPath)
+        }
+
+        /// A directory's path without a trailing `/`, such as `/Users/ayse`.
+        static func displayPath(_ url: URL) -> String {
+            let path = url.standardizedFileURL.path(percentEncoded: false)
+            return path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
+        }
+
         private let virtualMachine: VirtualMachine
         private let settings: VMConfiguration
         private let stopContinuation: AsyncStream<String>.Continuation
         private let stopRequested = OSAllocatedUnfairLock(initialState: false)
         private let boot = OSAllocatedUnfairLock(
-            initialState: (kernelRelease: String?.none, milliseconds: UInt64?.none))
+            initialState: (
+                kernelRelease: String?.none, milliseconds: UInt64?.none, macShareMounted: false
+            ))
         private let log: DaemonLog
         /// For the measurements only: `sample()` sends `info` instead (`mawd serve
         /// --sample-with-info`).
@@ -129,10 +148,18 @@
             boot.withLock {
                 $0 = (
                     ForegroundAnswer.displayableName(info.kernelRelease),
-                    UInt64(max(0, milliseconds))
+                    UInt64(max(0, milliseconds)),
+                    info.macShareMounted
                 )
             }
             log.notice("\(machine): agent ready after \(milliseconds) ms")
+            if settings.directoryShares.contains(where: { $0.tag == MacShare.tag }) {
+                log.notice(
+                    info.macShareMounted
+                        ? "\(machine): \(MacShare.linuxPath) is mounted"
+                        : "\(machine): \(MacShare.linuxPath) is not mounted; its console log says why"
+                )
+            }
         }
 
         public func openSessionConnection() async throws(MawError) -> OwnedDescriptor {

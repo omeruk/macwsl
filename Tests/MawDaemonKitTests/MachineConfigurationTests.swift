@@ -41,6 +41,14 @@ import Testing
         #expect(configuration.commandLine == "console=hvc0 maw.root=/dev/vda maw.clock=1800000000")
     }
 
+    /// The snapshot shows the home directory without a trailing slash, so that the app
+    /// shortens it to `~`.
+    @Test func showsTheSharedDirectoryWithoutATrailingSlash() {
+        #expect(VirtualMachineHandle.displayPath(Self.home) == "/Users/ayse")
+        #expect(VirtualMachineHandle.displayPath(URL(filePath: "/Users/ayse")) == "/Users/ayse")
+        #expect(VirtualMachineHandle.displayPath(URL(filePath: "/")) == "/")
+    }
+
     @Test func neverSharesAnythingWithTheProvisioningMachine() throws {
         let kernel = FileManager.default.temporaryDirectory.appending(
             path: "maw-kernel-\(UUID().uuidString)", directoryHint: .isDirectory)
