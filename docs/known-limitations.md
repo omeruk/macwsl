@@ -538,7 +538,13 @@ from `main`.
     its counterpart needs the pool can therefore fail, as
     `HandshakeTests.exchangesMatchingVersions()` did until its peer moved to a thread of its
     own (CI runs 42512716425, 42574910845, 42644895862, 42807002034 and 42834158953, each
-    passing on a re-run). Any future test with that pattern can fail the same way. A deadline
+    passing on a re-run). Any future test with that pattern can fail the same way.
+    `ExportCommandTests.keepsTheFileWhenTheExportSucceedsDespiteTheSignal()` failed so in CI run
+    44086055594 of pull request #33: its `waitFor` checks a deadline of 5 seconds on
+    `ContinuousClock`, the test events stopped for 4.0 s just after it started, and 883 of the
+    group's 1,093 results reported 6 to 7.6 s; the check came 2.6 s after the deadline, before
+    the export's task had run. The test passed in the next run, 44088401625, and no pull
+    request had changed it since it was added in pull request #31. A deadline
     measured by a task, such as a `Task.sleep`, is delayed by the same stall and does not
     expire early.
   - **Evidence:** In each of those runs and in the passing run 42516767842 of `main`, tests
@@ -555,7 +561,9 @@ from `main`.
     sample from the CI runner itself is missing; the CI evidence is the log signature only.
     The default local build (`swiftbuild`, one test bundle per target) runs each target in a
     process of its own, so a plain local `swift test` shows a much shorter stall.
-  - **Phase:** None; a `fix/` branch. Run the CPU-bound and blocking synchronous tests off the
+  - **Phase:** None; a `fix/` branch. The owner decided on 2026-11-17 that a `fix/` branch after
+    pull request #33 makes `ExportCommandTests.waitFor` count its own sleeps instead of reading
+    the clock. More generally: run the CPU-bound and blocking synchronous tests off the
     pool or in a group of their own, and keep tests with wall-clock deadlines independent of
     the pool, as `scripts/test-groups.sh` and `docs/decisions/0018-test-groups.md` do for
     load and latency. A helper in `Sources/MawProtocol/Threads.swift` that starts a thread at
