@@ -256,6 +256,17 @@ import Testing
 
     // MARK: The mount table
 
+    /// `info` reports the share from `/proc/self/mountinfo`.
+    @Test func reportsTheShareInItsInfo() async throws {
+        let proc = try RootFixture()
+        try proc.write("self/mountinfo", Self.mountinfo)
+        #expect(try await TestAgent(processDirectory: proc.directory).client.info().macShareMounted)
+        try proc.write("self/mountinfo", "24 1 254:0 / / rw - ext4 /dev/vda rw\n")
+        #expect(
+            try await !TestAgent(processDirectory: proc.directory).client.info().macShareMounted)
+        #expect(try await !TestAgent().client.info().macShareMounted)
+    }
+
     static let mountinfo = """
         24 1 254:0 / / rw,relatime shared:1 - ext4 /dev/vda rw
         40 24 0:39 / /mnt/mac rw,nosuid,nodev,relatime shared:20 - virtiofs maw-mac rw,uid=1000,gid=1000

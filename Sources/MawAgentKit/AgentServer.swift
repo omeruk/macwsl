@@ -174,7 +174,8 @@ public final class AgentServer: @unchecked Sendable {
                             agentVersion: MawVersion.current,
                             protocolVersion: ProtocolVersion.current,
                             kernelRelease: SystemInfo.kernelRelease(),
-                            uptimeMilliseconds: SystemInfo.uptimeMilliseconds()))))
+                            uptimeMilliseconds: SystemInfo.uptimeMilliseconds(),
+                            macShareMounted: macShareMounted()))))
         case .sample:
             switch GuestFigures(processDirectory: configuration.processDirectory).sample() {
             case .success(let sample):
@@ -256,6 +257,16 @@ public final class AgentServer: @unchecked Sendable {
     /// boot, a login shell can be requested before `dbus.socket` listens; `pam_systemd` would
     /// then skip the session's registration. Once the socket exists, `pam_systemd` waits for
     /// `systemd-logind` itself.
+    /// Whether the Mac's home directory is mounted at `/mnt/mac`, from the mount table, which
+    /// looks nothing up in the share (`MountTable`).
+    private func macShareMounted() -> Bool {
+        guard
+            let bytes = readBytes(
+                "\(configuration.processDirectory)/self/mountinfo", limit: 1 << 20)
+        else { return false }
+        return MountTable.showsMacShare(mountinfo: String(decoding: bytes, as: UTF8.self))
+    }
+
     private func waitForSystemBus() {
         let deadline = ContinuousClock.now + configuration.systemBusTimeout
         while !configuration.system.exists(SessionPlanner.systemBusSocket) {

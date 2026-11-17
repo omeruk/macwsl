@@ -25,7 +25,11 @@ import Testing
         .agentInfo(
             AgentInfo(
                 agentVersion: "0.1.0", protocolVersion: 1, kernelRelease: "6.18.2-maw",
-                uptimeMilliseconds: 1_234)),
+                uptimeMilliseconds: 1_234, macShareMounted: true)),
+        .agentInfo(
+            AgentInfo(
+                agentVersion: "0.1.0", protocolVersion: 6, kernelRelease: "6.18.57-maw",
+                uptimeMilliseconds: 0, macShareMounted: false)),
         .shutdownAcknowledged,
         .dialedBack,
         .sample,
@@ -138,9 +142,29 @@ import Testing
         #expect(request.user == nil && request.locale == nil && request.workingDirectory == nil)
     }
 
-    /// Version 5 adds `sample`, `sampled`, and `sampleFailed`.
-    @Test func speaksVersion5() {
-        #expect(ProtocolVersion.current == 5)
+    /// Version 5 adds `sample`, `sampled`, and `sampleFailed`; version 6 adds `agentInfo`'s
+    /// `macShareMounted`.
+    @Test func speaksVersion6() {
+        #expect(ProtocolVersion.current == 6)
+    }
+
+    /// An `agentInfo` without `macShareMounted` comes from an agent of another version, and is
+    /// a protocol violation.
+    @Test func requiresWhetherTheShareIsMounted() throws {
+        let complete =
+            #"{"agentInfo":{"agentVersion":"1","kernelRelease":"6.18.57-maw","#
+            + #""macShareMounted":true,"protocolVersion":6,"uptimeMilliseconds":5}}"#
+        guard case .agentInfo(let info) = try ControlMessage(json: Array(complete.utf8)) else {
+            Issue.record("not agentInfo")
+            return
+        }
+        #expect(info.macShareMounted)
+        let without =
+            #"{"agentInfo":{"agentVersion":"1","kernelRelease":"6.18.57-maw","#
+            + #""protocolVersion":6,"uptimeMilliseconds":5}}"#
+        #expect(throws: (any Error).self) {
+            try ControlMessage(json: Array(without.utf8))
+        }
     }
 
     /// A `sampled` reply comes from the guest; the host accepts it only within its limits.
