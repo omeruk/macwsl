@@ -49,10 +49,13 @@
         }
 
         /// The factory for the daemon's machines: the initramfs machine, and one machine per
-        /// installed distribution, which boots its disk with systemd (decision record 0013).
+        /// installed distribution, which boots its disk with systemd (decision record 0013) and
+        /// mounts `macHome` at `/mnt/mac` (decision record 0021). `macHome` is `nil` only for
+        /// the measurements (`mawd serve --without-mac-share`).
         public static func factory(
             kernelDirectory: URL, logDirectory: URL, store: DistributionStore, log: DaemonLog,
-            canRunVirtualMachines: Bool, samplesWithInfo: Bool = false
+            canRunVirtualMachines: Bool, samplesWithInfo: Bool = false,
+            macHome: URL? = FileManager.default.homeDirectoryForCurrentUser
         ) -> MachineFactory {
             { (machine: MachineID) throws(MawError) -> any MachineHandle in
                 guard canRunVirtualMachines else {
@@ -69,7 +72,8 @@
                         throw .distributionNotInstalled(name)
                     }
                     configuration = distributionConfiguration(
-                        configuration, disk: store.paths.diskImage(for: name), metadata: metadata)
+                        configuration, disk: store.paths.diskImage(for: name), metadata: metadata,
+                        macHome: macHome)
                 }
                 return try VirtualMachineHandle(
                     machine: machine, configuration: configuration, log: log,
@@ -78,9 +82,10 @@
         }
 
         /// A distribution's machine: its disk as the root file system, NAT networking with its
-        /// MAC address, every CPU and half the memory, and the clock set from the Mac's.
+        /// MAC address, every CPU and half the memory, the clock set from the Mac's, and
+        /// `macHome`, read-write, as the share that the initramfs mounts at `/mnt/mac`.
         static func distributionConfiguration(
-            _ base: VMConfiguration, disk: URL, metadata: DistroMetadata,
+            _ base: VMConfiguration, disk: URL, metadata: DistroMetadata, macHome: URL?,
             now: Date = Date()
         ) -> VMConfiguration {
             var configuration = base
@@ -89,8 +94,12 @@
             configuration.memorySize = resources.memorySize
             configuration.disks = [.init(url: disk)]
             configuration.network = .nat(macAddress: metadata.macAddress)
-            configuration.commandLine = VMConfiguration.commandLine(
-                appending: "maw.root=/dev/vda maw.clock=\(Int(now.timeIntervalSince1970))")
+            var arguments = "maw.root=/dev/vda maw.clock=\(Int(now.timeIntervalSince1970))"
+            if let macHome {
+                configuration.directoryShares = [.init(url: macHome, tag: MacShare.tag)]
+                arguments += " \(MacShare.commandLineArgument)"
+            }
+            configuration.commandLine = VMConfiguration.commandLine(appending: arguments)
             return configuration
         }
 

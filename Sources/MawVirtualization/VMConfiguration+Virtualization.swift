@@ -19,8 +19,8 @@
     extension VMConfiguration {
         /// Builds the Virtualization.framework configuration: direct Linux boot, a virtio console
         /// (hvc0) on `consoleAttachment`, a virtio entropy device, a traditional memory balloon, a
-        /// virtio socket device, one virtio block device per disk, and a virtio network device
-        /// with NAT if `network` is set.
+        /// virtio socket device, one virtio block device per disk, a virtio network device with
+        /// NAT if `network` is set, and one virtio file system device per directory share.
         ///
         /// CPU count and memory size are clamped to `Limits.host`. With `validate`, the
         /// configuration is checked with `validate()`, and its errors are mapped to
@@ -58,6 +58,9 @@
             if let network {
                 configuration.networkDevices = [try Self.networkDevice(for: network)]
             }
+            configuration.directorySharingDevices = try directoryShares.map {
+                share throws(MawError) in try Self.fileSystemDevice(for: share)
+            }
 
             if validate {
                 do {
@@ -86,6 +89,21 @@
             } catch {
                 throw VirtualizationErrors.map(error, during: .configure)
             }
+        }
+
+        /// A virtiofs device that shares one directory, whole, under its tag.
+        private static func fileSystemDevice(
+            for share: DirectoryShare
+        ) throws(MawError) -> VZVirtioFileSystemDeviceConfiguration {
+            do {
+                try VZVirtioFileSystemDeviceConfiguration.validateTag(share.tag)
+            } catch {
+                throw .invalidVMConfiguration(reason: "'\(share.tag)' is not a virtiofs tag")
+            }
+            let device = VZVirtioFileSystemDeviceConfiguration(tag: share.tag)
+            device.share = VZSingleDirectoryShare(
+                directory: VZSharedDirectory(url: share.url, readOnly: share.isReadOnly))
+            return device
         }
 
         private static func networkDevice(

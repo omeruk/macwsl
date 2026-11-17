@@ -33,6 +33,12 @@ struct Serve: AsyncParsableCommand {
     @Flag(name: .customLong("sample-with-info"), help: .hidden)
     var sampleWithInfo = false
 
+    /// For the measurements only: distribution machines get no share of the home directory and
+    /// no `maw.share` argument, so that a cold start can be compared with and without it.
+    /// `mawd install` neither accepts nor writes it (docs/daemon.md).
+    @Flag(name: .customLong("without-mac-share"), help: .hidden)
+    var withoutMacShare = false
+
     func validate() throws {
         if let sampleInterval, sampleInterval < 100 {
             throw ValidationError("--sample-interval-ms must be at least 100.")
@@ -87,7 +93,8 @@ struct Serve: AsyncParsableCommand {
             factory: VirtualMachineHandle.factory(
                 kernelDirectory: paths.kernelDirectory, logDirectory: settings.logDirectoryURL,
                 store: store, log: log, canRunVirtualMachines: canRunVirtualMachines,
-                samplesWithInfo: sampleWithInfo),
+                samplesWithInfo: sampleWithInfo,
+                macHome: withoutMacShare ? nil : FileManager.default.homeDirectoryForCurrentUser),
             activityChanged: { activityContinuation.yield($0) },
             stateChanged: { changesContinuation.yield() }, operations: operations)
         let sampler = FigureSampler(

@@ -24,9 +24,17 @@ import Testing
         #expect(failure("serve", "--sample-with-info") == nil)
     }
 
+    @Test func acceptsLeavingOutTheMacShare() throws {
+        #expect(failure("serve", "--without-mac-share") == nil)
+        let command = try Mawd.parseAsRoot(["serve", "--without-mac-share"])
+        #expect((command as? Serve)?.withoutMacShare == true)
+        #expect((try Mawd.parseAsRoot(["serve"]) as? Serve)?.withoutMacShare == false)
+    }
+
     /// `mawd install` accepts neither option, so neither can reach the LaunchAgent.
     @Test func installRejectsTheMeasurementOptions() {
         #expect(failure("install", "--sample-interval-ms", "100") != nil)
         #expect(failure("install", "--sample-with-info") != nil)
+        #expect(failure("install", "--without-mac-share") != nil)
     }
 }

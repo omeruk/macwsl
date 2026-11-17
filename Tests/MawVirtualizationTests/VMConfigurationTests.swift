@@ -126,6 +126,39 @@ import Virtualization
         #expect(attachments.map { $0?.synchronizationMode } == [.full, .full])
         #expect(attachments.map { $0?.cachingMode } == [.automatic, .automatic])
         #expect(built.networkDevices.isEmpty)
+        #expect(built.directorySharingDevices.isEmpty)
+    }
+
+    /// A directory share becomes one virtiofs device with the share's tag and directory.
+    @Test func sharesADirectoryThroughVirtiofs() throws {
+        let directory = try TemporaryDirectory()
+        var configuration = configuration()
+        configuration.kernelURL = directory.file("Image")
+        configuration.initramfsURL = directory.file("initramfs.cpio.gz")
+        for url in [configuration.kernelURL, configuration.initramfsURL] {
+            FileManager.default.createFile(
+                atPath: url.path(percentEncoded: false), contents: Data())
+        }
+        let shared = directory.file("home")
+        try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: false)
+        configuration.directoryShares = [.init(url: shared, tag: "maw-mac")]
+        let attachment = VZFileHandleSerialPortAttachment(
+            fileHandleForReading: nil, fileHandleForWriting: nil)
+        let built = try configuration.makeVirtualizationConfiguration(
+            consoleAttachment: attachment, validate: false)
+        #expect(built.directorySharingDevices.count == 1)
+        let device = try #require(
+            built.directorySharingDevices.first as? VZVirtioFileSystemDeviceConfiguration)
+        #expect(device.tag == "maw-mac")
+        let share = try #require(device.share as? VZSingleDirectoryShare)
+        #expect(share.directory.url == shared)
+        #expect(!share.directory.isReadOnly)
+
+        configuration.directoryShares = [.init(url: shared, tag: "")]
+        #expect(throws: MawError.invalidVMConfiguration(reason: "'' is not a virtiofs tag")) {
+            try configuration.makeVirtualizationConfiguration(
+                consoleAttachment: attachment, validate: false)
+        }
     }
 
     @Test func attachesANATNetworkDeviceWithAFixedAddress() throws {
