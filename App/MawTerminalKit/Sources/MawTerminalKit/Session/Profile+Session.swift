@@ -29,13 +29,20 @@ extension Profile {
         case .defaultDistribution:
             return Self.defaultDistributionSession(localShell: localShell, cores: cores)
         case .distribution(let name):
-            let notice: @MainActor @Sendable (String) -> String = { stored in
-                "\(name) is not installed. This tab opened \(stored), the default distribution.\n"
-            }
-            // A name that is not valid cannot be installed.
+            // A name that is not valid cannot be installed, and is never shown: the setting is
+            // text that a distribution can write through /mnt/mac, and the notice goes to the
+            // terminal emulator, where control characters would take effect.
             guard let distribution = try? DistroName(name) else {
                 return Self.defaultDistributionSession(
-                    localShell: localShell, cores: cores, openingNotice: notice)
+                    localShell: localShell, cores: cores,
+                    openingNotice: { stored in
+                        "The new-tab setting does not name a valid distribution. This tab opened"
+                            + " \(stored), the default distribution.\n"
+                    })
+            }
+            let notice: @MainActor @Sendable (String) -> String = { stored in
+                "\(distribution) is not installed. This tab opened \(stored), the default"
+                    + " distribution.\n"
             }
             return LinuxSession(
                 name: name,

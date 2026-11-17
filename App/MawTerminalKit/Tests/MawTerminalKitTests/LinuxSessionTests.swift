@@ -551,18 +551,20 @@ extension LinuxSessionTests {
         #expect(cores.opened == ["Debian-13"])
     }
 
-    /// A name that is not valid cannot be installed, so it opens the default distribution with
-    /// the same notice rather than falling back without a word.
-    @Test func anInvalidNameOpensTheDefaultAndSaysSo() async throws {
+    /// A name that is not valid cannot be installed, so it opens the default distribution and
+    /// says so, without showing the name, which a distribution can write through /mnt/mac.
+    @Test(arguments: ["Debian 13", "a\u{1B}[2J\u{1B}]0;title\u{07}b"])
+    func anInvalidNameOpensTheDefaultAndSaysSo(name: String) async throws {
         let cores = FakeCores()
         cores.defaultName = "Ubuntu-24.04"
-        let (session, recorder) = try open(.distribution("Debian 13"), on: cores)
+        let (session, recorder) = try open(.distribution(name), on: cores)
         #expect(await waitUntil(seconds: 5) { recorder.text == "prompt$ " })
         #expect(
             recorder.notices == [
-                "Debian 13 is not installed. This tab opened Ubuntu-24.04, the default "
-                    + "distribution.\n"
+                "The new-tab setting does not name a valid distribution. This tab opened"
+                    + " Ubuntu-24.04, the default distribution.\n"
             ])
+        #expect(!recorder.notices.joined().contains("\u{1B}"))
         #expect(cores.opened == [nil])
         session.terminate()
     }
