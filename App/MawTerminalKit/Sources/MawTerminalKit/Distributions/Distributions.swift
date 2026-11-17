@@ -390,7 +390,8 @@ public final class DaemonDistributions: DistributionProvider {
 
     /// A row from a snapshot, as "The four states" of the phase 11c prompt describes it: DISK,
     /// KERNEL, and the details `default`, `user`, and `disk image` in every state; the other
-    /// figures, the details `ip`, `boot`, and `host memory`, and the history only while it runs.
+    /// figures, the details `ip`, `mounts`, `boot`, and `host memory`, and the history only
+    /// while it runs.
     /// A figure that the daemon did not report is left out.
     static func make(
         _ figures: DistributionFigures, isDefault: Bool, history: [UInt64?],
@@ -410,6 +411,15 @@ public final class DaemonDistributions: DistributionProvider {
         ]
         if running, let address = figures.ipv4Address {
             row.details.append(.init("ip", address, role: .number))
+        }
+        // Only while the share is mounted: a stopped distribution, or one whose mount failed,
+        // has no row, because an empty one would be a placeholder.
+        if running, let share = figures.macShare {
+            row.details.append(
+                .init(
+                    "mounts",
+                    "\(share.linuxPath)  ← \(FigureFormat.path(share.macPath, home: home))",
+                    role: .link))
         }
         row.details.append(
             .init("disk image", FigureFormat.path(figures.diskImagePath, home: home)))
