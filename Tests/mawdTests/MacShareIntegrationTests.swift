@@ -233,10 +233,16 @@ struct MacShareIntegrationTests {
                 try FileManager.default.setAttributes(
                     [.posixPermissions: mode], ofItemAtPath: file.path(percentEncoded: false))
             }
+            // Whether each access failed, not its status: dash, Ubuntu's sh, exits a failed
+            // redirection with 2, and cat with 1.
             let nobody = try await guest(
-                "printf 'nobody\\n' >> '\(linux)/f644'; echo \"append: $?\";"
-                    + " cat '\(linux)/f600' > /dev/null; echo \"read: $?\"", as: "nobody")
-            #expect(nobody.lines.contains("append: 1") && nobody.lines.contains("read: 1"))
+                "if printf 'nobody\\n' >> '\(linux)/f644'; then echo 'append: allowed';"
+                    + " else echo 'append: denied'; fi;"
+                    + " if cat '\(linux)/f600' > /dev/null; then echo 'read: allowed';"
+                    + " else echo 'read: denied'; fi", as: "nobody")
+            #expect(
+                nobody.lines.filter { !$0.isEmpty } == ["append: denied", "read: denied"],
+                "\(nobody.output)\(nobody.standardError)")
             #expect(nobody.standardError.contains("Permission denied"))
             let user = try await guest(
                 "printf 'user\\n' >> '\(linux)/f644' && cat '\(linux)/f600'")
