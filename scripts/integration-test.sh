@@ -42,6 +42,12 @@
 # export/<prefix>*.log) means that a daemon wrote to the wrong place: the run fails, and the
 # file is reported and left where it is.
 #
+# The test daemon shares the owner's home directory with its distributions at /mnt/mac. The
+# tests write through it only into directories of their own under ~/Library/Caches/maw, named
+# with the run's prefix (MawIntegration.withMacDirectory), and each test removes its own. A
+# directory with the prefix still there on exit makes the run fail, and the script removes it;
+# it never touches another name there, such as images/.
+#
 # It also fails the run if the guest agent started more than once during one boot of any
 # machine, according to the console logs: the test daemon's, and what `mawd debug-boot` added
 # to its own during the run. Each boot starts the agent once, from busybox init on the
@@ -84,6 +90,8 @@ export_directory="$log_directory/exports"
 # The owner's log directory, which the test daemon never writes to.
 owner_logs="$HOME/Library/Logs/maw"
 owner_cache="$HOME/Library/Caches/maw/images"
+# Where the tests' directories for /mnt/mac are, each named <prefix>-<UUID>.
+mac_directories="$HOME/Library/Caches/maw"
 distros="$HOME/Library/Application Support/maw/distros"
 # The daemon's settings, such as the default distribution (MawPaths.stateFile).
 state_file="$HOME/Library/Application Support/maw/state.json"
@@ -245,6 +253,27 @@ check_no_owner_logs() {
     fi
 }
 
+# Prints every directory that the tests left for /mnt/mac, and removes it, after making
+# everything in it writable by the owner, without following links. Returns non-zero if there
+# was one.
+check_no_mac_directories() {
+    found=""
+    for directory in "$mac_directories/$prefix"-*; do
+        if [ -e "$directory" ] || [ -L "$directory" ]; then
+            found="$found $directory;"
+            if [ -d "$directory" ] && [ ! -L "$directory" ]; then
+                chmod -R -P u+rwX "$directory" 2> /dev/null || true
+            fi
+            rm -rf "$directory"
+        fi
+    done
+    if [ -n "$found" ]; then
+        echo "integration-test.sh: the tests left these directories for /mnt/mac; they were" \
+            "removed:$found" >&2
+        return 1
+    fi
+}
+
 # Puts state.json back as it was before the run, through a rename, so that the daemons never
 # read a partial file. Does nothing if the run ended before it was saved. Returns non-zero if
 # the file could not be put back.
@@ -320,6 +349,11 @@ cleanup() {
     # Archives are never kept, not even with the logs of a failed run.
     rm -rf "$export_directory"
     if ! check_no_owner_logs; then
+        nothing_left=false
+        keep_logs=true
+        exit_status=1
+    fi
+    if ! check_no_mac_directories; then
         nothing_left=false
         keep_logs=true
         exit_status=1

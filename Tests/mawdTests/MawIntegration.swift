@@ -342,6 +342,57 @@ struct MawIntegration: Sendable {
         try await remove(name)
     }
 
+    // MARK: Directories shared through /mnt/mac
+
+    /// Where the tests' directories for /mnt/mac are: `~/Library/Caches/maw` of the owner, whose
+    /// home directory the test daemon shares.
+    static let macDirectoryParent = FileManager.default.homeDirectoryForCurrentUser.appending(
+        path: "Library/Caches/maw", directoryHint: .isDirectory)
+
+    /// Runs `body` with a new directory under `~/Library/Caches/maw`, named
+    /// `<prefix>-<UUID>`, and its path in the guest, under /mnt/mac, and removes the directory
+    /// afterwards, also when `body` throws. The test daemon shares the owner's real home
+    /// directory, so a test writes, renames, and deletes through /mnt/mac only inside such a
+    /// directory; scripts/integration-test.sh fails a run that leaves one behind.
+    func withMacDirectory<T>(
+        _ body: (_ mac: URL, _ linux: String) async throws -> T
+    ) async throws -> T {
+        let name = "\(prefix)-\(UUID().uuidString)"
+        let mac = Self.macDirectoryParent.appending(path: name, directoryHint: .isDirectory)
+        // mkdir, not createDirectory: it fails if anything has the name already.
+        try #require(
+            mkdir(mac.path(percentEncoded: false), 0o755) == 0,
+            "mkdir \(mac.path(percentEncoded: false)) failed with errno \(errno)")
+        defer { Self.removeMacDirectory(mac, prefix: prefix) }
+        return try await body(mac, "\(MacShare.linuxPath)/Library/Caches/maw/\(name)")
+    }
+
+    /// Removes a directory that `withMacDirectory` created, after making everything in it
+    /// writable by the owner, because a test may have changed modes from the guest. Links in it
+    /// are not followed.
+    private static func removeMacDirectory(_ directory: URL, prefix: String) {
+        let path = directory.path(percentEncoded: false)
+        guard
+            directory.deletingLastPathComponent().standardizedFileURL
+                == macDirectoryParent.standardizedFileURL,
+            directory.lastPathComponent.hasPrefix("\(prefix)-")
+        else {
+            Issue.record("Refused to remove \(path), which withMacDirectory did not create.")
+            return
+        }
+        let chmod = Process()
+        chmod.executableURL = URL(filePath: "/bin/chmod")
+        chmod.arguments = ["-R", "-P", "u+rwX", path]
+        if (try? chmod.run()) != nil {
+            chmod.waitUntilExit()
+        }
+        do {
+            try FileManager.default.removeItem(at: directory)
+        } catch {
+            Issue.record(error, "removing \(path)")
+        }
+    }
+
     // MARK: The owner's default
 
     /// Runs `body` and then puts `state.json` back as it was: the same bytes, or no file if
