@@ -1,7 +1,7 @@
 # Host and guest agent protocol
 
 The host (`mawd`, and the client library in `MawProtocol`) talks to the guest agent,
-`maw-agent`, over vsock. This document specifies protocol version **5**. The code is in
+`maw-agent`, over vsock. This document specifies protocol version **6**. The code is in
 `Sources/MawProtocol` (both sides) and `Sources/MawAgentKit` (the agent). Version 2 added the
 user a session runs as, its program (a command, a shell command line, or a login shell), its
 locale, and the input window, with which `signal` and `resize` overtake queued standard input
@@ -9,7 +9,8 @@ locale, and the input window, with which `signal` and `resize` overtake queued s
 request, its `dialedBack` reply, the `dialBackNonce` frame, and the `dialBackFailed` error.
 Every session runs on a connection that the agent dials. Version 4 adds `foregroundQuery` and
 `foregroundProgram`. Version 5 adds `sample`, its `sampled` reply, and the `sampleFailed`
-error ([0020](decisions/0020-distribution-figures.md)).
+error ([0020](decisions/0020-distribution-figures.md)). Version 6 adds `macShareMounted` to
+`agentInfo` ([0021](decisions/0021-mac-share.md)).
 
 ## Transport
 
@@ -116,7 +117,7 @@ TSTP TTIN TTOU URG XCPU XFSZ VTALRM PROF WINCH IO SYS`.
 |---------|--------|---------|
 | `started` | `pid`: i32 | The process started; its ID in the guest. |
 | `exited` | `code`: i32 (0 to 255), or `signal`: i32 | The process ended. Exactly one field is present. `signal` is the Linux signal number. The last message of a session. |
-| `agentInfo` | `agentVersion`: string, `protocolVersion`: u32, `kernelRelease`: string, `uptimeMilliseconds`: u64 | Reply to `info`. |
+| `agentInfo` | `agentVersion`: string, `protocolVersion`: u32, `kernelRelease`: string, `uptimeMilliseconds`: u64, `macShareMounted`: bool | Reply to `info`. `macShareMounted` is true when the last mount at `/mnt/mac` in `/proc/self/mountinfo` is the virtiofs share `maw-mac`; reading the table looks nothing up in the share. |
 | `shutdownAcknowledged` | none | The agent has asked `init` to power off. The VM stops shortly after. |
 | `dialedBack` | none | Reply to `dialBack`: the agent has connected to the host and sends the nonce first on that connection. |
 | `sampled` | `memoryTotalBytes`: u64, `memoryAvailableBytes`: u64, optional `ipv4Address`: string | Reply to `sample`; see [Sample](#sample). |

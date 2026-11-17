@@ -60,8 +60,16 @@ stopped ──openSession──▶ starting ──agent answers info──▶ ru
   before its agent answers fails the start with `vmFailed`, "the guest powered off before its
   agent answered", unless the initramfs reported a failed root file system check (below).
 - **Settings.** A distribution's machine gets every CPU of the Mac and half of its memory, its
-  disk with full synchronization, and a NAT network device with the MAC address in its
-  `distro.json`. Its kernel command line carries `maw.root=/dev/vda` and `maw.clock=<seconds>`.
+  disk with full synchronization, a NAT network device with the MAC address in its
+  `distro.json`, and a virtiofs device that shares the owner's home directory, read-write,
+  under the tag `maw-mac`. Its kernel command line carries `maw.root=/dev/vda`,
+  `maw.clock=<seconds>`, and `maw.share=maw-mac`, with which the initramfs mounts the share at
+  `/mnt/mac` ([decision record 0021](decisions/0021-mac-share.md)). The provisioning machine of
+  an installation, an export, or an import never gets the share.
+- **The share at the start.** The agent's `info` reply, which the daemon awaits at every start,
+  reports whether `/mnt/mac` is mounted. The daemon keeps that for the machine's run and logs
+  `<machine>: /mnt/mac is mounted`, or `<machine>: /mnt/mac is not mounted; its console log says
+  why`; the console log has the initramfs's reason.
   The initramfs machine keeps the defaults of phase 03: the smaller of 4 and the number of host
   CPUs, and 2 GiB of memory.
 - **The dial-back listener.** When a machine reaches the running state, the daemon sets a
@@ -197,6 +205,10 @@ its own, so that it never shares a file with a distribution's console log: a dis
   cost of a request without the guest's figures. `mawd install` accepts neither and writes
   neither into the LaunchAgent, so an installed daemon always samples every 1.5 seconds with
   `sample`.
+- **`--without-mac-share`** is a hidden option of `mawd serve` for measurements only:
+  distribution machines get neither the share of the home directory nor `maw.share`, so that
+  `scripts/measure-mac-share.sh` can compare a cold start with and without them. `mawd install`
+  neither accepts nor writes it.
 - **Idle exit.** It exits after 5 minutes with no connected client and no running machine
   (`DaemonTimeouts.daemonIdle`), so that an idle daemon costs nothing.
 - **SIGTERM.** On SIGTERM (from launchd, `mawd install`, or `mawd uninstall`), SIGINT, or
@@ -240,7 +252,7 @@ Every message is an XPC dictionary (`Sources/MawXPC/InterfaceCoding.swift`):
 
 | Key | Type | Content |
 |-----|------|---------|
-| `interfaceVersion` | uint64 | `DaemonInterface.version`, currently **6**. This key never changes. |
+| `interfaceVersion` | uint64 | `DaemonInterface.version`, currently **8**. This key never changes. |
 | `body` | data | the message, JSON-encoded from the `Codable` types in `Sources/MawXPC/DaemonInterface.swift` |
 | `descriptor` | fd | only in `sessionOpened`, the guest agent connection, and in `export`, the file or standard output that `maw --export` opened |
 
@@ -283,7 +295,8 @@ from a snapshot that another change published. Version 6 adds `checkUnregister`,
 it renames `cancelInstall` to `cancel` and `installCancelled` to `cancelled`, because they also
 cancel an export. Version 7 adds `import` and the step `inspect`; `installationInProgress` names
 the installation or import that holds the name, and `insufficientDiskSpace` the operation that
-needs the space.
+needs the space. Version 8 adds `macShare` to each distribution's figures
+([decision record 0021](decisions/0021-mac-share.md)).
 
 **Events** (daemon to client, without a request):
 
@@ -489,7 +502,9 @@ default, and its figures, and follows them
   sampled figures: the guest's memory in use and IPv4 address, the CPU of the machine's process
   in percent of one core, and its memory footprint. A figure that is not known is absent.
   `lastSampleMicroseconds`, the time of the last guest request, is for diagnosis and
-  measurement only; clients do not show it or depend on it. `sampleNumber` counts the samples of
+  measurement only; clients do not show it or depend on it. `macShare`, the Mac's path that the
+  daemon shares and `/mnt/mac`, is present while the distribution runs, if its guest reported
+  the share mounted when it started; the Mac's path is the daemon's own, never the guest's. `sampleNumber` counts the samples of
   the distribution's run: one more for each sample, including one whose guest request failed or
   timed out. It starts from 1 with a new run, and when watching starts while no client watched;
   a client that starts watching while another watches sees the count where it stands. The

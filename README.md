@@ -115,6 +115,21 @@ scripts/fetch-guest.sh <branch>                   # 3. guest files that CI built
 - Run `scripts/sign-dev.sh` after every later `swift build` or `swift test`, which remove the
   signature that the daemon needs.
 
+### Privacy questions for development builds
+
+Distributions reach the Mac's files through `mawd` (`/mnt/mac`, below), so macOS's privacy
+protection asks about `mawd` the first time a distribution opens a protected folder, such as
+`~/Desktop`, `~/Documents`, or `~/Downloads`. A development build is signed ad hoc, and macOS
+treats every build whose code differs as a new program: after each such build, the question
+comes back for every protected folder, also for those allowed before. Folders that need Full
+Disk Access, such as `~/Library/Mail`, are refused without a question. Phase 13 signs the
+release build, so that an answer lasts across updates
+([docs/known-limitations.md](docs/known-limitations.md)).
+
+When installing the build of phase 07's first pull request, the owner answers Allow for
+Desktop, Documents, and Downloads, and grants `mawd` no Full Disk Access. An answer can be
+changed later in System Settings → Privacy & Security → Files and Folders, under `mawd`.
+
 ## Using maw
 
 `maw` runs Linux distributions through the maw daemon, `mawd`, which launchd starts when `maw`
@@ -188,6 +203,46 @@ command line to your Linux shell with `-c`; the Mac's shell has already removed 
 so use `-e` when the arguments must arrive unchanged. A session ends when its command or shell
 exits. Without an installed distribution, `maw` reports that none is installed and names
 `maw --install`.
+
+### The Mac's files in Linux (/mnt/mac)
+
+Your home directory is `/mnt/mac` in every distribution, as `C:` is `/mnt/c` in WSL:
+
+```sh
+maw -- ls /mnt/mac                            # your Mac home directory
+maw -- cat /mnt/mac/Projects/app/README.md    # ~/Projects/app/README.md on the Mac
+```
+
+- **It is read-write, with your rights.** Root and the distribution's user can read and change
+  everything in your home directory that you can, `~/.ssh` and `~/Library` included. Run only
+  software that you would run on the Mac itself ([docs/security.md](docs/security.md)).
+- **Every file shows your Linux user as its owner**, so `git` and other tools that check
+  ownership accept your projects. Other Linux users are held to each file's mode, and on the
+  Mac every file that Linux creates is yours.
+- **macOS asks about `mawd`** the first time a distribution opens `~/Desktop`, `~/Documents`,
+  `~/Downloads`, or another protected folder. If you refuse, the folder shows as `Operation not
+  permitted` in Linux, not as an empty folder. To change the answer, open System Settings →
+  Privacy & Security → Files and Folders, and switch the folder on or off under `mawd`. Folders that need Full Disk Access, such as `~/Library/Mail`, are
+  refused without a question.
+- **Names ignore case.** The Mac's volume does not tell `a` from `A`, so in `/mnt/mac` they are
+  one file: `echo 1 > a; echo 2 > A` leaves one file, `a`, holding `2`. A rename that changes
+  only the case, such as `mv notes Notes`, fails with "are the same file"; rename through
+  another name instead. Names with letters such as `ç` arrive as they were written.
+- **Absolute links work only on the side that made them.** A link to `/Users/you/...` made on
+  the Mac leads nowhere in Linux, and one to `/mnt/mac/...` made in Linux leads nowhere on the
+  Mac. Relative links work on both sides.
+- **Listing large directories is slower than on the Mac**: `ls -l` of 10,000 files took about
+  1 s in Linux, against 0.08 s on the Mac. A 1 GiB file was written at about 1,100 MB/s and read
+  at about 2,700 MB/s, and a second `git status` in a clone of maw's repository took 23 ms
+  ([decision record 0021](docs/decisions/0021-mac-share.md)).
+- **Just after a change on the Mac**, Linux can for a fraction of a second still see the old
+  size of a file or the old contents of a directory that was replaced.
+- **Only your home directory is shared**, not `/Volumes` or `/tmp`.
+
+If the share cannot be mounted, the distribution still starts, and its console log,
+`~/Library/Logs/maw/<name>.log`, has a line `maw-initramfs: /mnt/mac is not mounted:` with the
+reason. [docs/distributions.md](docs/distributions.md#the-macs-files-mntmac) describes the
+mount.
 
 ### Managing distributions
 
@@ -390,8 +445,8 @@ default, and shows live figures:
 
 A stopped distribution shows its disk and kernel only. Below the table, a details box shows the
 selected distribution's default flag, user, and disk image, and while it runs its IPv4
-address, the time from its start to its agent (`boot`), and the memory its process takes on the
-Mac (`host memory`). A memory chart shows the last 60 seconds of MEMORY while it runs. A figure
+address, the Mac's home directory mounted at `/mnt/mac` (`mounts  /mnt/mac ← ~`), the time from
+its start to its agent (`boot`), and the memory its process takes on the Mac (`host memory`). A memory chart shows the last 60 seconds of MEMORY while it runs. A figure
 that is not known is left empty.
 
 The screen follows the daemon while it is visible in a window: a machine that starts or stops

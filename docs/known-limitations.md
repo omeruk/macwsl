@@ -19,27 +19,7 @@ from `main`.
     linger alone.
   - **Evidence:** [Decision record 0015](decisions/0015-sessions-through-pam.md), "Consequence
     for phase 07", which lists the options.
-  - **Phase:** 07.
-- **A `distribution:<name>` setting is shown in the pane without a check.**
-  - **Seen:** When `defaultProfile` in `~/Library/Application Support/maw/settings.json` names
-    a distribution that is not a valid name, ⌘T opens the default distribution, and the pane's
-    notice includes the stored text unchanged. The pane passes the notice to the terminal
-    emulator, so control characters in the text take effect there. The file is the user's own,
-    so this matters only if the file share lets the guest write `~/Library`.
-  - **Evidence:** `Profile.makeSession(localShell:cores:)` in
-    `App/MawTerminalKit/Sources/MawTerminalKit/Session/Profile+Session.swift`, whose notice
-    takes the name as the setting gives it; `PaneController.write(_:style:)`. Pull request
-    #26, security review.
-  - **Phase:** 07, if its file share exposes `~/Library` to the guest: show only a valid
-    distribution name, or remove control characters before the notice is written.
-- **The distributions screen's details box has no `mounts` row.**
-  - **Seen:** `Distributions.dc.html` shows `mounts` (`/mnt/mac ← ~`) for each distribution.
-    The app leaves the row out, because nothing is mounted yet, and an empty or `—` row would
-    be a placeholder.
-  - **Evidence:** `DaemonDistributions.make(_:isDefault:history:home:)` in
-    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift`;
-    `prompts/11c-distribution-figures.md`, "Deviations from `Distributions.dc.html`", item 2.
-  - **Phase:** 07, which mounts the Mac's home directory and can report it in the snapshot.
+  - **Phase:** 07, pull request B.
 
 ## Phase 08: Networking
 
@@ -75,6 +55,14 @@ from `main`.
   - **Phase:** 08, which forwards ports and can report them in the snapshot.
 
 ## Phase 12: Configuration and lifecycle
+
+- **The share of the home directory cannot be turned off.**
+  - **Seen:** Every distribution has the owner's home directory at `/mnt/mac`, read-write, as
+    the owner decided for phase 07. No setting turns it off, makes it read-only, or limits it
+    to chosen folders, for all distributions or for one.
+  - **Evidence:** [Decision record 0021](decisions/0021-mac-share.md);
+    `prompts/07-file-sharing-and-paths.md`, "The owner's decisions", item 3.
+  - **Phase:** 12, a `.mawconfig` setting.
 
 - **No setting for `.fsync` disk synchronization.**
   - **Seen:** Every distribution uses `.full` synchronization. A user who prefers speed cannot
@@ -337,6 +325,17 @@ from `main`.
 
 ## Phase 13: Packaging and release
 
+- **macOS asks about `mawd` again after every development build.**
+  - **Seen:** A distribution that opens `~/Desktop`, `~/Documents`, or `~/Downloads` through
+    `/mnt/mac` makes macOS ask whether `mawd` may. A development build is signed ad hoc, and
+    after each build whose code differs, macOS asks again for every protected folder, also for
+    those allowed before.
+  - **Evidence:** Part 1 of phase 07 (pull request #33): the TCC log attributed every request
+    to `dev.maw.mawd`; after a rebuild with a new code hash, Desktop, which an earlier grant had
+    covered, was asked again. [Decision record 0021](decisions/0021-mac-share.md).
+  - **Phase:** 13, which signs the release build with a Developer ID, so that an answer lasts
+    across updates.
+
 - **The ad-hoc code signing requirement does not identify maw's builds.**
   - **Seen:** Any local program can claim the identifiers `dev.maw.maw` and `dev.maw.mawd`, so
     the same-user check is the boundary of the XPC service.
@@ -365,6 +364,16 @@ from `main`.
   - **Phase:** 13, with the app bundle.
 
 ## No phase yet
+
+- **The distributions screen shows the share as it was when the machine started.**
+  - **Seen:** The `mounts` row comes from the agent's `info` reply at the start. A share that
+    is unmounted in the guest later, with `sudo umount /mnt/mac`, still shows until the machine
+    stops.
+  - **Evidence:** `VirtualMachineHandle.macShare` in
+    `Sources/MawDaemonKit/VirtualMachineHandle.swift`; the prompt allows a fact known at boot
+    rather than a request for every snapshot.
+  - **Phase:** None yet; the `sample` reply could carry it, at the cost of reading
+    `/proc/self/mountinfo` at every sample.
 
 - **A watcher does not notice a distribution removed by hand while no machine runs.**
   - **Seen:** `maw --unregister` is the supported way to remove a distribution, and the
@@ -672,6 +681,11 @@ from `main`.
 ## Accepted trade-offs
 
 Deliberate choices that a decision record explains and that no phase plans to change.
+
+- **maw's kernel carries a patch of its own.** `Guest/kernel/patches/0001-virtiofs-owner-options.patch`
+  gives virtiofs `uid=` and `gid=` options, so that every file under `/mnt/mac` shows the
+  default user as its owner. Every kernel bump must apply it with no fuzz, or refresh it.
+  [Decision record 0021](decisions/0021-mac-share.md); `Guest/README.md`, "Bumping the kernel".
 
 - **CPU and host memory depend on an undocumented process.** The daemon finds a machine's
   `com.apple.Virtualization.VirtualMachine` process by the disk image it has open. If Apple

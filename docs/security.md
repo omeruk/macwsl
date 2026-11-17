@@ -12,10 +12,12 @@ reviews it as a whole.
 - **The guest is the user's own Linux system.** Its root account is available to the Mac user
   through `maw -u root`, as `wsl -u root` gives it on Windows; the guest's `sudo` password
   protects the guest against processes inside the guest, not against the Mac user.
-- **The guest must not reach beyond itself.** It has no access to the Mac's files in this phase
-  (phase 07 adds `/mnt/mac`), and no network path into the Mac other than NAT's. The only
-  other connection it can open to the Mac is to the dial-back listener on vsock, which gives it
-  nothing without a session's nonce.
+- **A distribution is as trusted as a program the owner runs on the Mac.** Since phase 07 it
+  has the owner's home directory at `/mnt/mac`, with the owner's rights, as a WSL distribution
+  has `C:` at `/mnt/c` (see "The share of the home directory"). Beyond the home directory, the
+  guest must not reach: it has no other files of the Mac, and no network path into the Mac
+  other than NAT's. The only other connection it can open to the Mac is to the dial-back
+  listener on vsock, which gives it nothing without a session's nonce.
 - **Downloads are not trusted** until they are verified against a value that maw pins.
 
 ## Entry points
@@ -115,6 +117,63 @@ terminal, so the app keeps them apart in two layers:
 A unit test opens a pipe without close-on-exec in the test process, starts a local shell
 (`/bin/sh` and `/bin/zsh`), and checks through `/dev/fd` that the shell does not have it; with
 `forkpty`, the same test fails.
+
+### The share of the home directory (/mnt/mac)
+
+Every distribution's machine shares the owner's home directory, read-write, through
+Virtualization.framework's virtiofs device, and the initramfs mounts it at `/mnt/mac`
+([decision record 0021](decisions/0021-mac-share.md)).
+
+- **What it gives a distribution.** Root and the distribution's default user can read and write
+  everything in the home directory that the owner can, with the owner's rights on the Mac:
+  - `~/.ssh` and every other secret kept there;
+  - `~/Library/LaunchAgents`, where a program put by the guest runs at the owner's next login,
+    outside any virtual machine;
+  - the other distributions' disks under `~/Library/Application Support/maw/distros/`, and
+    maw's `state.json`;
+  - the terminal app's `settings.json`.
+
+  A distribution is therefore as trusted as a program the owner runs on the Mac. The owner
+  decided this for phase 07, as WSL does for `/mnt/c`; phase 12 adds a setting to turn the
+  share off.
+- **Other users of the distribution** are held to each file's mode, against the default user as
+  owner. maw's kernel patch (`Guest/kernel/patches/0001-virtiofs-owner-options.patch`) makes
+  every file show the default user as its owner, and virtiofs checks modes in the guest:
+  `nobody` can neither write a file of mode 644 nor read one of mode 600
+  (`MacShareIntegrationTests.holdsOtherGuestUsersToTheFilesModes`). Without the patch, Apple's
+  server reported every requester as the owner, and every guest user had the owner's full
+  rights; decision record 0021 records the measurement.
+- **What it does not give.**
+  - Files that the owner cannot read or write on the Mac stay so: every access is made again
+    on the Mac with the owner's identity, and a file of mode 000 is refused even to guest root.
+  - The guest's ownership changes are ignored on the Mac. The set-user-ID bit is never set, the
+    mount has `nosuid` and `nodev`, and `mknod` of a device is refused.
+  - Folders under macOS's privacy protection (Desktop, Documents, Downloads, and others) are
+    reached only if the owner allows `mawd` when macOS asks; a refusal is `Operation not
+    permitted` in the guest. Folders that need Full Disk Access, such as `~/Library/Mail`, are
+    refused without a question, because `mawd` does not have it.
+  - Nothing outside the home directory is shared: not `/Volumes`, `/tmp`, or another user's
+    home directory.
+  - The provisioning machine of an installation, an export, or an import, which runs programs of
+    root file systems that may come from outside maw, never gets the share. A unit test checks
+    its configuration (`MachineConfigurationTests`), and the integration tests read its console:
+    `maw-initramfs: virtiofs tags: none`.
+- **The mount reads the distribution's files.** Before `switch_root`, the agent reads
+  `/etc/maw.conf` and `/etc/passwd` of a root file system that may have been imported. It
+  resolves both inside that root, so that an absolute link starts again at the root and `..`
+  stops there; it reads only regular files, of at most 4 MiB; and it replaces control
+  characters in a name before the console shows it. It examines `/mnt` and `/mnt/mac` without
+  following links, refuses a link, another kind of file, or a mount point that is not empty, and
+  mounts on the directory that it opened, so that no link in the path is followed.
+- **Where the guest's input reaches the Mac.** The guest sends one Boolean, `macShareMounted` in
+  its `info` reply, which only decides whether the distributions screen shows its `mounts` row.
+  The Mac path in that row is the daemon's own; nothing that the guest sends is used as a Mac
+  path.
+- **Files that the guest can now write, and the app reads.** The terminal app's
+  `settings.json` names the new-tab profile, such as `distribution:<name>`. A pane's notice
+  never shows a name that is not a valid distribution name, because the notice goes to the
+  terminal emulator, where control characters would take effect
+  (`LinuxSessionTests.anInvalidNameOpensTheDefaultAndSaysSo`).
 
 ### The guest agent over vsock
 
