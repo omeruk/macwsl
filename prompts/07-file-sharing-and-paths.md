@@ -1,6 +1,6 @@
 # Phase 07: File sharing and paths
 
-Read `CLAUDE.md`, `docs/decisions/` (0001, 0013, 0015, and 0018 above all), `docs/daemon.md`,
+Read `CLAUDE.md`, `docs/decisions/` (0001, 0013, 0015, 0018, and 0020 above all), `docs/daemon.md`,
 `docs/protocol.md`, `docs/distributions.md`, `docs/security.md`, and
 `docs/known-limitations.md` first.
 
@@ -52,7 +52,10 @@ the guest (`mount -t virtiofs <tag> <directory>`), so the installed guest files 
 unchanged. Run it as temporary `.integration` tests through
 `scripts/integration-test.sh --filter <suite>`, which installs the test daemon under its own
 label, on a test distribution that the run installs from the cached image and removes
-afterwards; never commit those tests.
+afterwards; never commit those tests. `scripts/integration-test.sh` builds the working tree,
+so the binaries under `.build` are the spike's while it runs: when Part 1 is reported, switch
+back to `main`, build, and run `./scripts/sign-dev.sh`, so that the owner's daemon finds
+`main`'s binaries again, and say so in the report.
 
 The test daemon shares the owner's real home directory. Every file that the spike writes
 through the share goes into one directory that the spike creates for itself,
@@ -72,7 +75,8 @@ Find out and report, with the commands and their output:
   writes with the Mac user's identity and ignores the guest's ownership changes; confirm or
   correct that.
 - **Privacy prompts (TCC).** Whether listing `~/Desktop`, `~/Documents`, `~/Downloads`, and
-  `~/Library/Mail` from the guest makes macOS ask the owner, which program the question names
+  `~/Library/Mail` from the guest makes macOS ask the owner (report only whether each listing
+  succeeded and how many entries it had, never the names), which program the question names
   (`mawd`, the test daemon, or another), whether a refusal shows in the guest as an error or as
   an empty directory, and whether the question returns after `./scripts/sign-dev.sh` signs a
   new build. The owner must be at the Mac, with the lid open, for this run: tell the owner
@@ -81,11 +85,12 @@ Find out and report, with the commands and their output:
   included).
 - **Names.** What a file name with a non-ASCII letter (`ç`, written in NFC on one side and NFD
   on the other) looks like on the other side; what happens when the guest creates `a` and then
-  `A` in one directory on a case-insensitive volume.
+  `A` in one directory of the owner's volume, and whether that volume is case-sensitive.
 - **Links.** What an absolute symbolic link created on the Mac (`/Users/…`) and one created in
   the guest (`/mnt/mac/…`) look like and resolve to on the other side; whether hard links work.
 - **Speed.** Reading and writing a 1 GiB file, `ls -l` of a directory with 10,000 files, and
-  `git status` twice in a clone of this repository under the spike directory: the median and
+  `git status` twice in a clone of this repository that `git clone` on the Mac makes in the
+  spike directory: the median and
   the slowest of 5 runs, as development figures, with the load average.
 - **The mount.** The virtiofs tag and mount options that work, whether `mount -t virtiofs`
   needs anything beyond the kernel's `CONFIG_VIRTIO_FS=y` (`Guest/kernel/maw.config`), and what
@@ -103,7 +108,7 @@ result makes one of the owner's decisions impossible or unsafe, stop and report 
   plan names. The tag is the same in every machine.
 - **The provisioning machine never gets the share.** Installation, `--export`, and `--import`
   run programs of a root file system that may come from outside maw (`docs/security.md`, "The
-  import's configuration"); that machine keeps having no access to the Mac's files. A unit test
+  extraction"); that machine keeps having no access to the Mac's files. A unit test
   checks the provisioning machine's configuration for the absence of the device, and
   `docs/security.md` says it.
 - **The mount happens at every boot, for every installed distribution, without reinstalling
@@ -131,15 +136,15 @@ result makes one of the owner's decisions impossible or unsafe, stop and report 
 ### The snapshot and the distributions screen (A)
 
 - The daemon's snapshot reports, per running distribution, whether the share is mounted, and
-  where: the Mac path and the Linux path. How the daemon learns it (for example from the agent,
-  or from the mount's result in the console) is the plan's choice; it must not add a request
+  where: the Mac path and the Linux path. How the daemon learns it (for example from the agent)
+  is the plan's choice, but not by parsing the console log; it must not add a request
   that runs for every snapshot if a fact known at boot suffices. This changes the daemon
   interface: increment `DaemonInterface.version`, update `docs/daemon.md`.
-- The distributions screen's details box gets its `mounts` row, as `Distributions.dc.html`
-  shows it (`/mnt/mac ← ~`), for a running distribution with the share mounted; for a stopped
-  one, or one whose mount failed, the row is left out, as the known limitation explains why an
-  empty row would be a placeholder. This resolves "The distributions screen's details box has no
-  `mounts` row".
+- The distributions screen's details box gets its `mounts` row, as
+  `docs/design/terminal/Distributions.dc.html` shows it (`/mnt/mac ← ~`), for a running
+  distribution with the share mounted. For a stopped one, or one whose mount failed, the row is
+  left out, because an empty row would be a placeholder, as the known limitation says. This
+  resolves "The distributions screen's details box has no `mounts` row".
 - **`~/Library` is now writable from every distribution.** Resolve "A `distribution:<name>`
   setting is shown in the pane without a check" as the item suggests: show a name in the pane's
   notice only if it is a valid distribution name, or remove control characters first. The plan
@@ -154,10 +159,10 @@ B makes it true.
 - **Without `--cd`**, a shell, a command (`maw <command>`, `maw -- <command>`), and `-e` start
   in the Linux path of `maw`'s current directory: the home directory itself becomes `/mnt/mac`,
   and a directory under it becomes `/mnt/mac/<the rest>`, with names passed through unchanged,
-  spaces and non-ASCII letters included. The current directory comes from `getcwd`, and the
-  home directory is compared after both are resolved (`/tmp` and `/private/tmp`, a home
-  directory reached through a link), so that a directory under the home directory is never
-  reported as outside it.
+  spaces and non-ASCII letters included. The current directory comes from `getcwd`, and it is
+  compared with the home directory after both are resolved, so that a directory under the home
+  directory is never reported as outside it (for example when the home directory is reached
+  through a link).
 - **Outside the home directory**, or when `getcwd` fails (a directory deleted under the shell),
   the session starts in the Linux home directory and `maw` prints one line on standard error,
   for example `maw: /tmp is not shared with Linux; starting in the home directory.` The line
@@ -165,17 +170,23 @@ B makes it true.
   never written to standard output.
 - **When the translated directory cannot be used in the guest**, because the share is not
   mounted, the directory went away, or the user cannot enter it, the session also starts in the
-  home directory, and `maw` prints a line that says so and names the distribution's console log.
+  home directory, and `maw` prints a line that says so and why; when the share is not mounted,
+  the line names the distribution's console log.
   This fallback applies only to the directory that `maw` chose itself; the guest must be able to
   tell the two apart, and `maw` must learn that the fallback happened, which may need a field in
   the exec request and in its reply. A change of the guest protocol increments
   `ProtocolVersion` and updates `docs/protocol.md`.
-- **`--cd <directory>`** keeps its meaning and errors: `~` is the Linux home directory; an
-  absolute Linux path is used as given; a Mac path under the home directory is translated; a
-  Mac path outside it, such as `/Volumes/USB`, fails with an error that says it is not shared
-  and suggests a Linux path; a relative path is resolved against `maw`'s current directory on
-  the Mac and then translated. A `--cd` directory that does not exist in the guest fails as it
-  fails today; there is no fallback for a directory the user named.
+- **`--cd <directory>`** keeps its meaning and errors: `~` and `~/<path>`, as `maw` receives
+  them, are the Linux home directory and a path under it (today `maw` refuses them, although
+  `maw --help` promises `~`); an absolute Linux path is used as given; a Mac path under the
+  home directory is translated; a Mac path outside it, such as `/Volumes/USB`, fails with an
+  error that says it is not shared and suggests a Linux path (`SessionPlan.macOSDirectories`
+  tells the two kinds of absolute path apart); a relative path is resolved against `maw`'s
+  current directory on the Mac and then translated. A `--cd` directory that does not exist in
+  the guest fails as it fails today; there is no fallback for a directory the user named.
+- **The Mac's shell expands an unquoted `~`** before `maw` sees it: `maw --cd ~` reaches `maw`
+  as `--cd /Users/alice` and starts in `/mnt/mac`, the Mac home directory, while
+  `maw --cd '~'` starts in the Linux home directory. `maw --help` and `README.md` say so.
 - **The terminal app's Linux tabs** keep starting in the Linux home directory: a new tab has no
   Mac directory of its own. Record it in `docs/known-limitations.md` if you find it worth
   changing later; do not change the app in B.
@@ -207,14 +218,16 @@ directory, no shell would be registered with `systemd-logind`. Resolve it:
 mawpath /Users/alice/Projects/app     # Mac to Linux (the default): /mnt/mac/Projects/app
 mawpath -u /Users/alice/Projects/app  # the same, -u stated
 mawpath -m /mnt/mac/Projects/app      # Linux to Mac: /Users/alice/Projects/app
-mawpath -m .                          # a relative path is resolved against the current directory
-mawpath -a <path>                     # always print an absolute path
+mawpath -a -m .                       # the Mac path of the current directory
+mawpath -a <path>                     # an absolute result for a relative path
 ```
 
 (`/Users/alice` stands for the owner's home directory on the Mac.)
 
 - Flags follow `wslpath` where they apply: `-u` for Mac to Linux (the default), `-m` for Linux to
-  Mac, `-a` for an absolute result. `-w` is not offered. `mawpath --help` describes them.
+  Mac, `-a` for an absolute result. As with `wslpath`, a relative path gives a relative result
+  without `-a`, and is resolved against the current directory with it. `-w` is not offered.
+  `mawpath --help` describes them.
 - A Linux path outside `/mnt/mac` given to `-m`, and a Mac path outside the home directory, fail
   with a message on standard error and a failure status, because the other side cannot see
   them. Paths are translated textually after `.` and `..` are resolved; the path need not exist,
@@ -248,8 +261,8 @@ on AC power, the lid open, Low Power Mode off, `caffeinate -dims`, only Terminal
 one-minute load average under 2 before the start. Provide one command for that run, a script
 under `scripts/` that runs the measurements through `scripts/integration-test.sh` as
 `scripts/measure-transfer.sh` does, and tag the measurements so that the integration tests can
-run without them. If a target is missed, report
-the number, where the time goes, and what would close the gap.
+run without them. If a target is missed, report the number, where the time goes, and what would
+close the gap.
 
 | Measurement | Target | PR |
 |-------------|--------|----|
@@ -332,10 +345,11 @@ directory.
 - A: a file created on the Mac is read in the guest, and one created in the guest is read on the
   Mac with the owner as its owner; a file written by the default user is editable on the Mac;
   non-ASCII names; `/mnt/mac` present after a restart of the machine; the provisioning machine
-  has no `/mnt/mac` (checked during an installation or an import of a test distribution).
+  has no share (checked during an installation or an import of a test distribution; the plan
+  says how).
 - B: `maw -- pwd` from the test directory prints its `/mnt/mac` path; from `/tmp` it prints the
-  Linux home directory and the warning; `--cd ~`, `--cd` with a Linux path, and with a Mac path
-  outside the home directory; a login shell from the test directory is listed by `loginctl` and
+  Linux home directory and the warning; `--cd '~'`, `--cd '~/<path>'`, `--cd` with a Linux
+  path, and with a Mac path outside the home directory; a login shell from the test directory is listed by `loginctl` and
   starts in that directory (extend `registersShellsWithLogind`); `mawpath` in both directions,
   inside a session.
 - The measurements under "Speed targets", tagged as described there.
@@ -401,8 +415,9 @@ After B:
   shell there in which `loginctl` lists the session;
 - `cd /tmp` and then `maw -- pwd` prints the Linux home directory, with the warning on standard
   error;
-- `maw --cd ~ -- pwd` prints the Linux home directory;
-- in that shell, `mawpath -m .` prints the Mac path of `~/macwsl`, and `mawpath` given that Mac
+- `maw --cd '~' -- pwd` prints the Linux home directory, and `maw --cd ~ -- pwd` prints
+  `/mnt/mac`;
+- in that shell, `mawpath -a -m .` prints the Mac path of `~/macwsl`, and `mawpath` given that Mac
   path prints `/mnt/mac/macwsl`;
 - `maw -e sh -c 'echo a; echo b'` prints `a` and `b` on two lines, as `README.md` says;
 - `Ubuntu-24.04` is otherwise unchanged.
