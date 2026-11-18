@@ -31,6 +31,7 @@ public final class LocalShellSession: TerminalSession {
         locale: Locale = .current
     ) {
         self.shell = shell
+        displayName = TerminalSessionError.displayablePath((shell as NSString).lastPathComponent)
         self.startDirectory = startDirectory
         self.baseEnvironment = baseEnvironment
         self.locale = locale
@@ -38,9 +39,7 @@ public final class LocalShellSession: TerminalSession {
 
     /// The shell's name for the tab and the window: the last component of its path, as
     /// `TerminalSessionError.displayablePath(_:)` shows a path from the settings.
-    public var displayName: String {
-        TerminalSessionError.displayablePath((shell as NSString).lastPathComponent)
-    }
+    public let displayName: String
 
     public var workingDirectory: String? {
         tracker.directory
