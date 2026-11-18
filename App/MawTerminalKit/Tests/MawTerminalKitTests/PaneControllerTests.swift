@@ -66,9 +66,9 @@ import Testing
             rows(of: pane, 4) == ["maw: first line", "second line", "Try this.", "[↩ new session]"])
     }
 
-    /// Every control and format character but a line feed is replaced before the style's own
-    /// SGR sequence is added and each line feed becomes CR LF.
-    /// A tab stays, and a bare CR becomes `?`, as it would overwrite the line.
+    /// Every control and format character but a line feed and a tab is replaced before the
+    /// style's own SGR sequence is added and each line feed becomes CR LF. A bare CR becomes
+    /// `?`, as it would overwrite the line, also at the end of the text.
     @Test func replacesControlCharactersButKeepsTheStyleAndTheLineBreaks() {
         let text = "a\u{1B}]0;title\u{07}b\nc\td\r\u{9B}2J\u{202E}\n"
         #expect(
@@ -77,6 +77,9 @@ import Testing
         #expect(
             PaneController.terminalText("one\rtwo\tthree\n", style: "31", atLineStart: true)
                 == "\u{1B}[31mone?two\tthree\r\n\u{1B}[0m")
+        #expect(
+            PaneController.terminalText("abc\r", style: "31", atLineStart: true)
+                == "\u{1B}[31mabc?\u{1B}[0m")
         #expect(
             PaneController.terminalText("x\n", style: "2", atLineStart: false)
                 == "\r\n\u{1B}[2mx\r\n\u{1B}[0m")

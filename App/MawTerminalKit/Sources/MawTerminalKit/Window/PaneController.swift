@@ -140,9 +140,15 @@ final class PaneController {
     /// line. Then the style's SGR sequence is added, and each line ends in CR LF.
     static func terminalText(_ text: String, style: String, atLineStart: Bool) -> String {
         // Split by scalars: a String splits by characters, and CR LF is one character.
-        let lines = text.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { line in
-                let content = line.last == "\r" ? line.dropLast() : line
+        let segments = text.unicodeScalars.split(
+            separator: "\n", omittingEmptySubsequences: false)
+        let lines = segments.indices
+            .map { index in
+                // A CR at the end of a segment is part of a CR LF only if a line feed follows,
+                // which it does after every segment but the last.
+                let line = segments[index]
+                let followedByLineFeed = index < segments.index(before: segments.endIndex)
+                let content = followedByLineFeed && line.last == "\r" ? line.dropLast() : line
                 return TerminalSessionError.displayable(
                     String(String.UnicodeScalarView(content)), keepingTabs: true)
             }
