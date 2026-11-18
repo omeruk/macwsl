@@ -90,9 +90,9 @@ final class PseudoTerminalProcess: Sendable {
     }
 
     /// What failed, for the start failure's reason. The executable comes from the settings, so
-    /// it is shown without control characters (`TerminalSessionError.displayable(_:)`).
+    /// it is shown without control characters (`TerminalSessionError.displayablePath(_:)`).
     private static func describe(_ step: Int32, executable path: String) -> String {
-        let executable = TerminalSessionError.displayable(path)
+        let executable = TerminalSessionError.displayablePath(path)
         return switch maw_terminal_step(rawValue: UInt32(step)) {
         case MAW_TERMINAL_STEP_PIPE: "the pipe for the shell's start could not be created"
         case MAW_TERMINAL_STEP_FORK: "no process could be created for \(executable)"

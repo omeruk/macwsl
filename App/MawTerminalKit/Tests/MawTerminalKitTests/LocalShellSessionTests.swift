@@ -476,6 +476,28 @@ import Testing
         #expect(unwrapped.contains("/nonexistent/?]0;title??[2Jshell??"), "\(text)")
     }
 
+    /// A path longer than 256 characters is shown cut, with "…"; the failure keeps the path.
+    @Test func showsAtMost256CharactersOfAShellsPath() {
+        let shell = "/nonexistent/" + String(repeating: "a", count: 300)
+        let session = LocalShellSession(shell: shell)
+        #expect(throws: TerminalSessionError.programNotFound(path: shell)) {
+            try session.start(size: .default)
+        }
+        let description = TerminalSessionError.programNotFound(path: shell).errorDescription
+        #expect(
+            description
+                == String(shell.prefix(256)) + "… does not exist or is not executable")
+    }
+
+    /// The shell's name for the tab and the window is the last component of its path, shown
+    /// without control or format characters and at most 256 characters long.
+    @Test func namesTheShellWithoutControlCharacters() {
+        #expect(LocalShellSession(shell: "/bin/zsh").displayName == "zsh")
+        #expect(LocalShellSession(shell: "/opt/\u{202E}hsz\u{1B}[2J").displayName == "?hsz?[2J")
+        let long = LocalShellSession(shell: "/opt/" + String(repeating: "b", count: 300))
+        #expect(long.displayName == String(repeating: "b", count: 256) + "…")
+    }
+
     /// The same for a start failure: a file with an escape sequence in its name, executable
     /// but no program, which execve refuses in the child.
     @Test func showsAStartFailuresPathWithoutControlCharacters() async throws {

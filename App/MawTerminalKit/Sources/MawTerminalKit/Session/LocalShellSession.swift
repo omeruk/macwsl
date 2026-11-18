@@ -36,8 +36,10 @@ public final class LocalShellSession: TerminalSession {
         self.locale = locale
     }
 
+    /// The shell's name for the tab and the window: the last component of its path, as
+    /// `TerminalSessionError.displayablePath(_:)` shows a path from the settings.
     public var displayName: String {
-        (shell as NSString).lastPathComponent
+        TerminalSessionError.displayablePath((shell as NSString).lastPathComponent)
     }
 
     public var workingDirectory: String? {
@@ -53,8 +55,9 @@ public final class LocalShellSession: TerminalSession {
         self.size = size
         let pump = OutputPump<TerminationStatus>()
         // A leading dash in argv[0] makes the shell a login shell, as Terminal.app starts it.
+        // argv[0] is the shell's own name, not `displayName`, which is only for showing.
         let process = try PseudoTerminalProcess(
-            executable: shell, argv0: "-" + displayName,
+            executable: shell, argv0: "-" + (shell as NSString).lastPathComponent,
             environment: Self.environment(from: baseEnvironment, locale: locale),
             directory: startDirectory, size: Self.windowSize(size), output: pump)
         self.process = process

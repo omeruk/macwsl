@@ -174,11 +174,16 @@ Virtualization.framework's virtiofs device, and the initramfs mounts it at `/mnt
   never shows a name that is not a valid distribution name, because the notice goes to the
   terminal emulator, where control characters would take effect
   (`LinuxSessionTests.anInvalidNameOpensTheDefaultAndSaysSo`). The local shell's path from
-  `localShell` reaches the pane only in an error, with its control and format characters
-  replaced by `?` (`LocalShellSessionTests.showsAMissingShellsPathWithoutControlCharacters`).
-  The setting itself names the program that a local tab runs as the owner, so a guest that
-  writes `settings.json` can already run a program on the Mac, as through
-  `~/Library/LaunchAgents`.
+  `localShell` is shown in two places: whole, in the pane's error when the shell cannot start,
+  and its last component as the name of the tab and the window. Both show it with its control
+  and format characters replaced by `?`, and cut to 256 characters with "…"
+  (`LocalShellSessionTests.showsAMissingShellsPathWithoutControlCharacters`,
+  `namesTheShellWithoutControlCharacters`); the path that runs is unchanged. Every notice and
+  error that a pane writes to the terminal emulator has its control and format characters,
+  but its line feeds, replaced in the same way
+  (`PaneControllerTests.aFailureWithEscapeSequencesAppearsAsTextInRed`). The setting itself
+  names the program that a local tab runs as the owner, so a guest that writes
+  `settings.json` can already run a program on the Mac, as through `~/Library/LaunchAgents`.
 
 ### The guest agent over vsock
 

@@ -80,13 +80,16 @@ public enum ForegroundReport: Hashable, Sendable {
 }
 
 extension TerminalSessionError: LocalizedError {
-    /// A path from the settings, such as the local shell's, made safe for the pane, which passes
-    /// its notices to the terminal emulator: control and format characters become `?`, so that
-    /// none of them takes effect there. `settings.json` can be written from a distribution
-    /// through `/mnt/mac` (docs/security.md).
-    static func displayable(_ path: String) -> String {
+    /// The most characters of a path from the settings that the app shows.
+    static let displayedPathLimit = 256
+
+    /// Text made safe for the pane, which passes it to the terminal emulator: control and format
+    /// characters become `?`, so that none of them takes effect there. Text from the settings
+    /// needs it because `settings.json` can be written from a distribution through `/mnt/mac`
+    /// (docs/security.md).
+    static func displayable(_ text: String) -> String {
         String(
-            path.unicodeScalars.map { scalar -> Character in
+            text.unicodeScalars.map { scalar -> Character in
                 switch scalar.properties.generalCategory {
                 case .control, .format, .lineSeparator, .paragraphSeparator, .surrogate,
                     .privateUse, .unassigned:
@@ -97,10 +100,18 @@ extension TerminalSessionError: LocalizedError {
             })
     }
 
+    /// A path from the settings, such as the local shell's, as the app shows it: displayable,
+    /// and cut to `displayedPathLimit` characters with "…". The path that runs is unchanged.
+    static func displayablePath(_ path: String) -> String {
+        let shown = displayable(path)
+        guard shown.count > displayedPathLimit else { return shown }
+        return String(shown.prefix(displayedPathLimit)) + "…"
+    }
+
     public var errorDescription: String? {
         switch self {
         case .programNotFound(let path):
-            "\(Self.displayable(path)) does not exist or is not executable"
+            "\(Self.displayablePath(path)) does not exist or is not executable"
         case .startFailed(let reason): "The session could not start: \(reason)"
         case .failed(let message, _): message
         }
