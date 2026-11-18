@@ -5,7 +5,7 @@ import MawXPC
 import Testing
 import os
 
-@Suite struct MachineRegistryTests {
+@Suite(.timeLimit(.minutes(2))) struct MachineRegistryTests {
     let clock = TestClock()
 
     func makeRegistry(_ factory: FakeFactory) -> MachineRegistry<TestClock> {
