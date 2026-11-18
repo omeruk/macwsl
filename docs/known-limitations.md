@@ -272,19 +272,24 @@ from `main`.
     `Sources/MawDaemonKit/DaemonService.swift`; the `terminate` request carries no reason of
     its client.
   - **Phase:** 12b: the reason names what stopped the machine, such as the terminal app.
-- **Titles and working directories that programs report are shown unfiltered.**
+- **Titles, working directories, and program names that programs report are shown
+  unfiltered.**
   - **Seen:** A program in a pane sets the pane's title with OSC 0 or 2 and its working
-    directory with OSC 7. The app shows them as they arrive, in the window's title, the title
-    bar, the pane grid, and the key-hint bar, so format characters such as U+202E take effect
-    there and can make a name look like another. This is existing behavior, which
-    this branch does not change; since phase 07, a program of a distribution can also write
-    `settings.json` through `/mnt/mac`, whose `localShell` name the app now shows filtered.
-  - **Evidence:** `WindowModel.updateWindowTitle()` (`pane.title ?? pane.displayName`) in
-    `App/MawTerminalKit/Sources/MawTerminalKit/Window/WindowModel.swift`, and
+    directory with OSC 7, and a guest process can set its own name with `prctl(PR_SET_NAME)`,
+    which the session reports as the foreground program. The app shows the title and the
+    directory as they arrive, in the window's title, the title bar, the pane grid, and the
+    key-hint bar, and the program's name in the question before a tab or the app closes, so
+    format characters such as U+202E take effect there and can make a name look like another.
+    This is existing behavior, which this branch does not change; since phase 07, a program of
+    a distribution can also write `settings.json` through `/mnt/mac`, whose `localShell` name
+    the app now shows filtered.
+  - **Evidence:** `WindowModel.updateWindowTitle()` (`pane.title ?? pane.displayName`) and the
+    close and quit question's program names (`.program(let name)`,
+    `App/MawTerminalKit/Sources/MawTerminalKit/Window/WindowModel.swift:614`), and
     `pane.workingDirectory` in `Views/TitleBarView.swift`, `Views/PaneGridView.swift`, and
     `Views/KeyHintBar.swift`; pull request #33, code review.
-  - **Phase:** 12b. Filter once where titles and directories are drawn, in those four places,
-    with the rules of `TerminalSessionError.displayable(_:)`.
+  - **Phase:** 12b. Filter once where titles, directories, and program names are shown, in
+    those places, with the rules of `TerminalSessionError.displayable(_:)`.
 - **The terminal app's local shell start waits on the main thread until the shell runs.**
   - **Seen:** `maw_terminal_spawn` forks, and the parent reads the child's report pipe until
     `execve` closes it. Before `execve`, the child changes to the start directory, the home
