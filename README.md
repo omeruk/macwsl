@@ -222,8 +222,9 @@ maw -- cat /mnt/mac/Projects/app/README.md    # ~/Projects/app/README.md on the 
 - **macOS asks about `mawd`** the first time a distribution opens `~/Desktop`, `~/Documents`,
   `~/Downloads`, or another protected folder. If you refuse, the folder shows as `Operation not
   permitted` in Linux, not as an empty folder. To change the answer, open System Settings →
-  Privacy & Security → Files and Folders, and switch the folder on or off under `mawd`. Folders that need Full Disk Access, such as `~/Library/Mail`, are
-  refused without a question.
+  Privacy & Security → Files and Folders, and switch the folder on or off under `mawd`.
+  Folders that need Full Disk Access, such as `~/Library/Mail`, are refused without a
+  question.
 - **Names ignore case.** The Mac's volume does not tell `a` from `A`, so in `/mnt/mac` they are
   one file: `echo 1 > a; echo 2 > A` leaves one file, `a`, holding `2`. A rename that changes
   only the case, such as `mv notes Notes`, fails with "are the same file"; rename through
@@ -232,9 +233,11 @@ maw -- cat /mnt/mac/Projects/app/README.md    # ~/Projects/app/README.md on the 
   the Mac leads nowhere in Linux, and one to `/mnt/mac/...` made in Linux leads nowhere on the
   Mac. Relative links work on both sides.
 - **Listing large directories is slower than on the Mac**: `ls -l` of 10,000 files took about
-  1 s in Linux, against 0.08 s on the Mac. A 1 GiB file was written at about 1,100 MB/s and read
-  at about 2,700 MB/s, and a second `git status` in a clone of maw's repository took 23 ms
-  ([decision record 0021](docs/decisions/0021-mac-share.md)).
+  1 s in Linux, against 0.08 s on the Mac
+  ([decision record 0021](docs/decisions/0021-mac-share.md)). In the measurements of
+  `scripts/measure-mac-share.sh` on an M1 Pro, on 2026-11-18, a 1 GiB file was written at
+  1,185 MB/s and read at 2,635 MB/s, and a second `git status` in a clone of maw's repository
+  took 41 ms (medians of 5 runs; pull request #33).
 - **Just after a change on the Mac**, Linux can for a fraction of a second still see the old
   size of a file or the old contents of a directory that was replaced.
 - **Only your home directory is shared**, not `/Volumes` or `/tmp`.
@@ -451,8 +454,9 @@ default, and shows live figures:
 A stopped distribution shows its disk and kernel only. Below the table, a details box shows the
 selected distribution's default flag, user, and disk image, and while it runs its IPv4
 address, the Mac's home directory mounted at `/mnt/mac` (`mounts  /mnt/mac ← ~`), the time from
-its start to its agent (`boot`), and the memory its process takes on the Mac (`host memory`). A memory chart shows the last 60 seconds of MEMORY while it runs. A figure
-that is not known is left empty.
+its start to its agent (`boot`), and the memory its process takes on the Mac (`host memory`).
+A memory chart shows the last 60 seconds of MEMORY while it runs. A figure that is not known
+is left empty.
 
 The screen follows the daemon while it is visible in a window: a machine that starts or stops
 for any reason, such as a tab in another window, `maw` in a terminal, or the idle stop, changes

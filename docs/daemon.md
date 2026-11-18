@@ -504,8 +504,8 @@ default, and its figures, and follows them
   `lastSampleMicroseconds`, the time of the last guest request, is for diagnosis and
   measurement only; clients do not show it or depend on it. `macShare`, the Mac's path that the
   daemon shares and `/mnt/mac`, is present while the distribution runs, if its guest reported
-  the share mounted when it started; the Mac's path is the daemon's own, never the guest's. `sampleNumber` counts the samples of
-  the distribution's run: one more for each sample, including one whose guest request failed or
+  the share mounted when it started; the Mac's path is the daemon's own, never the guest's.
+  `sampleNumber` counts the samples of the distribution's run: one more for each sample, including one whose guest request failed or
   timed out. It starts from 1 with a new run, and when watching starts while no client watched;
   a client that starts watching while another watches sees the count where it stands. The
   terminal app draws one bar of its memory chart per number, from the first number it sees.
