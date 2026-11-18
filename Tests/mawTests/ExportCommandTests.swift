@@ -9,8 +9,9 @@ import os
 @testable import maw
 
 /// `maw --export`'s file and its cancellation, with a fake daemon that writes to the descriptor
-/// it receives.
-@Suite struct ExportCommandTests {
+/// it receives. The time limit is longer than every wait of a test: `waitFor` and
+/// `answeredCancelTimeout`.
+@Suite(.timeLimit(.minutes(2))) struct ExportCommandTests {
     final class FakeDaemon: ExportDaemon, @unchecked Sendable {
         let events: AsyncStream<DaemonClient.Event>
         private let continuation: AsyncStream<DaemonClient.Event>.Continuation
@@ -120,6 +121,12 @@ import os
     var standardError: String {
         (try? String(contentsOf: errors, encoding: .utf8)) ?? ""
     }
+
+    /// The cancellation's timeout for tests in which the daemon answers the cancellation: longer
+    /// than any stall of the cooperative pool, during which the timeout's sleep runs on while the
+    /// fake daemon's answer cannot, so that the answer always comes first
+    /// (docs/known-limitations.md).
+    static let answeredCancelTimeout = Duration.seconds(60)
 
     /// No signal arrives.
     var noSignals: AsyncStream<Int32> {
@@ -255,7 +262,9 @@ import os
         daemon.holdsUntilCancelled = true
         let file = path("ubuntu.tar")
         let (signals, sender) = AsyncStream.makeStream(of: Int32.self)
-        let run = Task { try await command(daemon, file: file).run(signals: signals) }
+        var exporting = command(daemon, file: file)
+        exporting.cancelTimeout = Self.answeredCancelTimeout
+        let run = Task { [exporting] in try await exporting.run(signals: signals) }
         try await waitFor { daemon.requests.contains("export Copy tar") }
         sender.yield(SIGINT)
         #expect(try await run.value == 128 + SIGINT)
@@ -273,7 +282,11 @@ import os
         daemon.succeedsWhenCancelled = true
         let file = path("ubuntu.tar")
         let (signals, sender) = AsyncStream.makeStream(of: Int32.self)
-        let run = Task { try await command(daemon, file: file).run(signals: signals) }
+        var exporting = command(daemon, file: file)
+        exporting.cancelTimeout = Self.answeredCancelTimeout
+        // The export's reply comes after the cancellation's answer, through the pool as well.
+        exporting.replyTimeout = Self.answeredCancelTimeout
+        let run = Task { [exporting] in try await exporting.run(signals: signals) }
         try await waitFor { daemon.requests.contains("export Copy tar") }
         sender.yield(SIGINT)
         #expect(try await run.value == 0)
@@ -282,13 +295,27 @@ import os
         #expect(standardError.hasSuffix("Copy was exported to \(file): 7 bytes.\n"))
     }
 
-    /// Waits until `condition` holds, for at most 5 seconds.
+    /// Waits until `condition` holds, for at most 2,500 sleeps of 2 ms. It counts its sleeps
+    /// instead of reading a clock: a stall of the cooperative pool delays the sleeps as much as
+    /// the work that the condition waits for, so it cannot use the wait up
+    /// (docs/known-limitations.md).
     func waitFor(_ condition: @Sendable () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
+        var sleeps = 0
         while !condition() {
-            try #require(ContinuousClock.now < deadline, "the condition did not become true")
+            try #require(sleeps < 2_500, "the condition did not become true")
             try await Task.sleep(for: .milliseconds(2))
+            sleeps += 1
         }
+    }
+
+    /// Unless a test changes them, maw waits 5 seconds for the daemon to confirm a
+    /// cancellation and 500 ms for the export's own reply after it, as before they could be set.
+    @Test func keepsItsTimeoutsByDefault() {
+        let exporting = command(FakeDaemon(), file: path("ubuntu.tar"))
+        #expect(ExportCommand.cancelTimeout == .seconds(5))
+        #expect(exporting.cancelTimeout == .seconds(5))
+        #expect(ExportCommand.replyTimeout == .milliseconds(500))
+        #expect(exporting.replyTimeout == .milliseconds(500))
     }
 
     /// The export's step labels line up, and none is wider than an installation's.
