@@ -163,6 +163,17 @@ Pull request A records the measurements of `scripts/measure-mac-share.sh`.
 - A distribution is as trusted as a program the owner runs on the Mac. Root and the default
   user can read and write everything that the owner can, including `~/.ssh` and
   `~/Library/LaunchAgents` ([docs/security.md](../security.md)).
+- An imported archive's programs get the share as soon as the import's first start boots
+  them, and at every later start: importing an archive is running its programs on the Mac as
+  the owner ([docs/security.md](../security.md), the import's section). Pull request A's
+  security review weighed two ways to withhold the share and rejected both, because each only
+  delays it until the first session, which mounts it all the same:
+  - starting the imported distribution the first time without the share;
+  - not starting it at the end of the import, which also makes its first session a cold start.
+
+  WSL follows the same model: `wsl --import` gives the imported distribution `/mnt/c` with the
+  user's rights. The README's `--import` section warns to import only archives whose source
+  is trusted.
 - Ownership checks in the guest, such as git's, accept the files under `/mnt/mac` for the
   default user, whoever looked first.
 - The questions of macOS's privacy protection name `mawd`, and come back with each development

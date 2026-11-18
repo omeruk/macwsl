@@ -371,7 +371,16 @@ provisioning machine by `bsdtar`, as root, with `--numeric-owner`, into the new 
 - **The import's configuration runs programs of the imported root file system**, through
   `chroot`: `dpkg-divert`, if the archive has it, to divert the message of the day. They run as
   root inside the provisioning machine, which has no access to the Mac's files and no other
-  disk; at worst they damage the new distribution.
+  disk; during the configuration, at worst they damage the new distribution.
+- **The import's first start, and every later start, boots the archive's programs with the
+  share of the home directory mounted.** The import ends by starting the new distribution, so
+  that its first session is warm; from then on, the archive's units, generators, and login
+  scripts run as root or as its users, with read-write access to the owner's home directory
+  through `/mnt/mac` (see "The share of the home directory"), before the owner has opened a
+  session. Importing an archive is therefore running its programs on the Mac as the owner: an
+  archive should be imported only if its source is trusted, as a program would be run only if
+  its source is trusted. Decision record 0021 explains why the share is not withheld from the
+  first start.
 - **The default user that `/etc/maw.conf` or `/etc/wsl.conf` names is validated** with
   `UserName`'s rules and must be a user in the archive's `/etc/passwd`; otherwise it is ignored.
   It reaches the configuration script as an argument, never inside the script's text.
