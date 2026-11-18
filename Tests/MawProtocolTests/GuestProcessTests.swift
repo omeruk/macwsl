@@ -9,8 +9,15 @@ import Testing
     import Glibc
 #endif
 
+/// The deadline of each step of a scripted side on a thread of its own, and the reply timeout
+/// of a client that talks to one. It is only a bound, so that a side whose counterpart stops
+/// leaves no thread behind; it is longer than any stall of the cooperative pool, during which
+/// its clock runs on while the side under test, which needs the pool, cannot answer
+/// (docs/known-limitations.md).
+private let peerDeadline = Duration.seconds(60)
+
 /// The client side of an exec session against a scripted agent.
-@Suite struct GuestProcessTests {
+@Suite(.timeLimit(.minutes(2))) struct GuestProcessTests {
     /// Plays the agent: answers the handshake and the exec request with `frames`, written in
     /// one piece, then waits for the client to close the connection, or writes `partialFrame`
     /// and closes it at once.
@@ -20,17 +27,17 @@ import Testing
         let (host, peer) = try HandshakeTests.socketPair()
         startDetachedThread {
             guard let connection = try? FrameConnection(peer) else { return }
-            _ = try? connection.exchangeVersions(until: .now + .seconds(5))
-            _ = try? connection.receiveControl(until: .now + .seconds(5), expecting: "exec")
+            _ = try? connection.exchangeVersions(until: .now + peerDeadline)
+            _ = try? connection.receiveControl(until: .now + peerDeadline, expecting: "exec")
             for frame in frames {
                 connection.enqueue(frame)
             }
-            try? connection.flush(until: .now + .seconds(5))
+            try? connection.flush(until: .now + peerDeadline)
             if !partialFrame.isEmpty {
                 _ = partialFrame.withUnsafeBytes { write(peer.rawValue, $0.baseAddress, $0.count) }
             }
             if !thenClose {
-                while (try? connection.receiveFrame(until: .now + .seconds(10))) != nil {}
+                while (try? connection.receiveFrame(until: .now + peerDeadline)) != nil {}
             }
             peer.close()
         }
@@ -47,9 +54,12 @@ import Testing
         }
         #expect(process.pid == 7)
         // Nothing else arrives on the connection, so the output must come from the buffer.
-        let deadline = ContinuousClock.now + .seconds(5)
-        while received.text.isEmpty && ContinuousClock.now < deadline {
+        // At most 500 sleeps of 10 ms, counted instead of read from a clock: a stall of the
+        // cooperative pool delays the sleeps as much as the output (docs/known-limitations.md).
+        var sleeps = 0
+        while received.text.isEmpty && sleeps < 500 {
             try await Task.sleep(for: .milliseconds(10))
+            sleeps += 1
         }
         #expect(received.text == "/ # ")
     }
@@ -69,32 +79,32 @@ import Testing
 
     /// The client's writers block while the agent reads slowly, and resume as it reports
     /// consumed input.
-    @Test(.timeLimit(.minutes(1)))
+    @Test(.timeLimit(.minutes(2)))
     func streamsLargeInputToASlowAgent() async throws {
         let (host, peer) = try HandshakeTests.socketPair()
         let received = ByteCounter()
         startDetachedThread {
             guard let connection = try? FrameConnection(peer) else { return }
-            _ = try? connection.exchangeVersions(until: .now + .seconds(5))
-            _ = try? connection.receiveControl(until: .now + .seconds(5), expecting: "exec")
+            _ = try? connection.exchangeVersions(until: .now + peerDeadline)
+            _ = try? connection.receiveControl(until: .now + peerDeadline, expecting: "exec")
             connection.enqueue(.control(.started(pid: 7)))
-            try? connection.flush(until: .now + .seconds(5))
+            try? connection.flush(until: .now + peerDeadline)
             var count = 0
-            while let frame = try? connection.receiveFrame(until: .now + .seconds(10)) {
+            while let frame = try? connection.receiveFrame(until: .now + peerDeadline) {
                 if frame.type == .stdin {
                     count += frame.payload.count
                     // About 1 ms per 32 KiB frame: far slower than the client writes.
                     usleep(1000)
                     connection.enqueue(.stdinConsumed(UInt32(frame.payload.count)))
-                    try? connection.flush(until: .now + .seconds(5))
+                    try? connection.flush(until: .now + peerDeadline)
                 } else if case .stdinEOF = try? frame.controlMessage() {
                     break
                 }
             }
             received.add(count)
             connection.enqueue(.control(.exited(.exited(code: 0))))
-            try? connection.flush(until: .now + .seconds(5))
-            while (try? connection.receiveFrame(until: .now + .seconds(10))) != nil {}
+            try? connection.flush(until: .now + peerDeadline)
+            while (try? connection.receiveFrame(until: .now + peerDeadline)) != nil {}
             peer.close()
         }
         let client = GuestAgentClient { () throws(MawError) in host }
@@ -119,7 +129,7 @@ import Testing
     /// Over vsock, the guest grants send credit in large steps, so that one `send` can take the
     /// whole outbox at once. The client must then move more queued input to the connection
     /// instead of waiting for a wake-up that its blocked writer never sends.
-    @Test(.timeLimit(.minutes(1)))
+    @Test(.timeLimit(.minutes(2)))
     func keepsSendingWhenOneSendEmptiesAFullOutbox() async throws {
         let (host, peer) = try HandshakeTests.socketPair()
         // Socket buffers far larger than the client's outbox limit, like vsock's credit window.
@@ -130,10 +140,10 @@ import Testing
         let received = ByteCounter()
         startDetachedThread {
             guard let connection = try? FrameConnection(peer) else { return }
-            _ = try? connection.exchangeVersions(until: .now + .seconds(5))
-            _ = try? connection.receiveControl(until: .now + .seconds(5), expecting: "exec")
+            _ = try? connection.exchangeVersions(until: .now + peerDeadline)
+            _ = try? connection.receiveControl(until: .now + peerDeadline, expecting: "exec")
             connection.enqueue(.control(.started(pid: 7)))
-            try? connection.flush(until: .now + .seconds(5))
+            try? connection.flush(until: .now + peerDeadline)
             // Reads in bursts: pauses, then takes everything that has arrived in large reads,
             // and reports it consumed.
             var decoder = FrameDecoder()
@@ -167,14 +177,14 @@ import Testing
                     count += consumed
                     if consumed > 0 {
                         connection.enqueue(.stdinConsumed(UInt32(consumed)))
-                        try? connection.flush(until: .now + .seconds(5))
+                        try? connection.flush(until: .now + peerDeadline)
                     }
                 }
             }
             received.add(count)
             connection.enqueue(.control(.exited(.exited(code: 0))))
-            try? connection.flush(until: .now + .seconds(5))
-            while (try? connection.receiveFrame(until: .now + .seconds(10))) != nil {}
+            try? connection.flush(until: .now + peerDeadline)
+            while (try? connection.receiveFrame(until: .now + peerDeadline)) != nil {}
             peer.close()
         }
         let client = GuestAgentClient { () throws(MawError) in host }
@@ -294,17 +304,17 @@ extension GuestProcessTests {
     @Suite struct Latency {
         /// The client never has more input outstanding than the window, and a signal and a resize
         /// overtake the input it holds back, while `stdinEOF` stays behind it.
-        @Test(.timeLimit(.minutes(1)))
+        @Test(.timeLimit(.minutes(2)))
         func keepsInputWithinTheWindowAndSendsControlMessagesAheadOfIt() async throws {
             let (host, peer) = try HandshakeTests.socketPair()
             let agentConnection = try FrameConnection(peer)
             let client = GuestAgentClient { () throws(MawError) in host }
             startDetachedThread {
-                _ = try? agentConnection.exchangeVersions(until: .now + .seconds(5))
+                _ = try? agentConnection.exchangeVersions(until: .now + peerDeadline)
                 _ = try? agentConnection.receiveControl(
-                    until: .now + .seconds(5), expecting: "exec")
+                    until: .now + peerDeadline, expecting: "exec")
                 agentConnection.enqueue(.control(.started(pid: 7)))
-                try? agentConnection.flush(until: .now + .seconds(5))
+                try? agentConnection.flush(until: .now + peerDeadline)
             }
             let process = try await client.exec(ExecRequest(argv: ["sleep", "1000"])) { _, _ in }
             // Three windows and the end: more than the window and the client's queue together.
@@ -346,7 +356,7 @@ extension GuestProcessTests {
             var received = 0
             var messages: [ControlMessage] = []
             agentConnection.enqueue(.stdinConsumed(UInt32(AgentProtocol.inputWindow)))
-            try agentConnection.flush(until: .now + .seconds(5))
+            try agentConnection.flush(until: .now + peerDeadline)
             while remaining > 0 {
                 let next = await runOnDedicatedThread { receive(for: .milliseconds(200)) }
                 #expect(next.input <= AgentProtocol.inputWindow)
@@ -355,7 +365,7 @@ extension GuestProcessTests {
                 remaining -= next.input
                 messages += next.messages
                 agentConnection.enqueue(.stdinConsumed(UInt32(next.input)))
-                try agentConnection.flush(until: .now + .seconds(5))
+                try agentConnection.flush(until: .now + peerDeadline)
             }
             #expect(received == size - AgentProtocol.inputWindow)
             if messages.isEmpty {
@@ -364,7 +374,7 @@ extension GuestProcessTests {
             #expect(messages == [.stdinEOF])
 
             agentConnection.enqueue(.control(.exited(.exited(code: 0))))
-            try agentConnection.flush(until: .now + .seconds(5))
+            try agentConnection.flush(until: .now + peerDeadline)
             #expect(try await process.waitForExit() == .exited(code: 0))
             peer.close()
         }

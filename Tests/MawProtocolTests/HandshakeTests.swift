@@ -11,7 +11,14 @@ import Testing
     import Glibc
 #endif
 
-@Suite struct HandshakeTests {
+/// The deadline of each step of a scripted side on a thread of its own, and the reply timeout
+/// of a client that talks to one. It is only a bound, so that a side whose counterpart stops
+/// leaves no thread behind; it is longer than any stall of the cooperative pool, during which
+/// its clock runs on while the side under test, which needs the pool, cannot answer
+/// (docs/known-limitations.md).
+private let peerDeadline = Duration.seconds(60)
+
+@Suite(.timeLimit(.minutes(2))) struct HandshakeTests {
     /// A connected socket pair: `host` for the side under test, `peer` for the scripted side.
     static func socketPair() throws -> (host: OwnedDescriptor, peer: OwnedDescriptor) {
         var fds: [Int32] = [-1, -1]
@@ -33,14 +40,14 @@ import Testing
         try #require(
             startDetachedThread {
                 let connection = try? FrameConnection(peer)
-                peerFinished.yield(try? connection?.exchangeVersions(until: .now + .seconds(5)))
+                peerFinished.yield(try? connection?.exchangeVersions(until: .now + peerDeadline))
                 peerFinished.finish()
             })
         try #require(
             startDetachedThread {
                 hostFinished.yield(
                     Result { () throws(ConnectionError) in
-                        try hostConnection.exchangeVersions(until: .now + .seconds(5))
+                        try hostConnection.exchangeVersions(until: .now + peerDeadline)
                     })
                 hostFinished.finish()
             })
@@ -58,13 +65,13 @@ import Testing
     /// peer's version would time out.
     @Test func clientSendsItsRequestWithoutWaitingForTheAgentsVersion() async throws {
         let (host, peer) = try Self.socketPair()
-        let client = GuestAgentClient(replyTimeout: .seconds(5)) { () throws(MawError) in host }
+        let client = GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in host }
         let nonce = DialBackNonce.random()
         // A thread of its own, running before the client starts, so that a busy cooperative
         // pool cannot delay the peer past the client's timeout.
         startDetachedThread {
             guard let connection = try? FrameConnection(peer) else { return }
-            let deadline = ContinuousClock.now + .seconds(10)
+            let deadline = ContinuousClock.now + peerDeadline
             let version = try? connection.receiveFrame(until: deadline).protocolVersion()
             let request = try? connection.receiveControl(until: deadline, expecting: "a request")
             connection.enqueue(.version())
@@ -88,8 +95,8 @@ import Testing
         startDetachedThread {
             guard let connection = try? FrameConnection(peer) else { return }
             connection.enqueue(.version(future))
-            try? connection.flush(until: .now + .seconds(5))
-            _ = try? connection.receiveFrame(until: .now + .seconds(5))
+            try? connection.flush(until: .now + peerDeadline)
+            _ = try? connection.receiveFrame(until: .now + peerDeadline)
             peer.close()
         }
         await #expect(
@@ -113,8 +120,8 @@ import Testing
                         AgentError(
                             .versionMismatch, "mismatch", hostVersion: ProtocolVersion.current,
                             guestVersion: 4))))
-            try? connection.flush(until: .now + .seconds(5))
-            _ = try? connection.receiveFrame(until: .now + .seconds(5))
+            try? connection.flush(until: .now + peerDeadline)
+            _ = try? connection.receiveFrame(until: .now + peerDeadline)
             peer.close()
         }
         await #expect(
@@ -139,8 +146,8 @@ import Testing
                         AgentError(
                             .versionMismatch, "mismatch", hostVersion: ProtocolVersion.current,
                             guestVersion: earlier))))
-            try? connection.flush(until: .now + .seconds(5))
-            _ = try? connection.receiveFrame(until: .now + .seconds(5))
+            try? connection.flush(until: .now + peerDeadline)
+            _ = try? connection.receiveFrame(until: .now + peerDeadline)
             peer.close()
         }
         await #expect(
@@ -166,10 +173,10 @@ import Testing
                     AgentError(
                         .versionMismatch, "mismatch", hostVersion: ProtocolVersion.current,
                         guestVersion: earlier))))
-        try agent.flush(until: .now + .seconds(5))
+        try agent.flush(until: .now + peerDeadline)
         peer.close()
 
-        let client = GuestAgentClient(replyTimeout: .seconds(5)) { () throws(MawError) in host }
+        let client = GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in host }
         await #expect(
             throws: MawError.guestAgentVersionMismatch(
                 host: ProtocolVersion.current, guest: earlier)
@@ -205,11 +212,11 @@ import Testing
                         AgentError(
                             .versionMismatch, "mismatch", hostVersion: ProtocolVersion.current,
                             guestVersion: earlier))))
-            try agent.flush(until: .now + .seconds(5))
+            try agent.flush(until: .now + peerDeadline)
             agent.descriptor.close()
 
             let host = OwnedDescriptor(fds[0])
-            let client = GuestAgentClient(replyTimeout: .seconds(5)) { () throws(MawError) in
+            let client = GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in
                 host
             }
             do throws(MawError) {
@@ -241,7 +248,7 @@ import Testing
 
         let connection = try FrameConnection(dialedHost)
         let first = try await runOnDedicatedThread { () throws(ConnectionError) -> Frame in
-            try connection.receiveFrame(until: .now + .seconds(5))
+            try connection.receiveFrame(until: .now + peerDeadline)
         }
         #expect(try first.dialBackNonce() == nonce)
     }
@@ -276,11 +283,11 @@ import Testing
 
         let connection = try FrameConnection(host)
         connection.enqueue(.version(9))
-        try connection.flush(until: .now + .seconds(5))
+        try connection.flush(until: .now + peerDeadline)
         let reply = try await runOnDedicatedThread { () throws(ConnectionError) -> [Frame] in
             [
-                try connection.receiveFrame(until: .now + .seconds(5)),
-                try connection.receiveFrame(until: .now + .seconds(5)),
+                try connection.receiveFrame(until: .now + peerDeadline),
+                try connection.receiveFrame(until: .now + peerDeadline),
             ]
         }
         #expect(try reply[0].protocolVersion() == ProtocolVersion.current)
@@ -292,7 +299,7 @@ import Testing
         // Then the agent closes the connection.
         let end = await runOnDedicatedThread { () -> Bool in
             do {
-                _ = try connection.receiveFrame(until: .now + .seconds(5))
+                _ = try connection.receiveFrame(until: .now + peerDeadline)
                 return false
             } catch {
                 return error as? ConnectionError == .closed
