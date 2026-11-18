@@ -232,12 +232,11 @@ maw -- cat /mnt/mac/Projects/app/README.md    # ~/Projects/app/README.md on the 
 - **Absolute links work only on the side that made them.** A link to `/Users/you/...` made on
   the Mac leads nowhere in Linux, and one to `/mnt/mac/...` made in Linux leads nowhere on the
   Mac. Relative links work on both sides.
-- **Listing large directories is slower than on the Mac**: `ls -l` of 10,000 files took about
-  1 s in Linux, against 0.08 s on the Mac
-  ([decision record 0021](docs/decisions/0021-mac-share.md)). In the measurements of
-  `scripts/measure-mac-share.sh` on an M1 Pro, on 2026-11-18, a 1 GiB file was written at
-  1,185 MB/s and read at 2,635 MB/s, and a second `git status` in a clone of maw's repository
-  took 41 ms (medians of 5 runs; pull request #33).
+- **Listing large directories is slower than on the Mac**: `ls -l` of 10,000 files took
+  1.2 s in Linux, against 0.08 s on the Mac. A 1 GiB file was written at 1,185 MB/s and read
+  at 2,635 MB/s, and a second `git status` in a clone of maw's repository took 41 ms. These
+  are medians of 5 runs on an M1 Pro; [decision record 0021](docs/decisions/0021-mac-share.md)
+  has every figure and how it was measured.
 - **Just after a change on the Mac**, Linux can for a fraction of a second still see the old
   size of a file or the old contents of a directory that was replaced.
 - **Only your home directory is shared**, not `/Volumes` or `/tmp`.

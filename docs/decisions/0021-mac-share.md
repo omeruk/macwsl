@@ -105,7 +105,24 @@ the guest process whose request fetched its attributes, and the guest caches the
 | The same on the Mac | 83 ms | 94 ms |
 | `git status` in a clone of this repository, second run | 23 ms | 24 ms |
 
-Pull request A records the measurements of `scripts/measure-mac-share.sh`.
+**The official measurements** of `scripts/measure-mac-share.sh`, run by the owner on
+2026-11-18 at 16:09:57Z, at commit `04a44ac` with guest files `4595297`, on the same Mac just
+restarted, on AC power, with Low Power Mode off and only Terminal open. The load average was
+1.71, 12.59, 14.24 at the start: the one-minute average was under 2, as the rule for official
+measurements requires, and the others were still high from the restart. Each figure is the
+median of 5 runs, through `/mnt/mac`, with the guest's caches dropped before each read and the
+Mac's not:
+
+| Measurement | Median | Slowest | Target |
+|-------------|--------|---------|--------|
+| Cold start to a prompt, with the share | 879 ms | 900 ms | |
+| Cold start to a prompt, without it (`mawd serve --without-mac-share`) | 870 ms | 901 ms | |
+| What the share adds to the cold start | 10 ms | | under 100 ms: met |
+| Writing 1 GiB (`dd conv=fsync`) | 1,185 MB/s | 783 MB/s | |
+| Reading 1 GiB | 2,635 MB/s | 2,421 MB/s | |
+| `ls -l` of 10,000 files | 1,165 ms | 1,216 ms | |
+| `git status` in a clone of this repository, first run | 163 ms | 168 ms | |
+| `git status`, second run | 41 ms | 52 ms | under 1 s: met |
 
 ## Decision
 
