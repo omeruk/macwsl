@@ -6,9 +6,15 @@ import MawProtocol
 import MawXPC
 import Testing
 
+/// The deadline of each step of a scripted peer on a thread of its own. It is only a bound, so
+/// that a peer whose counterpart stops leaves no thread behind; it is longer than any stall of
+/// the cooperative pool, during which the peer's clock runs on while the side under test,
+/// which needs the pool, cannot answer (docs/known-limitations.md).
+private let peerDeadline = Duration.seconds(60)
+
 /// `DistributionSession` against a scripted daemon on an anonymous XPC listener, which hands
 /// out one end of a socket pair for each session, and a scripted agent on the other end.
-@Suite struct DistributionSessionTests {
+@Suite(.timeLimit(.minutes(2))) struct DistributionSessionTests {
     static let ubuntu = try! DistroName("Ubuntu-24.04")
     static let size = TerminalSize(rows: 24, columns: 80)
 
@@ -300,7 +306,7 @@ import Testing
 }
 
 /// The descriptor of a session that the daemon hands over.
-@Suite struct SessionDescriptorTests {
+@Suite(.timeLimit(.minutes(2))) struct SessionDescriptorTests {
     @Test func isClosedOnExec() async throws {
         let daemon = ScriptedDaemon()
         let client = try await daemon.connector()
@@ -527,9 +533,9 @@ final class ScriptedAgent: @unchecked Sendable {
     private func serve(_ side: OwnedDescriptor, greeting: [UInt8], foreground: Foreground) {
         defer { lock.withLock { closed = true } }
         guard let connection = try? FrameConnection(side),
-            (try? connection.exchangeVersions(until: .now + .seconds(5))) != nil,
+            (try? connection.exchangeVersions(until: .now + peerDeadline)) != nil,
             case .exec(let request) = try? connection.receiveControl(
-                until: .now + .seconds(5), expecting: "exec")
+                until: .now + peerDeadline, expecting: "exec")
         else { return }
         lock.withLock {
             self.request = request
@@ -542,8 +548,8 @@ final class ScriptedAgent: @unchecked Sendable {
             connection.enqueue(Frame(type: .stdout, payload: greeting))
         }
         var line: [UInt8] = []
-        while (try? connection.flush(until: .now + .seconds(5))) != nil,
-            let frame = try? connection.receiveFrame(until: .now + .seconds(60))
+        while (try? connection.flush(until: .now + peerDeadline)) != nil,
+            let frame = try? connection.receiveFrame(until: .now + peerDeadline)
         {
             switch frame.type {
             case .stdin:
@@ -555,14 +561,14 @@ final class ScriptedAgent: @unchecked Sendable {
                     let command = String(decoding: line[..<end], as: UTF8.self)
                     line.removeFirst(end + 1)
                     if command == "drop" {
-                        try? connection.flush(until: .now + .seconds(5))
+                        try? connection.flush(until: .now + peerDeadline)
                         return
                     }
                     if command.hasPrefix("exit "), let code = Int32(command.dropFirst(5)) {
                         connection.enqueue(.control(.exited(.exited(code: code))))
-                        try? connection.flush(until: .now + .seconds(5))
+                        try? connection.flush(until: .now + peerDeadline)
                         // As the agent does after `exited`: waits for the host to close.
-                        while (try? connection.receiveFrame(until: .now + .seconds(60))) != nil {}
+                        while (try? connection.receiveFrame(until: .now + peerDeadline)) != nil {}
                         return
                     }
                 }
@@ -595,17 +601,18 @@ final class SessionOutput: @unchecked Sendable {
 
     var text: String { lock.withLock { String(decoding: bytes, as: UTF8.self) } }
 
-    /// Whether the output satisfies `condition` within 10 seconds.
+    /// Whether the output satisfies `condition` within the sleeps of `eventually`.
     func eventually(_ condition: @escaping (String) -> Bool) async -> Bool {
         await MawClientTests.eventually { condition(self.text) }
     }
 }
 
-/// Whether `condition` holds within 10 seconds. The limit only keeps a broken test from
-/// waiting for ever.
+/// Whether `condition` holds within 1,000 sleeps of 10 ms. The limit only keeps a broken test
+/// from waiting for ever. It counts sleeps instead of reading a clock: a stall of the
+/// cooperative pool delays the sleeps as much as the work that the condition waits for, so it
+/// cannot use the wait up (docs/known-limitations.md).
 func eventually(_ condition: () -> Bool) async -> Bool {
-    let deadline = ContinuousClock.now + .seconds(10)
-    while ContinuousClock.now < deadline {
+    for _ in 0..<1_000 {
         if condition() { return true }
         try? await Task.sleep(for: .milliseconds(10))
     }
