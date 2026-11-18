@@ -719,8 +719,9 @@ from `main`.
 Deliberate choices that a decision record explains and that no phase plans to change.
 
 - **maw's kernel carries a patch of its own.**
-  `Guest/kernel/patches/0001-virtiofs-owner-options.patch` gives virtiofs `uid=` and `gid=` options, so that every file under `/mnt/mac` shows the
-  default user as its owner. Every kernel bump must apply it with no fuzz, or refresh it.
+  `Guest/kernel/patches/0001-virtiofs-owner-options.patch` gives virtiofs `uid=` and `gid=`
+  options, so that every file under `/mnt/mac` shows the default user as its owner. Every
+  kernel bump must apply it with no fuzz, or refresh it.
   [Decision record 0021](decisions/0021-mac-share.md); `Guest/README.md`, "Bumping the kernel".
 
 - **CPU and host memory depend on an undocumented process.** The daemon finds a machine's
