@@ -178,12 +178,14 @@ Virtualization.framework's virtiofs device, and the initramfs mounts it at `/mnt
   and its last component as the name of the tab and the window. Both show it with its control
   and format characters replaced by `?`
   (`LocalShellSessionTests.showsAMissingShellsPathWithoutControlCharacters`,
-  `namesTheShellWithoutControlCharacters`), and at most 256 Unicode scalars of it, then "…"
-  (`showsAtMost256CharactersOfAShellsPath`, `cutsAPathOfCombiningMarksAt256Scalars`); the
-  path that runs is unchanged. Every notice and error that a pane writes to the terminal
-  emulator has its control and format characters replaced in the same way, except its line
-  feeds, CR LF pairs, and tabs
-  (`PaneControllerTests.aFailureWithEscapeSequencesAppearsAsTextInRed`). The setting itself
+  `namesTheShellWithoutControlCharacters`), and cut after the last whole character within 256
+  Unicode scalars, then "…" (`showsAtMost256CharactersOfAShellsPath`,
+  `cutsAPathOfCombiningMarksAt256Scalars`, `neverSplitsACharacterAtTheCut`); the path that
+  runs is unchanged. Every notice and error that a pane writes to the terminal emulator has
+  its control and format characters replaced in the same way, except its line feeds, CR LF
+  pairs, and tabs (`PaneControllerTests.aFailureWithEscapeSequencesAppearsAsTextInRed`,
+  `endsALineAtACRLF`, `replacesControlCharactersButKeepsTheStyleAndTheLineBreaks`). The
+  setting itself
   names the program that a local tab runs as the owner, so a guest that writes
   `settings.json` can already run a program on the Mac, as through `~/Library/LaunchAgents`.
 
