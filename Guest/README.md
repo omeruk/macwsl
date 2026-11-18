@@ -43,7 +43,9 @@ Guest/
   kernel/
     VERSION              pinned kernel version, URL, and sha256
     maw.config           configuration fragment, applied on top of allnoconfig
-    build-kernel.sh      allnoconfig, merge_config.sh, olddefconfig, verification, `make Image`
+    patches/             maw's patches to the kernel source, applied in name order, with no fuzz
+    build-kernel.sh      applies patches/, then allnoconfig, merge_config.sh, olddefconfig,
+                         verification, `make Image`
     check-config.sh      checks the final configuration against the required lists
   initramfs/
     SOURCES              pinned busybox, e2fsprogs, and libarchive versions, URLs, and sha256 sums
@@ -196,6 +198,13 @@ maw tracks the newest longterm release listed at <https://www.kernel.org/release
    and `check-config.sh` report them.
 3. Read the new kernel's `scripts/kconfig/merge_config.sh` output in the build log for
    options that were redefined or dropped.
+4. Refresh each patch in `kernel/patches/`. `build-kernel.sh` applies them with
+   `patch -p1 --fuzz=0` and stops at the first that does not apply cleanly. For such a patch,
+   extract the new source, make the same change by hand, write the patch again with
+   `diff -u` from the unchanged tree (`a/`) to the changed one (`b/`), and update the version
+   in its header. A patch whose change the new kernel already contains is removed instead.
+   Then run the integration tests that the patch's header names, or the full
+   `scripts/integration-test.sh`, with the new guest files.
 
 Other pins are bumped the same way:
 

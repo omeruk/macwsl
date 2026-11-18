@@ -66,6 +66,56 @@ import Testing
             rows(of: pane, 4) == ["maw: first line", "second line", "Try this.", "[↩ new session]"])
     }
 
+    /// Every control and format character but a line feed and a tab is replaced before the
+    /// style's own SGR sequence is added and each line feed becomes CR LF. A bare CR becomes
+    /// `?`, as it would overwrite the line, also at the end of the text.
+    @Test func replacesControlCharactersButKeepsTheStyleAndTheLineBreaks() {
+        let text = "a\u{1B}]0;title\u{07}b\nc\td\r\u{9B}2J\u{202E}\n"
+        #expect(
+            PaneController.terminalText(text, style: "31", atLineStart: true)
+                == "\u{1B}[31ma?]0;title?b\r\nc\td??2J?\r\n\u{1B}[0m")
+        #expect(
+            PaneController.terminalText("one\rtwo\tthree\n", style: "31", atLineStart: true)
+                == "\u{1B}[31mone?two\tthree\r\n\u{1B}[0m")
+        #expect(
+            PaneController.terminalText("abc\r", style: "31", atLineStart: true)
+                == "\u{1B}[31mabc?\u{1B}[0m")
+        #expect(
+            PaneController.terminalText("x\n", style: "2", atLineStart: false)
+                == "\r\n\u{1B}[2mx\r\n\u{1B}[0m")
+    }
+
+    /// A CR LF ends a line as a line feed does, although Swift counts it as one character; a CR
+    /// before it stays a bare CR.
+    @Test func endsALineAtACRLF() {
+        #expect(
+            PaneController.terminalText("one\r\ntwo\r\n", style: "31", atLineStart: true)
+                == "\u{1B}[31mone\r\ntwo\r\n\u{1B}[0m")
+        #expect(
+            PaneController.terminalText("one\r\r\ntwo", style: "31", atLineStart: true)
+                == "\u{1B}[31mone?\r\ntwo\u{1B}[0m")
+        let session = IdleSession()
+        let pane = PaneController(profile: .localShell("/bin/sh"), session: session)
+        pane.session(
+            session, didFailWith: .failed(message: "mkfs failed\r\nDevice busy", suggestion: nil))
+        #expect(rows(of: pane, 3) == ["maw: mkfs failed", "Device busy", "[↩ new session]"])
+    }
+
+    /// An error whose message carries escape sequences shows them as text, in red, line by
+    /// line, and they take no effect: the screen is not cleared and the title is not set.
+    @Test func aFailureWithEscapeSequencesAppearsAsTextInRed() {
+        let session = IdleSession()
+        let pane = PaneController(profile: .localShell("/bin/sh"), session: session)
+        pane.session(
+            session,
+            didFailWith: .failed(
+                message: "bad \u{1B}[2J\u{1B}]0;title\u{07}text\nnext", suggestion: nil))
+        #expect(rows(of: pane, 3) == ["maw: bad ?[2J?]0;title?text", "next", "[↩ new session]"])
+        let terminal = pane.terminalView.getTerminal()
+        #expect(terminal.getCharData(col: 0, row: 0)?.attribute.fg == .ansi256(code: 1))
+        #expect(terminal.getCharData(col: 0, row: 2)?.attribute.style.contains(.dim) == true)
+    }
+
     func rows(of pane: PaneController, _ count: Int) -> [String?] {
         let terminal = pane.terminalView.getTerminal()
         return (0..<count).map { terminal.getLine(row: $0)?.translateToString(trimRight: true) }

@@ -3,6 +3,7 @@
     import MawCore
     import MawProtocol
     import MawVirtualization
+    import MawXPC
     import os
 
     /// A `MachineHandle` backed by a real virtual machine.
@@ -25,12 +26,30 @@
         public var kernelRelease: String? { boot.withLock { $0.kernelRelease } }
         public var bootMilliseconds: UInt64? { boot.withLock { $0.milliseconds } }
 
+        /// The share of the home directory, if the machine has one and its guest agent reported
+        /// it mounted when it started. The Mac's path is the daemon's own, never the guest's.
+        public var macShare: SharedDirectory? {
+            guard boot.withLock({ $0.macShareMounted }),
+                let share = settings.directoryShares.first(where: { $0.tag == MacShare.tag })
+            else { return nil }
+            return SharedDirectory(
+                macPath: Self.displayPath(share.url), linuxPath: MacShare.linuxPath)
+        }
+
+        /// A directory's path without a trailing `/`, such as `/Users/ayse`.
+        static func displayPath(_ url: URL) -> String {
+            let path = url.standardizedFileURL.path(percentEncoded: false)
+            return path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
+        }
+
         private let virtualMachine: VirtualMachine
         private let settings: VMConfiguration
         private let stopContinuation: AsyncStream<String>.Continuation
         private let stopRequested = OSAllocatedUnfairLock(initialState: false)
         private let boot = OSAllocatedUnfairLock(
-            initialState: (kernelRelease: String?.none, milliseconds: UInt64?.none))
+            initialState: (
+                kernelRelease: String?.none, milliseconds: UInt64?.none, macShareMounted: false
+            ))
         private let log: DaemonLog
         /// For the measurements only: `sample()` sends `info` instead (`mawd serve
         /// --sample-with-info`).
@@ -49,10 +68,13 @@
         }
 
         /// The factory for the daemon's machines: the initramfs machine, and one machine per
-        /// installed distribution, which boots its disk with systemd (decision record 0013).
+        /// installed distribution, which boots its disk with systemd (decision record 0013) and
+        /// mounts `macHome` at `/mnt/mac` (decision record 0021). `macHome` is `nil` only for
+        /// the measurements (`mawd serve --without-mac-share`).
         public static func factory(
             kernelDirectory: URL, logDirectory: URL, store: DistributionStore, log: DaemonLog,
-            canRunVirtualMachines: Bool, samplesWithInfo: Bool = false
+            canRunVirtualMachines: Bool, samplesWithInfo: Bool = false,
+            macHome: URL?
         ) -> MachineFactory {
             { (machine: MachineID) throws(MawError) -> any MachineHandle in
                 guard canRunVirtualMachines else {
@@ -69,7 +91,8 @@
                         throw .distributionNotInstalled(name)
                     }
                     configuration = distributionConfiguration(
-                        configuration, disk: store.paths.diskImage(for: name), metadata: metadata)
+                        configuration, disk: store.paths.diskImage(for: name), metadata: metadata,
+                        macHome: macHome)
                 }
                 return try VirtualMachineHandle(
                     machine: machine, configuration: configuration, log: log,
@@ -78,9 +101,10 @@
         }
 
         /// A distribution's machine: its disk as the root file system, NAT networking with its
-        /// MAC address, every CPU and half the memory, and the clock set from the Mac's.
+        /// MAC address, every CPU and half the memory, the clock set from the Mac's, and
+        /// `macHome`, read-write, as the share that the initramfs mounts at `/mnt/mac`.
         static func distributionConfiguration(
-            _ base: VMConfiguration, disk: URL, metadata: DistroMetadata,
+            _ base: VMConfiguration, disk: URL, metadata: DistroMetadata, macHome: URL?,
             now: Date = Date()
         ) -> VMConfiguration {
             var configuration = base
@@ -89,8 +113,12 @@
             configuration.memorySize = resources.memorySize
             configuration.disks = [.init(url: disk)]
             configuration.network = .nat(macAddress: metadata.macAddress)
-            configuration.commandLine = VMConfiguration.commandLine(
-                appending: "maw.root=/dev/vda maw.clock=\(Int(now.timeIntervalSince1970))")
+            var arguments = "maw.root=/dev/vda maw.clock=\(Int(now.timeIntervalSince1970))"
+            if let macHome {
+                configuration.directoryShares = [.init(url: macHome, tag: MacShare.tag)]
+                arguments += " \(MacShare.commandLineArgument)"
+            }
+            configuration.commandLine = VMConfiguration.commandLine(appending: arguments)
             return configuration
         }
 
@@ -120,10 +148,18 @@
             boot.withLock {
                 $0 = (
                     ForegroundAnswer.displayableName(info.kernelRelease),
-                    UInt64(max(0, milliseconds))
+                    UInt64(max(0, milliseconds)),
+                    info.macShareMounted
                 )
             }
             log.notice("\(machine): agent ready after \(milliseconds) ms")
+            if settings.directoryShares.contains(where: { $0.tag == MacShare.tag }) {
+                log.notice(
+                    info.macShareMounted
+                        ? "\(machine): \(MacShare.linuxPath) is mounted"
+                        : "\(machine): \(MacShare.linuxPath) is not mounted; its console log says why"
+                )
+            }
         }
 
         public func openSessionConnection() async throws(MawError) -> OwnedDescriptor {

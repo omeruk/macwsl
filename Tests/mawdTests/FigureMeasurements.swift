@@ -116,10 +116,10 @@ struct FigureMeasurements {
     }
 
     private func measureBatches(withInfo: Bool) async throws -> Batches {
-        try await registerDaemon(
+        try await maw.registerDaemon(
             ["--sample-interval-ms", String(Self.batchInterval)]
                 + (withInfo ? ["--sample-with-info"] : []))
-        defer { try? reinstallDaemon() }
+        defer { try? maw.reinstallDaemon() }
         let session = try await heldSession()
         defer { session.stop() }
         let disk = maw.paths.diskImage(for: try DistroName(maw.distribution))
@@ -290,39 +290,6 @@ struct FigureMeasurements {
         ps.waitUntilExit()
         let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         return try #require(UInt64(text.trimmingCharacters(in: .whitespacesAndNewlines)))
-    }
-
-    /// Registers the test daemon again with `mawd serve` options that `mawd install` does not
-    /// accept: the plist that `mawd install` would write, with `options` added. The daemon
-    /// restarts.
-    private func registerDaemon(_ options: [String]) async throws {
-        let mawd = try #require(MawIntegration.environment["MAWD_PATH"])
-        let agent = LaunchAgent(
-            label: maw.label, program: mawd, logDirectory: maw.logDirectory,
-            machineIdleTimeout: maw.machineIdleTimeout, imageCacheDirectory: maw.imageCache)
-        var list = agent.propertyList
-        list["ProgramArguments"] = agent.arguments + options
-        let plist = maw.paths.launchAgentFile(label: maw.label)
-        try PropertyListSerialization.data(fromPropertyList: list, format: .xml, options: 0)
-            .write(to: plist, options: .atomic)
-        try Launchctl.bootout(maw.label)
-        try await Launchctl.waitUntilRemoved(maw.label)
-        try Launchctl.bootstrap(plist)
-    }
-
-    /// Registers the test daemon again as scripts/integration-test.sh does.
-    private func reinstallDaemon() throws {
-        let install = Process()
-        install.executableURL = URL(filePath: try #require(MawIntegration.environment["MAWD_PATH"]))
-        install.arguments = [
-            "install", "--label", maw.label, "--log-directory",
-            maw.logDirectory.path(percentEncoded: false), "--machine-idle-timeout",
-            String(maw.machineIdleTimeout), "--image-cache-directory",
-            maw.imageCache.path(percentEncoded: false),
-        ]
-        try install.run()
-        install.waitUntilExit()
-        try #require(install.terminationStatus == 0, "mawd install failed")
     }
 
     /// Prints the median and the 95th percentile (nearest rank) of `values`.

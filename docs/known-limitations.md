@@ -19,27 +19,26 @@ from `main`.
     linger alone.
   - **Evidence:** [Decision record 0015](decisions/0015-sessions-through-pam.md), "Consequence
     for phase 07", which lists the options.
-  - **Phase:** 07.
-- **A `distribution:<name>` setting is shown in the pane without a check.**
-  - **Seen:** When `defaultProfile` in `~/Library/Application Support/maw/settings.json` names
-    a distribution that is not a valid name, ⌘T opens the default distribution, and the pane's
-    notice includes the stored text unchanged. The pane passes the notice to the terminal
-    emulator, so control characters in the text take effect there. The file is the user's own,
-    so this matters only if the file share lets the guest write `~/Library`.
-  - **Evidence:** `Profile.makeSession(localShell:cores:)` in
-    `App/MawTerminalKit/Sources/MawTerminalKit/Session/Profile+Session.swift`, whose notice
-    takes the name as the setting gives it; `PaneController.write(_:style:)`. Pull request
-    #26, security review.
-  - **Phase:** 07, if its file share exposes `~/Library` to the guest: show only a valid
-    distribution name, or remove control characters before the notice is written.
-- **The distributions screen's details box has no `mounts` row.**
-  - **Seen:** `Distributions.dc.html` shows `mounts` (`/mnt/mac ← ~`) for each distribution.
-    The app leaves the row out, because nothing is mounted yet, and an empty or `—` row would
-    be a placeholder.
-  - **Evidence:** `DaemonDistributions.make(_:isDefault:history:home:)` in
-    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift`;
-    `prompts/11c-distribution-figures.md`, "Deviations from `Distributions.dc.html`", item 2.
-  - **Phase:** 07, which mounts the Mac's home directory and can report it in the snapshot.
+  - **Phase:** 07, pull request B.
+- **A default user whose uid or gid the kernel refuses leaves `/mnt/mac` unmounted.**
+  - **Seen:** `/etc/passwd` can give the default user the uid or gid 4294967295. It parses as
+    a `UInt32`, but the kernel's `uid=` and `gid=` options refuse it as invalid, so the mount
+    fails and the share is not mounted at all; the console log says that the mount failed.
+    Files showing as root's would have been the better fallback, as for a user that cannot be
+    resolved.
+  - **Evidence:** `MacShareMount.owner(inRoot:)` and `MacShareMount.run(root:tag:mount:)` in
+    `Sources/MawAgentKit/MacShareMount.swift:92`; pull request #33, code review.
+  - **Phase:** 07, pull request B, which changes the agent: treat the uid or gid 4294967295 as
+    one that cannot be resolved.
+- **A read error in an existing `/mnt/mac` counts as an empty mount point.**
+  - **Seen:** The check that `/mnt/mac` is empty stops at the first `readdir` that returns
+    nothing, without telling an error from the end of the directory. If reading the directory
+    fails, for example with `EIO` on a damaged block, the share is mounted over it; the files
+    in it are hidden while the share is mounted, not lost.
+  - **Evidence:** `MountPoint.isEmpty` in `Sources/MawAgentKit/MacShareMount.swift:250`; pull
+    request #33, code review.
+  - **Phase:** 07, pull request B: clear `errno` before each `readdir`, and refuse the mount
+    point with "cannot be read" if it is set afterwards.
 
 ## Phase 08: Networking
 
@@ -75,6 +74,14 @@ from `main`.
   - **Phase:** 08, which forwards ports and can report them in the snapshot.
 
 ## Phase 12: Configuration and lifecycle
+
+- **The share of the home directory cannot be turned off.**
+  - **Seen:** Every distribution has the owner's home directory at `/mnt/mac`, read-write, as
+    the owner decided for phase 07. No setting turns it off, makes it read-only, or limits it
+    to chosen folders, for all distributions or for one.
+  - **Evidence:** [Decision record 0021](decisions/0021-mac-share.md);
+    `prompts/07-file-sharing-and-paths.md`, "The owner's decisions", item 3.
+  - **Phase:** 12, a `.mawconfig` setting.
 
 - **No setting for `.fsync` disk synchronization.**
   - **Seen:** Every distribution uses `.full` synchronization. A user who prefers speed cannot
@@ -265,6 +272,24 @@ from `main`.
     `Sources/MawDaemonKit/DaemonService.swift`; the `terminate` request carries no reason of
     its client.
   - **Phase:** 12b: the reason names what stopped the machine, such as the terminal app.
+- **Titles, working directories, and program names that programs report are shown
+  unfiltered.**
+  - **Seen:** A program in a pane sets the pane's title with OSC 0 or 2 and its working
+    directory with OSC 7, and a guest process can set its own name with `prctl(PR_SET_NAME)`,
+    which the session reports as the foreground program. The app shows the title and the
+    directory as they arrive, in the window's title, the title bar, the pane grid, and the
+    key-hint bar, and the program's name in the question before a tab or the app closes, so
+    format characters such as U+202E take effect there and can make a name look like another.
+    This is existing behavior, which this branch does not change; since phase 07, a program of
+    a distribution can also write `settings.json` through `/mnt/mac`, whose `localShell` name
+    the app now shows filtered.
+  - **Evidence:** `WindowModel.updateWindowTitle()` (`pane.title ?? pane.displayName`) and the
+    close and quit question's program names (`.program(let name)`,
+    `App/MawTerminalKit/Sources/MawTerminalKit/Window/WindowModel.swift:614`), and
+    `pane.workingDirectory` in `Views/TitleBarView.swift`, `Views/PaneGridView.swift`, and
+    `Views/KeyHintBar.swift`; pull request #33, code review.
+  - **Phase:** 12b. Filter once where titles, directories, and program names are shown, in
+    those places, with the rules of `TerminalSessionError.displayable(_:)`.
 - **The terminal app's local shell start waits on the main thread until the shell runs.**
   - **Seen:** `maw_terminal_spawn` forks, and the parent reads the child's report pipe until
     `execve` closes it. Before `execve`, the child changes to the start directory, the home
@@ -337,6 +362,17 @@ from `main`.
 
 ## Phase 13: Packaging and release
 
+- **macOS asks about `mawd` again after every development build.**
+  - **Seen:** A distribution that opens `~/Desktop`, `~/Documents`, or `~/Downloads` through
+    `/mnt/mac` makes macOS ask whether `mawd` may. A development build is signed ad hoc, and
+    after each build whose code differs, macOS asks again for every protected folder, also for
+    those allowed before.
+  - **Evidence:** Part 1 of phase 07 (pull request #33): the TCC log attributed every request
+    to `dev.maw.mawd`; after a rebuild with a new code hash, Desktop, which an earlier grant had
+    covered, was asked again. [Decision record 0021](decisions/0021-mac-share.md).
+  - **Phase:** 13, which signs the release build with a Developer ID, so that an answer lasts
+    across updates.
+
 - **The ad-hoc code signing requirement does not identify maw's builds.**
   - **Seen:** Any local program can claim the identifiers `dev.maw.maw` and `dev.maw.mawd`, so
     the same-user check is the boundary of the XPC service.
@@ -365,6 +401,16 @@ from `main`.
   - **Phase:** 13, with the app bundle.
 
 ## No phase yet
+
+- **The distributions screen shows the share as it was when the machine started.**
+  - **Seen:** The `mounts` row comes from the agent's `info` reply at the start. A share that
+    is unmounted in the guest later, with `sudo umount /mnt/mac`, still shows until the machine
+    stops.
+  - **Evidence:** `VirtualMachineHandle.macShare` in
+    `Sources/MawDaemonKit/VirtualMachineHandle.swift`; the prompt allows a fact known at boot
+    rather than a request for every snapshot.
+  - **Phase:** None yet; the `sample` reply could carry it, at the cost of reading
+    `/proc/self/mountinfo` at every sample.
 
 - **A watcher does not notice a distribution removed by hand while no machine runs.**
   - **Seen:** `maw --unregister` is the supported way to remove a distribution, and the
@@ -529,7 +575,22 @@ from `main`.
     its counterpart needs the pool can therefore fail, as
     `HandshakeTests.exchangesMatchingVersions()` did until its peer moved to a thread of its
     own (CI runs 42512716425, 42574910845, 42644895862, 42807002034 and 42834158953, each
-    passing on a re-run). Any future test with that pattern can fail the same way. A deadline
+    passing on a re-run). Any future test with that pattern can fail the same way.
+    `ExportCommandTests.keepsTheFileWhenTheExportSucceedsDespiteTheSignal()` failed so in CI run
+    44086055594 of pull request #33: its `waitFor` checks a deadline of 5 seconds on
+    `ContinuousClock`, the test events stopped for 4.0 s just after it started, and 883 of the
+    group's 1,093 results reported 6 to 7.6 s; the check came 2.6 s after the deadline, before
+    the export's task had run. The test passed in the next run, 44088401625, and no pull
+    request had changed it since it was added in pull request #31. Four tests failed so in CI
+    run 44358996376 of the same pull request, at `c13effb`, whose new commits changed none of
+    them: `DistributionSessionTests`'s `endsAsClosedByTheUserOnHangUpWhileTheShellStarts()`,
+    `endsAsClosedByTheUserOnHangUpWhileTheDaemonOpensTheSession()`, and
+    `keepsAResizeAndInputFromWhileTheShellStarts()`, which started at 17:31:00.2 to 00.4 and
+    whose `eventually` checks a deadline of 10 seconds on `ContinuousClock`, and
+    `ExportCommandTests.cancelsOnASignalAndRemovesTheFile()`, which started at 17:31:03.6 and
+    whose `waitFor` passed its deadline of 5 seconds by 2.2 s. Almost no result came back
+    from 17:31:00 until 17:31:08.5, when they arrived together: 944 of the 958 results in the
+    log reported 9.0 to 12.0 s. A deadline
     measured by a task, such as a `Task.sleep`, is delayed by the same stall and does not
     expire early.
   - **Evidence:** In each of those runs and in the passing run 42516767842 of `main`, tests
@@ -546,7 +607,9 @@ from `main`.
     sample from the CI runner itself is missing; the CI evidence is the log signature only.
     The default local build (`swiftbuild`, one test bundle per target) runs each target in a
     process of its own, so a plain local `swift test` shows a much shorter stall.
-  - **Phase:** None; a `fix/` branch. Run the CPU-bound and blocking synchronous tests off the
+  - **Phase:** None; a `fix/` branch. The owner decided on 2026-11-17 that a `fix/` branch after
+    pull request #33 makes `ExportCommandTests.waitFor` count its own sleeps instead of reading
+    the clock. More generally: run the CPU-bound and blocking synchronous tests off the
     pool or in a group of their own, and keep tests with wall-clock deadlines independent of
     the pool, as `scripts/test-groups.sh` and `docs/decisions/0018-test-groups.md` do for
     load and latency. A helper in `Sources/MawProtocol/Threads.swift` that starts a thread at
@@ -672,6 +735,12 @@ from `main`.
 ## Accepted trade-offs
 
 Deliberate choices that a decision record explains and that no phase plans to change.
+
+- **maw's kernel carries a patch of its own.**
+  `Guest/kernel/patches/0001-virtiofs-owner-options.patch` gives virtiofs `uid=` and `gid=`
+  options, so that every file under `/mnt/mac` shows the default user as its owner. Every
+  kernel bump must apply it with no fuzz, or refresh it.
+  [Decision record 0021](decisions/0021-mac-share.md); `Guest/README.md`, "Bumping the kernel".
 
 - **CPU and host memory depend on an undocumented process.** The daemon finds a machine's
   `com.apple.Virtualization.VirtualMachine` process by the disk image it has open. If Apple

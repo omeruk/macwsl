@@ -2,7 +2,10 @@
 # /init for the maw initramfs.
 #
 # 1. Mounts proc, sysfs, devtmpfs, devpts, and a tmpfs on /run.
-# 2. Prints one banner line: maw-initramfs <version> kernel=<uname -r>.
+# 2. Prints one banner line: maw-initramfs <version> kernel=<uname -r>, and one line that
+#    names the machine's virtiofs tags, or none: maw-initramfs: virtiofs tags: <tags>. Both
+#    paths below print it, so that the console of a provisioning machine shows that it has
+#    no share (docs/decisions/0021-mac-share.md).
 # 3. With maw.test=lsblk on the kernel command line, lists /dev/vd* (the virtio block
 #    devices). The phase 03 integration tests use this.
 # 4. With maw.test=poweroff, prints "maw-initramfs: poweroff" and powers off. Phase 03
@@ -11,8 +14,9 @@
 #    "maw-agent self-test: ok" on success, and powers off. The QEMU smoke test uses this.
 # 6. With maw.root=<device>, boots the distribution on that disk: checks it with
 #    maw-check-root, mounts it, provides the guest agent to it as a runtime systemd unit,
-#    orders systemd-timesyncd after systemd-resolved with a runtime drop-in, and switches to
-#    its systemd. A failed check powers the machine off.
+#    orders systemd-timesyncd after systemd-resolved with a runtime drop-in, mounts the Mac's
+#    home directory at /mnt/mac with maw.share=<tag>, and switches to its systemd. A failed
+#    check powers the machine off; a failed mount of the share does not.
 #    docs/decisions/0013-systemd-and-the-agent.md describes this path.
 # 7. Otherwise, writes /etc/inittab and executes busybox init, which becomes PID 1 and
 #    supervises the guest agent. With maw.debug=shell, init also runs a shell on /dev/hvc0.
@@ -35,6 +39,13 @@ mountpoint -q /dev/pts || mount -t devpts -o nosuid,noexec,mode=0620,ptmxmode=06
 mountpoint -q /run || mount -t tmpfs -o nosuid,nodev,mode=0755 tmpfs /run
 
 echo "maw-initramfs $(cat /etc/maw-initramfs-version) kernel=$(uname -r)"
+
+# The kernel lists each virtiofs device's tag under /sys/fs/virtiofs/<n>/tag.
+virtiofs_tags=
+for tag_file in /sys/fs/virtiofs/*/tag; do
+    [ -r "$tag_file" ] && virtiofs_tags="$virtiofs_tags $(cat "$tag_file")"
+done
+echo "maw-initramfs: virtiofs tags:${virtiofs_tags:- none}"
 
 cmdline=" $(cat /proc/cmdline) "
 
@@ -109,6 +120,14 @@ UNIT
             printf '[Unit]\nAfter=systemd-resolved.service\n' > "$timesyncd_dropins/maw-order.conf"
     }; then
         echo "maw-initramfs: could not order systemd-timesyncd after systemd-resolved" >&2
+    fi
+
+    # The Mac's home directory at /mnt/mac, only on a machine that the daemon gave the share.
+    # The agent resolves the default user inside /sysroot, checks /mnt and /mnt/mac without
+    # following links, mounts, and prints the outcome; a failure never stops the boot.
+    share=$(argument maw.share)
+    if [ -n "$share" ]; then
+        /sbin/maw-agent mount-mac-share /sysroot "$share" || true
     fi
 
     echo "maw-initramfs: starting systemd at $(cut -d ' ' -f 1 /proc/uptime) s"

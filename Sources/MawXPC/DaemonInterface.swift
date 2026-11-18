@@ -8,7 +8,7 @@
     /// (see `InterfaceCoding`). The client's first request on every connection is `hello`.
     public enum DaemonInterface {
         /// Incremented on every change to the messages below, their fields, or their meaning.
-        public static let version: UInt32 = 7
+        public static let version: UInt32 = 8
 
         /// The LaunchAgent label, which is also the name of the daemon's Mach service.
         public static let defaultLabel = "dev.maw.mawd"
@@ -452,6 +452,18 @@
         }
     }
 
+    /// A directory of the Mac mounted in a distribution: the Mac's path, which the daemon
+    /// shares, and where the guest mounts it.
+    public struct SharedDirectory: Codable, Equatable, Sendable {
+        public var macPath: String
+        public var linuxPath: String
+
+        public init(macPath: String, linuxPath: String) {
+            self.macPath = macPath
+            self.linuxPath = linuxPath
+        }
+    }
+
     /// One distribution in a snapshot. A figure that is not known is `nil`; the figures from
     /// `run` on exist only while the machine runs.
     public struct DistributionFigures: Codable, Equatable, Sendable {
@@ -486,6 +498,9 @@
         /// failed. It lets a client tell a new sample from a snapshot that another change
         /// published.
         public var sampleNumber: UInt64?
+        /// The Mac's home directory mounted in the distribution: present only while it runs and
+        /// its guest reported the share mounted when it started (interface version 8).
+        public var macShare: SharedDirectory?
 
         public init(
             name: DistroName, state: DistributionState, defaultUser: String, diskImagePath: String

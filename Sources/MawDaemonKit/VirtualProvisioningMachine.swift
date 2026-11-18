@@ -41,18 +41,27 @@
         public func boot(disk: URL) async throws(MawError) {
             try? FileManager.default.removeItem(at: consoleLog)
             let guest = try GuestFiles(directory: kernelDirectory)
-            let configuration = VMConfiguration(
+            let configuration = Self.configuration(guest: guest, consoleLog: consoleLog, disk: disk)
+            let machine = try VirtualMachineHandle(
+                machine: .initramfs, configuration: configuration, log: log)
+            handle.withLock { $0 = machine }
+            try await machine.start()
+        }
+
+        /// The provisioning machine: the initramfs with the disk attached, and nothing of the
+        /// Mac's files. It runs programs of a root file system that may come from outside maw
+        /// (docs/security.md, "The extraction"), so it never gets a directory share.
+        static func configuration(
+            guest: GuestFiles, consoleLog: URL, disk: URL, now: Date = Date()
+        ) -> VMConfiguration {
+            VMConfiguration(
                 kernelURL: guest.kernelURL, initramfsURL: guest.initramfsURL,
                 consoleLogURL: consoleLog,
                 cpuCount: VMConfiguration.distributionResources().cpuCount,
                 memorySize: Self.memorySize,
                 commandLine: VMConfiguration.commandLine(
-                    appending: "maw.clock=\(Int(Date().timeIntervalSince1970))"),
+                    appending: "maw.clock=\(Int(now.timeIntervalSince1970))"),
                 disks: [.init(url: disk)])
-            let machine = try VirtualMachineHandle(
-                machine: .initramfs, configuration: configuration, log: log)
-            handle.withLock { $0 = machine }
-            try await machine.start()
         }
 
         public func format() async throws(MawError) {

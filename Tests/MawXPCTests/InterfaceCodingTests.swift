@@ -170,8 +170,23 @@ import XPC
         #expect(try InterfaceCoding.decode(DaemonEvent.self, from: message, as: .client) == event)
     }
 
-    @Test func isInterfaceVersion7() {
-        #expect(DaemonInterface.version == 7)
+    /// Version 8 adds `macShare` to each distribution's figures.
+    @Test func isInterfaceVersion8() {
+        #expect(DaemonInterface.version == 8)
+    }
+
+    /// A snapshot without `macShare` reads as a distribution without the share mounted.
+    @Test func carriesTheMacShareOfADistribution() throws {
+        let encoded = try JSONEncoder().encode(Self.runningFigures)
+        let decoded = try JSONDecoder().decode(DistributionFigures.self, from: encoded)
+        #expect(decoded.macShare == SharedDirectory(macPath: "/Users/ayse", linuxPath: "/mnt/mac"))
+        var without = Self.runningFigures
+        without.macShare = nil
+        let text = String(decoding: try JSONEncoder().encode(without), as: UTF8.self)
+        #expect(!text.contains("macShare"))
+        #expect(
+            try JSONDecoder().decode(DistributionFigures.self, from: Data(text.utf8)).macShare
+                == nil)
     }
 
     /// The installation's steps are unchanged; an export and an import have steps of their
@@ -211,6 +226,7 @@ import XPC
         figures.hostMemoryBytes = 710 << 20
         figures.lastSampleMicroseconds = 1_250
         figures.sampleNumber = 12
+        figures.macShare = SharedDirectory(macPath: "/Users/ayse", linuxPath: "/mnt/mac")
         return figures
     }
 

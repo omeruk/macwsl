@@ -40,6 +40,20 @@
             case nat(macAddress: String)
         }
 
+        /// A directory of the Mac shared with the guest through virtiofs, which the guest mounts
+        /// by its tag (docs/decisions/0021-mac-share.md).
+        public struct DirectoryShare: Sendable, Equatable {
+            public var url: URL
+            public var tag: String
+            public var isReadOnly: Bool
+
+            public init(url: URL, tag: String, isReadOnly: Bool = false) {
+                self.url = url
+                self.tag = tag
+                self.isReadOnly = isReadOnly
+            }
+        }
+
         /// The CPU counts and memory sizes a virtual machine may have.
         public struct Limits: Sendable, Equatable {
             public var cpuCount: ClosedRange<Int>
@@ -69,6 +83,9 @@
         public var commandLine: String
         public var disks: [Disk]
         public var network: Network?
+        /// Directories of the Mac that the guest can mount, each as a virtiofs device. Only a
+        /// distribution's machine has one; the provisioning machine never does.
+        public var directoryShares: [DirectoryShare]
         /// Where the guest's console output is written. See `VirtualMachine`.
         public var consoleLogURL: URL
 
@@ -80,7 +97,8 @@
             memorySize: ByteSize = VMConfiguration.defaultMemorySize,
             commandLine: String = VMConfiguration.baseCommandLine,
             disks: [Disk] = [],
-            network: Network? = nil
+            network: Network? = nil,
+            directoryShares: [DirectoryShare] = []
         ) {
             self.kernelURL = kernelURL
             self.initramfsURL = initramfsURL
@@ -90,6 +108,7 @@
             self.commandLine = commandLine
             self.disks = disks
             self.network = network
+            self.directoryShares = directoryShares
         }
 
         /// The resources of a distribution's machine until phase 12 makes them configurable:

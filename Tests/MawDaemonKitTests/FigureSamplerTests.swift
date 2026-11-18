@@ -498,6 +498,22 @@ import os
         #expect(ubuntu.diskSizeBytes == 4096)
     }
 
+    /// The share that the guest reported mounted at the start, only while the machine runs.
+    @Test func reportsTheMacShareOfARunningDistribution() async throws {
+        let share = SharedDirectory(macPath: "/Users/ayse", linuxPath: "/mnt/mac")
+        let sampling = try Sampling(["Ubuntu-24.04"], factory: FakeFactory(macShare: share))
+        #expect(
+            try #require(await sampling.sampler.snapshot(after: 0)).distributions.first?.macShare
+                == nil)
+        try await sampling.start("Ubuntu-24.04")
+        await sampling.sampler.addWatcher()
+        try await eventually { await sampling.figures("Ubuntu-24.04")?.state == .running }
+        #expect(await sampling.figures("Ubuntu-24.04")?.macShare == share)
+        _ = await sampling.registry.terminate(sampling.machine("Ubuntu-24.04"), reason: "test")
+        try await eventually { await sampling.figures("Ubuntu-24.04")?.state == .stopped }
+        #expect(await sampling.figures("Ubuntu-24.04")?.macShare == nil)
+    }
+
     @Test func answersAtOnceOrWithTheNextChange() async throws {
         let sampling = try Sampling()
         let first = try #require(await sampling.sampler.snapshot(after: 0))

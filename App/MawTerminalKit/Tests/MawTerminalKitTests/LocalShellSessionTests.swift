@@ -457,6 +457,96 @@ import Testing
         }
     }
 
+    /// The local shell's path comes from settings.json, which a distribution can write through
+    /// /mnt/mac. A path with escape sequences that does not exist reaches the pane with every
+    /// control character replaced, so that none of them takes effect in the terminal.
+    @Test func showsAMissingShellsPathWithoutControlCharacters() async {
+        let shell = "/nonexistent/\u{1B}]0;title\u{07}\u{1B}[2Jshell\u{9B}\u{202E}"
+        let pane = PaneController(
+            profile: .localShell(shell), session: LocalShellSession(shell: shell))
+        pane.startIfNeeded()
+        #expect(pane.failure == .programNotFound(path: shell))
+        let description = pane.failure?.errorDescription ?? ""
+        #expect(
+            description
+                == "/nonexistent/?]0;title??[2Jshell?? does not exist or is not executable")
+        #expect(!description.unicodeScalars.contains { $0.properties.generalCategory == .control })
+        let text = await paneText(pane, contains: "Choose another shell")
+        let unwrapped = text.replacingOccurrences(of: "\n", with: "")
+        #expect(unwrapped.contains("/nonexistent/?]0;title??[2Jshell??"), "\(text)")
+    }
+
+    /// A path longer than 256 characters is shown cut, with "…"; the failure keeps the path.
+    @Test func showsAtMost256CharactersOfAShellsPath() {
+        let shell = "/nonexistent/" + String(repeating: "a", count: 300)
+        let session = LocalShellSession(shell: shell)
+        #expect(throws: TerminalSessionError.programNotFound(path: shell)) {
+            try session.start(size: .default)
+        }
+        let description = TerminalSessionError.programNotFound(path: shell).errorDescription
+        #expect(
+            description
+                == String(shell.prefix(256)) + "… does not exist or is not executable")
+    }
+
+    /// The limit counts Unicode scalars, so that a character followed by any number of
+    /// combining marks, which Swift counts as one character, is cut as well. The cut keeps whole
+    /// characters only, so a first character longer than the limit leaves only "…".
+    @Test func cutsAPathOfCombiningMarksAt256Scalars() {
+        let marks = String(repeating: "\u{0301}", count: 1_000)
+        let shell = "/opt/a" + marks
+        #expect(TerminalSessionError.displayablePath(shell) == "/opt/…")
+        #expect(LocalShellSession(shell: shell).displayName == "…")
+    }
+
+    /// The cut never splits a character across the 256th scalar: an emoji joined by a ZWJ (3
+    /// scalars) and a flag (2 scalars) are kept whole when they end within the limit and left
+    /// out whole when they cross it. A kept ZWJ still shows as `?`, as every format character
+    /// does.
+    @Test(arguments: ["\u{1F469}\u{200D}\u{1F4BB}", "\u{1F1F9}\u{1F1F7}"])
+    func neverSplitsACharacterAtTheCut(character: String) {
+        let size = character.unicodeScalars.count
+        // Crosses the limit: its first scalar is the 256th.
+        let before = "/" + String(repeating: "a", count: 254)
+        #expect(
+            TerminalSessionError.displayablePath(before + character + "bbbb") == before + "…")
+        // Ends within the limit: its last scalar is the 256th.
+        let fits = "/" + String(repeating: "a", count: 255 - size)
+        #expect(
+            TerminalSessionError.displayablePath(fits + character + "bbbb")
+                == fits + TerminalSessionError.displayable(character) + "…")
+    }
+
+    /// The shell's name for the tab and the window is the last component of its path, shown
+    /// without control or format characters and at most 256 characters long.
+    @Test func namesTheShellWithoutControlCharacters() {
+        #expect(LocalShellSession(shell: "/bin/zsh").displayName == "zsh")
+        #expect(LocalShellSession(shell: "/opt/\u{202E}hsz\u{1B}[2J").displayName == "?hsz?[2J")
+        let long = LocalShellSession(shell: "/opt/" + String(repeating: "b", count: 300))
+        #expect(long.displayName == String(repeating: "b", count: 256) + "…")
+    }
+
+    /// The same for a start failure: a file with an escape sequence in its name, executable
+    /// but no program, which execve refuses in the child.
+    @Test func showsAStartFailuresPathWithoutControlCharacters() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "maw-shell-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appending(path: "sh\u{1B}[31mell")
+        try Data("not a program\n".utf8).write(to: file)
+        #expect(chmod(file.path, 0o755) == 0)
+        let pane = PaneController(
+            profile: .localShell(file.path), session: LocalShellSession(shell: file.path))
+        pane.startIfNeeded()
+        let shown = directory.path + "/sh?[31mell"
+        let reason = "\(shown) could not be executed: \(String(cString: strerror(ENOEXEC)))"
+        #expect(pane.failure == .startFailed(reason: reason))
+        let text = await paneText(pane, contains: "Press Enter to try again")
+        let unwrapped = text.replacingOccurrences(of: "\n", with: "")
+        #expect(unwrapped.contains("sh?[31mell could not be executed"), "\(text)")
+    }
+
     /// The prompt the test `.zshrc` sets, so that tests can tell when zsh is ready for input.
     static let prompt = "maw-ready> "
 

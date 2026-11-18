@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-20
+- The kernel carries one patch of maw's own since phase 07: [0021](0021-mac-share.md).
 
 ## Context
 

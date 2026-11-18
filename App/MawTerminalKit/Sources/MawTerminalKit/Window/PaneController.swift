@@ -130,8 +130,30 @@ final class PaneController {
     /// `2` (dim). The terminal needs CR LF, and messages contain line feeds of their own.
     private func write(_ text: String, style: String) {
         let atLineStart = terminalView.getTerminal().getCursorLocation().x == 0
-        let lines = text.replacingOccurrences(of: "\n", with: "\r\n")
-        terminalView.feed(text: "\(atLineStart ? "" : "\r\n")\u{1B}[\(style)m\(lines)\u{1B}[0m")
+        terminalView.feed(text: Self.terminalText(text, style: style, atLineStart: atLineStart))
+    }
+
+    /// What `write(_:style:)` feeds the terminal. Each line feed, or CR LF, ends a line. Every
+    /// other control and format character of `text` but a tab becomes `?` first
+    /// (`TerminalSessionError.displayable(_:keepingTabs:)`), because notices and errors can carry
+    /// text from settings or from a distribution; a bare CR does too, as it would overwrite the
+    /// line. Then the style's SGR sequence is added, and each line ends in CR LF.
+    static func terminalText(_ text: String, style: String, atLineStart: Bool) -> String {
+        // Split by scalars: a String splits by characters, and CR LF is one character.
+        let segments = text.unicodeScalars.split(
+            separator: "\n", omittingEmptySubsequences: false)
+        let lines = segments.indices
+            .map { index in
+                // A CR at the end of a segment is part of a CR LF only if a line feed follows,
+                // which it does after every segment but the last.
+                let line = segments[index]
+                let followedByLineFeed = index < segments.index(before: segments.endIndex)
+                let content = followedByLineFeed && line.last == "\r" ? line.dropLast() : line
+                return TerminalSessionError.displayable(
+                    String(String.UnicodeScalarView(content)), keepingTabs: true)
+            }
+            .joined(separator: "\r\n")
+        return "\(atLineStart ? "" : "\r\n")\u{1B}[\(style)m\(lines)\u{1B}[0m"
     }
 
     func apply(_ appearance: TerminalAppearance) {

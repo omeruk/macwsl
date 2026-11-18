@@ -80,9 +80,54 @@ public enum ForegroundReport: Hashable, Sendable {
 }
 
 extension TerminalSessionError: LocalizedError {
+    /// The most Unicode scalars of a path from the settings that the app shows.
+    static let displayedPathLimit = 256
+
+    /// Text made safe for the pane, which passes it to the terminal emulator: control and format
+    /// characters become `?`, so that none of them takes effect there; with `keepingTabs`, a tab
+    /// stays, as it only moves the cursor. Text from the settings needs it because
+    /// `settings.json` can be written from a distribution through `/mnt/mac` (docs/security.md).
+    static func displayable(_ text: String, keepingTabs: Bool = false) -> String {
+        var shown = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            if keepingTabs && scalar == "\t" {
+                shown.append(scalar)
+                continue
+            }
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator, .surrogate,
+                .privateUse, .unassigned:
+                shown.append("?")
+            default:
+                shown.append(scalar)
+            }
+        }
+        return String(shown)
+    }
+
+    /// A path from the settings, such as the local shell's, as the app shows it: displayable,
+    /// and, if it has more than `displayedPathLimit` Unicode scalars, cut after the last whole
+    /// character that ends within that many scalars, then "…". The limit counts scalars, so
+    /// that combining marks cannot make one character of any length, and the cut never splits
+    /// a character, such as an emoji joined by a ZWJ or a flag. A first character longer than
+    /// the limit leaves only "…". The path that runs is unchanged.
+    static func displayablePath(_ path: String) -> String {
+        guard path.unicodeScalars.count > displayedPathLimit else { return displayable(path) }
+        var end = path.startIndex
+        var kept = 0
+        while end < path.endIndex {
+            let size = path[end].unicodeScalars.count
+            guard kept + size <= displayedPathLimit else { break }
+            kept += size
+            end = path.index(after: end)
+        }
+        return displayable(String(path[..<end])) + "…"
+    }
+
     public var errorDescription: String? {
         switch self {
-        case .programNotFound(let path): "\(path) does not exist or is not executable"
+        case .programNotFound(let path):
+            "\(Self.displayablePath(path)) does not exist or is not executable"
         case .startFailed(let reason): "The session could not start: \(reason)"
         case .failed(let message, _): message
         }

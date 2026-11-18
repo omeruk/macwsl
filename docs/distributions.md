@@ -136,6 +136,33 @@ Measured on an M1 Pro, median of 5: a cold `maw -e true` in 593 ms, a cold `maw`
 865 ms, a warm `maw -e true` in 29 ms, and a warm `maw` to a prompt in 132 ms. 30 seconds after
 boot, an idle distribution uses 205 MB of memory and 0.02% of the CPUs.
 
+## The Mac's files: /mnt/mac
+
+Every distribution's machine shares the owner's home directory, read-write, and the initramfs
+mounts it at `/mnt/mac` before it starts systemd, at every boot, without changing the
+distribution's files beyond the mount point ([decision record 0021](decisions/0021-mac-share.md)).
+A distribution installed before phase 07 gets it after the new guest files are installed and
+its machine starts again.
+
+- **The owner.** Every file under `/mnt/mac` shows the distribution's default user as its owner
+  and that user's primary group as its group, whoever looks: `[user] default` in
+  `/etc/maw.conf`, with its uid and gid from `/etc/passwd`, both read when the machine starts.
+  Without a default user, files show as root's; with one that cannot be resolved, as root's as
+  well, and the console log says why. The guest checks each access against that owner and the
+  file's mode, as for any file: other users get the group and other bits. The Mac checks every
+  access again against the owner's identity, so a file that the owner cannot read on the Mac
+  stays unreadable. `chown` and the set-user-ID bit have no effect on the Mac; `chmod` does.
+- **The mount point.** If the distribution has no `/mnt/mac`, the initramfs creates `/mnt` and
+  `/mnt/mac`, owned by root, with mode 755: an empty directory on the distribution's disk is all
+  that the share adds to it. A `/mnt` or `/mnt/mac` that is a symbolic link or not a directory,
+  or a `/mnt/mac` that is not empty, is left alone and nothing is mounted; the console log says
+  why. maw never writes the mount into `/etc/fstab`.
+- **A failed mount** never stops the boot: sessions work, the console log has a line
+  `maw-initramfs: /mnt/mac is not mounted: <reason>`, and the distributions screen shows no
+  `mounts` row.
+- **Mount options.** `virtiofs maw-mac` with `nosuid`, `nodev`, and `uid=` and `gid=` of the
+  default user, as `/proc/self/mountinfo` shows them.
+
 ## Sessions
 
 A session runs as the distribution's default user, `[user] default` in `/etc/maw.conf`, or as
@@ -230,7 +257,9 @@ attached, and:
    `/usr/bin/tar`;
 4. writes the archive to maw's descriptor, and stops the machine.
 
-The archive keeps numeric owners and groups, permissions with the set-user-ID, set-group-ID,
+The provisioning machine has no share of the Mac's files, so the archive contains `/mnt/mac`
+as the empty directory it is on the disk, never the Mac's files. The archive keeps numeric
+owners and groups, permissions with the set-user-ID, set-group-ID,
 and sticky bits, extended attributes of the `user`, `trusted`, and `security` namespaces, file
 capabilities among them, hard links, symbolic links, device files, FIFOs, and names with
 non-ASCII characters. It does not keep POSIX ACLs ([docs/known-limitations.md](known-limitations.md)). A

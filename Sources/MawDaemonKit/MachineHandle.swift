@@ -1,6 +1,7 @@
 #if os(macOS)
     import MawCore
     import MawProtocol
+    import MawXPC
 
     /// One virtual machine as the registry sees it. `VirtualMachineHandle` is the real one; the
     /// unit tests use a fake.
@@ -17,6 +18,9 @@
         /// The time from the start of the machine to its agent's answer, as `start()` logs it;
         /// `nil` before the agent has answered.
         var bootMilliseconds: UInt64? { get }
+        /// The Mac's home directory and where the guest mounted it, if the guest agent reported
+        /// it mounted when the machine started; `nil` before that, and without the share.
+        var macShare: SharedDirectory? { get }
 
         /// Boots the machine and returns once its guest agent answers.
         func start() async throws(MawError)

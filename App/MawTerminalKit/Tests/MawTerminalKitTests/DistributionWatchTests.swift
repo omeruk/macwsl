@@ -383,6 +383,38 @@ func figures(
         }
     }
 
+    /// `mounts` comes after `ip`, as in `Distributions.dc.html`, only while the distribution
+    /// runs with the share mounted.
+    @Test func theMountsRow() {
+        let share = SharedDirectory(macPath: "/Users/ayse", linuxPath: "/mnt/mac")
+        var running = figures(sample: 1)
+        running.ipv4Address = "192.168.64.3"
+        running.macShare = share
+        let row = DaemonDistributions.make(
+            running, isDefault: false, history: [nil], home: "/Users/ayse")
+        #expect(row.details.map(\.key) == ["default", "user", "ip", "mounts", "disk image"])
+        #expect(
+            row.details.first { $0.key == "mounts" }
+                == .init("mounts", "/mnt/mac  ← ~", role: .link))
+        // A home directory elsewhere is shown as it is.
+        let elsewhere = DaemonDistributions.make(
+            running, isDefault: false, history: [nil], home: "/Users/other")
+        #expect(elsewhere.details.first { $0.key == "mounts" }?.value == "/mnt/mac  ← /Users/ayse")
+        // A failed mount: no row.
+        running.macShare = nil
+        #expect(
+            !DaemonDistributions.make(
+                running, isDefault: false, history: [nil], home: "/Users/ayse"
+            )
+            .details.contains { $0.key == "mounts" })
+        // Stopped, with a stale share in the figures: no row.
+        var stopped = figures(state: .stopped, sample: 1)
+        stopped.macShare = share
+        #expect(
+            !DaemonDistributions.make(stopped, isDefault: false, history: [], home: "/Users/ayse")
+                .details.contains { $0.key == "mounts" })
+    }
+
     /// A figure that the daemon did not report is left out, never a placeholder.
     @Test func unknownFiguresAreLeftOut() {
         var running = figures(sample: 1)

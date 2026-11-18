@@ -262,15 +262,19 @@ public struct AgentInfo: Codable, Equatable, Sendable {
     public var kernelRelease: String
     /// Time since the guest kernel booted.
     public var uptimeMilliseconds: UInt64
+    /// Whether `/proc/self/mountinfo` shows the Mac's home directory mounted at `/mnt/mac`
+    /// (protocol version 6). It comes from the guest, so the host only displays it.
+    public var macShareMounted: Bool
 
     public init(
         agentVersion: String, protocolVersion: UInt32, kernelRelease: String,
-        uptimeMilliseconds: UInt64
+        uptimeMilliseconds: UInt64, macShareMounted: Bool
     ) {
         self.agentVersion = agentVersion
         self.protocolVersion = protocolVersion
         self.kernelRelease = kernelRelease
         self.uptimeMilliseconds = uptimeMilliseconds
+        self.macShareMounted = macShareMounted
     }
 }
 
