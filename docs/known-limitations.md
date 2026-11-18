@@ -563,7 +563,16 @@ from `main`.
     `ContinuousClock`, the test events stopped for 4.0 s just after it started, and 883 of the
     group's 1,093 results reported 6 to 7.6 s; the check came 2.6 s after the deadline, before
     the export's task had run. The test passed in the next run, 44088401625, and no pull
-    request had changed it since it was added in pull request #31. A deadline
+    request had changed it since it was added in pull request #31. Four tests failed so in CI
+    run 44358996376 of the same pull request, at `c13effb`, whose new commits changed none of
+    them: `DistributionSessionTests`'s `endsAsClosedByTheUserOnHangUpWhileTheShellStarts()`,
+    `endsAsClosedByTheUserOnHangUpWhileTheDaemonOpensTheSession()`, and
+    `keepsAResizeAndInputFromWhileTheShellStarts()`, which started at 17:31:00.2 to 00.4 and
+    whose `eventually` checks a deadline of 10 seconds on `ContinuousClock`, and
+    `ExportCommandTests.cancelsOnASignalAndRemovesTheFile()`, which started at 17:31:03.6 and
+    whose `waitFor` passed its deadline of 5 seconds by 2.2 s. Almost no result came back
+    from 17:31:00 until 17:31:08.5, when they arrived together: 944 of the 958 results in the
+    log reported 9.0 to 12.0 s. A deadline
     measured by a task, such as a `Task.sleep`, is delayed by the same stall and does not
     expire early.
   - **Evidence:** In each of those runs and in the passing run 42516767842 of `main`, tests
