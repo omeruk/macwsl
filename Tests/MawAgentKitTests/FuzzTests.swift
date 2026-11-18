@@ -10,7 +10,7 @@ import Testing
 
 /// Throws 10,000 random frames at the agent's session code. The agent must not crash, must
 /// close each connection that receives bad input, and must keep serving new connections.
-@Suite struct FuzzTests {
+@Suite(.timeLimit(.minutes(2))) struct FuzzTests {
     /// Deterministic, so that a failure can be reproduced.
     struct Generator: RandomNumberGenerator {
         var state: UInt64
@@ -79,7 +79,7 @@ import Testing
     }
 
     /// Writes `bytes`, half-closes the connection, and reads until the agent closes it.
-    /// Returns false if the agent has not closed it within 10 seconds.
+    /// Returns false if the agent has not closed it within `peerDeadline`.
     static func sendThenWaitForClose(_ bytes: [UInt8], on descriptor: OwnedDescriptor) -> Bool {
         defer { descriptor.close() }
         let fd = descriptor.rawValue
@@ -94,7 +94,7 @@ import Testing
         }
         shutdown(fd, Int32(SHUT_WR))
 
-        let deadline = ContinuousClock.now + .seconds(10)
+        let deadline = ContinuousClock.now + peerDeadline
         var buffer = [UInt8](repeating: 0, count: 4096)
         while ContinuousClock.now < deadline {
             var request = [pollfd(fd: fd, events: Int16(POLLIN), revents: 0)]

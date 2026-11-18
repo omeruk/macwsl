@@ -11,7 +11,7 @@ import Testing
 #endif
 
 /// The agent's answer to `sample`, against fixture files laid out as `/proc`.
-@Suite struct GuestFiguresTests {
+@Suite(.timeLimit(.minutes(2))) struct GuestFiguresTests {
     /// `/proc/meminfo` of a 2 GiB Ubuntu 24.04 machine, shortened.
     static let meminfo = """
         MemTotal:        2044624 kB

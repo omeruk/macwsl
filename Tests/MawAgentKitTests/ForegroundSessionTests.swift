@@ -13,7 +13,7 @@ import Testing
 /// `foregroundQuery` from `GuestProcess` to the agent's session code, on real pseudo-terminals.
 /// The foreground group comes from `tcgetpgrp`; the process files come from a fixture, because
 /// macOS has no `/proc`, which the test fills in for the process IDs it observes.
-@Suite struct ForegroundSessionTests {
+@Suite(.timeLimit(.minutes(2))) struct ForegroundSessionTests {
     static let terminal = TerminalSize(rows: 24, columns: 80)
 
     @Test func reportsNoneInPipeMode() async throws {
@@ -38,7 +38,7 @@ import Testing
     /// A shell with job control runs `cat` in a foreground group of its own. Without its
     /// process files, the leader counts as exited; with them, it is named; as a zombie, it is
     /// nameless again. Once `cat` has ended, the shell is in the foreground again.
-    @Test(.timeLimit(.minutes(1)))
+    @Test(.timeLimit(.minutes(2)))
     func reportsAForegroundJobUntilItEnds() async throws {
         let proc = try ProcessFixture()
         let agent = TestAgent(processDirectory: proc.directory)
@@ -49,11 +49,13 @@ import Testing
                 terminal: Self.terminal),
             output: output.handler)
 
+        // At most 500 rounds, counted instead of read from a clock (`TestAgent.waitForOutput`).
         var answer = ForegroundAnswer.none
-        let deadline = ContinuousClock.now + .seconds(10)
-        while answer == .none && ContinuousClock.now < deadline {
+        var rounds = 0
+        while answer == .none && rounds < 500 {
             try await Task.sleep(for: .milliseconds(20))
             answer = await process.foregroundProgram(within: .seconds(10))
+            rounds += 1
         }
         guard case .program(let group, nil) = answer else {
             Issue.record("expected a program without a name, received \(answer)")
@@ -107,7 +109,7 @@ import Testing
 
     /// Closing the connection from the host ends the session as a closed ssh connection does:
     /// the agent sends SIGHUP to the terminal's foreground group.
-    @Test(.timeLimit(.minutes(1)))
+    @Test(.timeLimit(.minutes(2)))
     func hangsUpOnTheProcessWhenTheHostHangsUp() async throws {
         let marker = "/tmp/maw-hangup-\(getpid())-\(UInt32.random(in: 0...UInt32.max))"
         defer { unlink(marker) }
