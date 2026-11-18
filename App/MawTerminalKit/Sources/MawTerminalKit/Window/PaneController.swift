@@ -133,13 +133,19 @@ final class PaneController {
         terminalView.feed(text: Self.terminalText(text, style: style, atLineStart: atLineStart))
     }
 
-    /// What `write(_:style:)` feeds the terminal. Every control and format character of `text`
-    /// but its line feeds becomes `?` first (`TerminalSessionError.displayable(_:)`), because
-    /// notices and errors can carry text from settings or from a distribution; then the style's
-    /// SGR sequence is added, and each line feed becomes CR LF.
+    /// What `write(_:style:)` feeds the terminal. Each line feed, or CR LF, ends a line. Every
+    /// other control and format character of `text` but a tab becomes `?` first
+    /// (`TerminalSessionError.displayable(_:keepingTabs:)`), because notices and errors can carry
+    /// text from settings or from a distribution; a bare CR does too, as it would overwrite the
+    /// line. Then the style's SGR sequence is added, and each line ends in CR LF.
     static func terminalText(_ text: String, style: String, atLineStart: Bool) -> String {
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { TerminalSessionError.displayable(String($0)) }
+        // Split by scalars: a String splits by characters, and CR LF is one character.
+        let lines = text.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                let content = line.last == "\r" ? line.dropLast() : line
+                return TerminalSessionError.displayable(
+                    String(String.UnicodeScalarView(content)), keepingTabs: true)
+            }
             .joined(separator: "\r\n")
         return "\(atLineStart ? "" : "\r\n")\u{1B}[\(style)m\(lines)\u{1B}[0m"
     }

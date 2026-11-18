@@ -84,20 +84,25 @@ extension TerminalSessionError: LocalizedError {
     static let displayedPathLimit = 256
 
     /// Text made safe for the pane, which passes it to the terminal emulator: control and format
-    /// characters become `?`, so that none of them takes effect there. Text from the settings
-    /// needs it because `settings.json` can be written from a distribution through `/mnt/mac`
-    /// (docs/security.md).
-    static func displayable(_ text: String) -> String {
-        String(
-            text.unicodeScalars.map { scalar -> Character in
-                switch scalar.properties.generalCategory {
-                case .control, .format, .lineSeparator, .paragraphSeparator, .surrogate,
-                    .privateUse, .unassigned:
-                    "?"
-                default:
-                    Character(scalar)
-                }
-            })
+    /// characters become `?`, so that none of them takes effect there; with `keepingTabs`, a tab
+    /// stays, as it only moves the cursor. Text from the settings needs it because
+    /// `settings.json` can be written from a distribution through `/mnt/mac` (docs/security.md).
+    static func displayable(_ text: String, keepingTabs: Bool = false) -> String {
+        var shown = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            if keepingTabs && scalar == "\t" {
+                shown.append(scalar)
+                continue
+            }
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator, .surrogate,
+                .privateUse, .unassigned:
+                shown.append("?")
+            default:
+                shown.append(scalar)
+            }
+        }
+        return String(shown)
     }
 
     /// A path from the settings, such as the local shell's, as the app shows it: displayable,
