@@ -111,7 +111,7 @@ func feed(_ output: ArchiveOutput, _ bytes: [UInt8], size: Int = 65536) async ->
     }
 }
 
-@Suite struct ArchiveOutputTests {
+@Suite(.timeLimit(.minutes(2))) struct ArchiveOutputTests {
     @Test func writesATarArchiveAsTheGuestMadeIt() async throws {
         let pipe = try DrainedPipe()
         let output = try ArchiveOutput(
@@ -194,11 +194,16 @@ func feed(_ output: ArchiveOutput, _ bytes: [UInt8], size: Int = 65536) async ->
         let producer = Task { await feed(output, archive) }
         // The pipe fills, and the producer waits.
         try await Task.sleep(for: .milliseconds(500))
-        let aborted = ContinuousClock.now
         output.abort()
         let chunks = await producer.value
         let outcome = await output.finish()
-        #expect(ContinuousClock.now - aborted < .seconds(2))
+        // The order, not the time: the producer and `finish()` returned while the reader had
+        // read nothing, and the pipe still holds what was written. A bound on the time failed
+        // whenever a stall of the cooperative pool delayed the producer's task
+        // (docs/known-limitations.md); an abort that waited for the reader would never return,
+        // and the suite's time limit fails it.
+        var unread = pollfd(fd: reader.rawValue, events: Int16(POLLIN), revents: 0)
+        #expect(poll(&unread, 1, 0) == 1 && unread.revents & Int16(POLLIN) != 0)
         #expect(chunks < (archive.count + 65535) / 65536, "The producer was never held up.")
         #expect(outcome.failure == .aborted)
     }
