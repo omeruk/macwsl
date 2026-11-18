@@ -80,7 +80,7 @@ public enum ForegroundReport: Hashable, Sendable {
 }
 
 extension TerminalSessionError: LocalizedError {
-    /// The most characters of a path from the settings that the app shows.
+    /// The most Unicode scalars of a path from the settings that the app shows.
     static let displayedPathLimit = 256
 
     /// Text made safe for the pane, which passes it to the terminal emulator: control and format
@@ -106,11 +106,14 @@ extension TerminalSessionError: LocalizedError {
     }
 
     /// A path from the settings, such as the local shell's, as the app shows it: displayable,
-    /// and cut to `displayedPathLimit` characters with "…". The path that runs is unchanged.
+    /// and cut to `displayedPathLimit` Unicode scalars, then "…". The limit counts scalars, not
+    /// characters, so that combining marks cannot make one character of any length. The path
+    /// that runs is unchanged.
     static func displayablePath(_ path: String) -> String {
-        let shown = displayable(path)
-        guard shown.count > displayedPathLimit else { return shown }
-        return String(shown.prefix(displayedPathLimit)) + "…"
+        let scalars = path.unicodeScalars
+        guard scalars.count > displayedPathLimit else { return displayable(path) }
+        let kept = String(String.UnicodeScalarView(scalars.prefix(displayedPathLimit)))
+        return displayable(kept) + "…"
     }
 
     public var errorDescription: String? {

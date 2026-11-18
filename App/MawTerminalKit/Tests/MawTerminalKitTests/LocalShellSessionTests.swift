@@ -489,6 +489,18 @@ import Testing
                 == String(shell.prefix(256)) + "… does not exist or is not executable")
     }
 
+    /// The limit counts Unicode scalars, so that a character followed by any number of
+    /// combining marks, which Swift counts as one character, is cut as well.
+    @Test func cutsAPathOfCombiningMarksAt256Scalars() {
+        let marks = String(repeating: "\u{0301}", count: 1_000)
+        let shell = "/opt/a" + marks
+        let shown = TerminalSessionError.displayablePath(shell)
+        #expect(shown.unicodeScalars.count == 257)
+        #expect(shown == String(String.UnicodeScalarView(shell.unicodeScalars.prefix(256))) + "…")
+        let name = LocalShellSession(shell: shell).displayName
+        #expect(name == "a" + String(repeating: "\u{0301}", count: 255) + "…")
+    }
+
     /// The shell's name for the tab and the window is the last component of its path, shown
     /// without control or format characters and at most 256 characters long.
     @Test func namesTheShellWithoutControlCharacters() {
