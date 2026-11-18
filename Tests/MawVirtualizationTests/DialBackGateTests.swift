@@ -6,7 +6,7 @@ import os
 
 @testable import MawVirtualization
 
-@Suite struct DialBackGateTests {
+@Suite(.timeLimit(.minutes(2))) struct DialBackGateTests {
     // MARK: Admission, before anything is read
 
     @Test(arguments: [UInt32(1024), 1025, 49152, UInt32.max])
@@ -372,9 +372,12 @@ import os
             _ = try await gate.gate.openSessionConnection(through: agent.client)
         }
         #expect(agent.connections.value == 1)
-        let deadline = ContinuousClock.now + .seconds(5)
-        while agent.served.value < 1 && ContinuousClock.now < deadline {
+        // At most 500 sleeps of 10 ms, counted instead of read from a clock: a stall of the
+        // cooperative pool delays the sleeps as much as the agent (docs/known-limitations.md).
+        var sleeps = 0
+        while agent.served.value < 1 && sleeps < 500 {
             try await Task.sleep(for: .milliseconds(10))
+            sleeps += 1
         }
         #expect(agent.served.value == 1)
         #expect(agent.requests.value.isEmpty)
