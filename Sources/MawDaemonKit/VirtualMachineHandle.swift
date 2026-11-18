@@ -74,7 +74,7 @@
         public static func factory(
             kernelDirectory: URL, logDirectory: URL, store: DistributionStore, log: DaemonLog,
             canRunVirtualMachines: Bool, samplesWithInfo: Bool = false,
-            macHome: URL? = FileManager.default.homeDirectoryForCurrentUser
+            macHome: URL?
         ) -> MachineFactory {
             { (machine: MachineID) throws(MawError) -> any MachineHandle in
                 guard canRunVirtualMachines else {
