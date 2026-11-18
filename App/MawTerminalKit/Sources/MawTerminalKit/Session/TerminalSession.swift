@@ -106,14 +106,22 @@ extension TerminalSessionError: LocalizedError {
     }
 
     /// A path from the settings, such as the local shell's, as the app shows it: displayable,
-    /// and cut to `displayedPathLimit` Unicode scalars, then "…". The limit counts scalars, not
-    /// characters, so that combining marks cannot make one character of any length. The path
-    /// that runs is unchanged.
+    /// and, if it has more than `displayedPathLimit` Unicode scalars, cut after the last whole
+    /// character that ends within that many scalars, then "…". The limit counts scalars, so
+    /// that combining marks cannot make one character of any length, and the cut never splits
+    /// a character, such as an emoji joined by a ZWJ or a flag. A first character longer than
+    /// the limit leaves only "…". The path that runs is unchanged.
     static func displayablePath(_ path: String) -> String {
-        let scalars = path.unicodeScalars
-        guard scalars.count > displayedPathLimit else { return displayable(path) }
-        let kept = String(String.UnicodeScalarView(scalars.prefix(displayedPathLimit)))
-        return displayable(kept) + "…"
+        guard path.unicodeScalars.count > displayedPathLimit else { return displayable(path) }
+        var end = path.startIndex
+        var kept = 0
+        while end < path.endIndex {
+            let size = path[end].unicodeScalars.count
+            guard kept + size <= displayedPathLimit else { break }
+            kept += size
+            end = path.index(after: end)
+        }
+        return displayable(String(path[..<end])) + "…"
     }
 
     public var errorDescription: String? {

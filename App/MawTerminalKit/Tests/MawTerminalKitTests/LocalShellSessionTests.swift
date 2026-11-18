@@ -490,15 +490,31 @@ import Testing
     }
 
     /// The limit counts Unicode scalars, so that a character followed by any number of
-    /// combining marks, which Swift counts as one character, is cut as well.
+    /// combining marks, which Swift counts as one character, is cut as well. The cut keeps whole
+    /// characters only, so a first character longer than the limit leaves only "…".
     @Test func cutsAPathOfCombiningMarksAt256Scalars() {
         let marks = String(repeating: "\u{0301}", count: 1_000)
         let shell = "/opt/a" + marks
-        let shown = TerminalSessionError.displayablePath(shell)
-        #expect(shown.unicodeScalars.count == 257)
-        #expect(shown == String(String.UnicodeScalarView(shell.unicodeScalars.prefix(256))) + "…")
-        let name = LocalShellSession(shell: shell).displayName
-        #expect(name == "a" + String(repeating: "\u{0301}", count: 255) + "…")
+        #expect(TerminalSessionError.displayablePath(shell) == "/opt/…")
+        #expect(LocalShellSession(shell: shell).displayName == "…")
+    }
+
+    /// The cut never splits a character across the 256th scalar: an emoji joined by a ZWJ (3
+    /// scalars) and a flag (2 scalars) are kept whole when they end within the limit and left
+    /// out whole when they cross it. A kept ZWJ still shows as `?`, as every format character
+    /// does.
+    @Test(arguments: ["\u{1F469}\u{200D}\u{1F4BB}", "\u{1F1F9}\u{1F1F7}"])
+    func neverSplitsACharacterAtTheCut(character: String) {
+        let size = character.unicodeScalars.count
+        // Crosses the limit: its first scalar is the 256th.
+        let before = "/" + String(repeating: "a", count: 254)
+        #expect(
+            TerminalSessionError.displayablePath(before + character + "bbbb") == before + "…")
+        // Ends within the limit: its last scalar is the 256th.
+        let fits = "/" + String(repeating: "a", count: 255 - size)
+        #expect(
+            TerminalSessionError.displayablePath(fits + character + "bbbb")
+                == fits + TerminalSessionError.displayable(character) + "…")
     }
 
     /// The shell's name for the tab and the window is the last component of its path, shown
