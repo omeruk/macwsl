@@ -233,10 +233,10 @@ maw -- cat /mnt/mac/Projects/app/README.md    # ~/Projects/app/README.md on the 
   the Mac leads nowhere in Linux, and one to `/mnt/mac/...` made in Linux leads nowhere on the
   Mac. Relative links work on both sides.
 - **Listing large directories is slower than on the Mac**: `ls -l` of 10,000 files took
-  1.2 s in Linux, against 0.08 s on the Mac in the first measurements. A 1 GiB file was
-  written at 1,185 MB/s and read at 2,635 MB/s, and a second `git status` in a clone of maw's
-  repository took 41 ms. These are medians of 5 runs on an M1 Pro, all but the Mac's figure
-  from the official measurements;
+  1.2 s in Linux in the official measurements, and 0.08 s on the Mac in the development
+  figures; the two come from runs under different load. In the official measurements, a
+  1 GiB file was written at 1,185 MB/s and read at 2,635 MB/s, and a second `git status` in a
+  clone of maw's repository took 41 ms. All are medians of 5 runs on an M1 Pro;
   [decision record 0021](docs/decisions/0021-mac-share.md) has every figure and how it was
   measured.
 - **Just after a change on the Mac**, Linux can for a fraction of a second still see the old
