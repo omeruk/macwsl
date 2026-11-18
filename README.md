@@ -316,10 +316,10 @@ archive whose files are all under one directory, or whose `/sbin/init` is not sy
 refused. If the first start fails, the distribution stays installed, and maw names its console
 log. [`docs/distributions.md`](docs/distributions.md) lists what the import changes.
 
-> **Import only archives that you trust.** Importing an archive runs its programs at the
-> import's first start and in every later session, as you, with read-write access to your home
-> directory through `/mnt/mac`. Import only archives that you trust, as you would run only
-> programs that you trust ([docs/security.md](docs/security.md)).
+> **Importing an archive runs its programs with your files.** They run at the import's first
+> start and at every later start of the distribution, as you, with read-write access to your
+> home directory through `/mnt/mac`. Import only archives that you trust, as you would run
+> only programs that you trust ([docs/security.md](docs/security.md)).
 
 To remove the daemon, which stops its virtual machines first:
 
