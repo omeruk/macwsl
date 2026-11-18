@@ -130,8 +130,18 @@ final class PaneController {
     /// `2` (dim). The terminal needs CR LF, and messages contain line feeds of their own.
     private func write(_ text: String, style: String) {
         let atLineStart = terminalView.getTerminal().getCursorLocation().x == 0
-        let lines = text.replacingOccurrences(of: "\n", with: "\r\n")
-        terminalView.feed(text: "\(atLineStart ? "" : "\r\n")\u{1B}[\(style)m\(lines)\u{1B}[0m")
+        terminalView.feed(text: Self.terminalText(text, style: style, atLineStart: atLineStart))
+    }
+
+    /// What `write(_:style:)` feeds the terminal. Every control and format character of `text`
+    /// but its line feeds becomes `?` first (`TerminalSessionError.displayable(_:)`), because
+    /// notices and errors can carry text from settings or from a distribution; then the style's
+    /// SGR sequence is added, and each line feed becomes CR LF.
+    static func terminalText(_ text: String, style: String, atLineStart: Bool) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { TerminalSessionError.displayable(String($0)) }
+            .joined(separator: "\r\n")
+        return "\(atLineStart ? "" : "\r\n")\u{1B}[\(style)m\(lines)\u{1B}[0m"
     }
 
     func apply(_ appearance: TerminalAppearance) {
