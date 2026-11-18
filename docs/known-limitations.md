@@ -564,35 +564,42 @@ from `main`.
 - **Tests fill the cooperative pool for several seconds at the start of the general group.**
   - **Seen:** In CI, where `swift test` runs every test of the general group in one process,
     synchronous tests that are CPU-bound or that block occupy every thread of the cooperative
-    pool for about 3 to 10 seconds after the group starts. The CPU-bound ones are mainly the
+    pool for about 3 to 12 seconds after the group starts. The CPU-bound ones are mainly the
     argument parser's tests in a debug build (`ValidationTests`, `DebugBootParsingTests`),
     with `ImageCacheTests`, `DistributionStoreTests` and `RootCheckScriptTests`. The blocking
     one was `PeerRequirementTests.acceptsOnlyMawsIdentifiers`, which waited for `codesign`
     with `waitUntilExit()` in seven parallel cases; it now suspends instead, but `codesign`
     itself still competes for the CPU. While the pool is full, no other task in the process
     starts or resumes, so nearly every test that started before the stall reports its length
-    as its duration. A test with a wall-clock deadline that runs on a thread of its own while
-    its counterpart needs the pool can therefore fail, as
-    `HandshakeTests.exchangesMatchingVersions()` did until its peer moved to a thread of its
-    own (CI runs 42512716425, 42574910845, 42644895862, 42807002034 and 42834158953, each
-    passing on a re-run). Any future test with that pattern can fail the same way.
-    `ExportCommandTests.keepsTheFileWhenTheExportSucceedsDespiteTheSignal()` failed so in CI run
-    44086055594 of pull request #33: its `waitFor` checks a deadline of 5 seconds on
-    `ContinuousClock`, the test events stopped for 4.0 s just after it started, and 883 of the
-    group's 1,093 results reported 6 to 7.6 s; the check came 2.6 s after the deadline, before
-    the export's task had run. The test passed in the next run, 44088401625, and no pull
-    request had changed it since it was added in pull request #31. Four tests failed so in CI
-    run 44358996376 of the same pull request, at `c13effb`, whose new commits changed none of
-    them: `DistributionSessionTests`'s `endsAsClosedByTheUserOnHangUpWhileTheShellStarts()`,
-    `endsAsClosedByTheUserOnHangUpWhileTheDaemonOpensTheSession()`, and
-    `keepsAResizeAndInputFromWhileTheShellStarts()`, which started at 17:31:00.2 to 00.4 and
-    whose `eventually` checks a deadline of 10 seconds on `ContinuousClock`, and
-    `ExportCommandTests.cancelsOnASignalAndRemovesTheFile()`, which started at 17:31:03.6 and
-    whose `waitFor` passed its deadline of 5 seconds by 2.2 s. Almost no result came back
-    from 17:31:00 until 17:31:08.5, when they arrived together: 944 of the 958 results in the
-    log reported 9.0 to 12.0 s. A deadline
-    measured by a task, such as a `Task.sleep`, is delayed by the same stall and does not
-    expire early.
+    as its duration. Since the `fix/test-waits` branch, the unit tests' waits do not fail
+    during a stall:
+    - a wait in a task counts its sleeps instead of reading a clock, so that the stall, which
+      delays the sleeps as much as the work waited for, cannot use it up;
+    - a scripted peer on a thread of its own, whose clock runs on during the stall, has a
+      deadline of 60 s, longer than any stall seen;
+    - `maw --export` and `maw --import` wait for the daemon's answer to a cancellation and for
+      the operation's own reply with timeouts that a test can lengthen, `cancelTimeout` and
+      `replyTimeout`, which keep 5 s and 500 ms otherwise;
+    - `ArchiveOutputTests.endsAtOnceWhenAbortedWhileTheReaderDoesNotRead` checks the order of
+      the abort and the reader, not the time;
+    - every test whose wait no longer ends on a clock of its own has a time limit.
+
+    Before that branch, such waits failed in CI: `HandshakeTests.exchangesMatchingVersions()`
+    until its peer moved to a thread of its own (CI runs 42512716425, 42574910845,
+    42644895862, 42807002034 and 42834158953), `ExportCommandTests` in runs 44086055594 and
+    44358996376 of pull request #33, `DistributionSessionTests`' three tests whose shell starts
+    in 44358996376, and `LaunchctlTests.waitsUntilLaunchdNoLongerListsTheJob()` in 44372965404,
+    each passing on a re-run. In 44358996376, almost no result came back from 17:31:00 until
+    17:31:08.5, and 944 of the 958 results in the log reported 9.0 to 12.0 s; in 44372965404,
+    873 of 886 reported 9.3 to 11.7 s.
+
+    One test still needs a second thread of the pool:
+    `FigureSamplerTests.reportsTheGuestsAnswerBeforeCancellingItsTimeout` holds the sampler's
+    guest task in the test clock's cancellation, on a thread of the pool, until another task
+    publishes the figures, so it cannot pass while the pool has one thread
+    (`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`), on `main` or since the branch. It has not
+    failed in CI, where the pool has a thread per core. `ImageCacheTests`'
+    `stopsACancelledCheckWithinOnePiece` holds a read the same way, for at most 10 s.
   - **Evidence:** In each of those runs and in the passing run 42516767842 of `main`, tests
     from unrelated modules finish with the same duration to the millisecond, for example
     `reportsTheHostLimits()` at 5.373 s with about 60 others in run 42574910845, and the test
@@ -606,16 +613,19 @@ from `main`.
     process during the stall show every pool thread running the tests named above. A thread
     sample from the CI runner itself is missing; the CI evidence is the log signature only.
     The default local build (`swiftbuild`, one test bundle per target) runs each target in a
-    process of its own, so a plain local `swift test` shows a much shorter stall.
-  - **Phase:** None; a `fix/` branch. The owner decided on 2026-11-17 that a `fix/` branch after
-    pull request #33 makes `ExportCommandTests.waitFor` count its own sleeps instead of reading
-    the clock. More generally: run the CPU-bound and blocking synchronous tests off the
-    pool or in a group of their own, and keep tests with wall-clock deadlines independent of
-    the pool, as `scripts/test-groups.sh` and `docs/decisions/0018-test-groups.md` do for
-    load and latency. A helper in `Sources/MawProtocol/Threads.swift` that starts a thread at
-    once and returns its result to await later would keep that rule in one place instead of
-    a comment in each test; `Sources/MawProtocol` is a Guest workflow path, so the branch that
-    fixed the handshake test changed test code only.
+    process of its own, so a plain local `swift test` shows a much shorter stall. In that
+    layout, with the strict pool and 16 `yes` processes beside it, `main` at `774f195` failed
+    `DistributionSessionTests` and `LaunchctlTests` as in CI, and four more tests that wait on
+    a clock; after the `fix/test-waits` branch, only `FigureSamplerTests`' test failed, in 20 of
+    20 runs (its pull request has the figures).
+  - **Phase:** None. The stall itself remains: run the CPU-bound and blocking synchronous
+    tests off the pool or in a group of their own, as `scripts/test-groups.sh` and
+    `docs/decisions/0018-test-groups.md` do for load and latency, and give
+    `FigureSamplerTests.reportsTheGuestsAnswerBeforeCancellingItsTimeout` a way to see the
+    order without holding a thread of the pool. A helper in `Sources/MawProtocol/Threads.swift`
+    that starts a thread at once and returns its result to await later would keep the rule for
+    peers in one place instead of a comment in each test; `Sources/MawProtocol` is a Guest
+    workflow path.
 - **CI does not show SwiftUI behavior that begins with the macOS 27 SDK.**
   - **Seen:** SwiftUI chooses some behavior by the SDK of the running program, which under
     `swift test` is the test runner of the selected Xcode, not the test bundle
