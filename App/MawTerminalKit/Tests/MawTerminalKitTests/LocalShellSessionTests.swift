@@ -457,6 +457,46 @@ import Testing
         }
     }
 
+    /// The local shell's path comes from settings.json, which a distribution can write through
+    /// /mnt/mac. A path with escape sequences that does not exist reaches the pane with every
+    /// control character replaced, so that none of them takes effect in the terminal.
+    @Test func showsAMissingShellsPathWithoutControlCharacters() async {
+        let shell = "/nonexistent/\u{1B}]0;title\u{07}\u{1B}[2Jshell\u{9B}\u{202E}"
+        let pane = PaneController(
+            profile: .localShell(shell), session: LocalShellSession(shell: shell))
+        pane.startIfNeeded()
+        #expect(pane.failure == .programNotFound(path: shell))
+        let description = pane.failure?.errorDescription ?? ""
+        #expect(
+            description
+                == "/nonexistent/?]0;title??[2Jshell?? does not exist or is not executable")
+        #expect(!description.unicodeScalars.contains { $0.properties.generalCategory == .control })
+        let text = await paneText(pane, contains: "Choose another shell")
+        let unwrapped = text.replacingOccurrences(of: "\n", with: "")
+        #expect(unwrapped.contains("/nonexistent/?]0;title??[2Jshell??"), "\(text)")
+    }
+
+    /// The same for a start failure: a file with an escape sequence in its name, executable
+    /// but no program, which execve refuses in the child.
+    @Test func showsAStartFailuresPathWithoutControlCharacters() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "maw-shell-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appending(path: "sh\u{1B}[31mell")
+        try Data("not a program\n".utf8).write(to: file)
+        #expect(chmod(file.path, 0o755) == 0)
+        let pane = PaneController(
+            profile: .localShell(file.path), session: LocalShellSession(shell: file.path))
+        pane.startIfNeeded()
+        let shown = directory.path + "/sh?[31mell"
+        let reason = "\(shown) could not be executed: \(String(cString: strerror(ENOEXEC)))"
+        #expect(pane.failure == .startFailed(reason: reason))
+        let text = await paneText(pane, contains: "Press Enter to try again")
+        let unwrapped = text.replacingOccurrences(of: "\n", with: "")
+        #expect(unwrapped.contains("sh?[31mell could not be executed"), "\(text)")
+    }
+
     /// The prompt the test `.zshrc` sets, so that tests can tell when zsh is ready for input.
     static let prompt = "maw-ready> "
 

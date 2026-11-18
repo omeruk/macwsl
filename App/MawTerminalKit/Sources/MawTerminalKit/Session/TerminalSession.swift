@@ -80,9 +80,27 @@ public enum ForegroundReport: Hashable, Sendable {
 }
 
 extension TerminalSessionError: LocalizedError {
+    /// A path from the settings, such as the local shell's, made safe for the pane, which passes
+    /// its notices to the terminal emulator: control and format characters become `?`, so that
+    /// none of them takes effect there. `settings.json` can be written from a distribution
+    /// through `/mnt/mac` (docs/security.md).
+    static func displayable(_ path: String) -> String {
+        String(
+            path.unicodeScalars.map { scalar -> Character in
+                switch scalar.properties.generalCategory {
+                case .control, .format, .lineSeparator, .paragraphSeparator, .surrogate,
+                    .privateUse, .unassigned:
+                    "?"
+                default:
+                    Character(scalar)
+                }
+            })
+    }
+
     public var errorDescription: String? {
         switch self {
-        case .programNotFound(let path): "\(path) does not exist or is not executable"
+        case .programNotFound(let path):
+            "\(Self.displayable(path)) does not exist or is not executable"
         case .startFailed(let reason): "The session could not start: \(reason)"
         case .failed(let message, _): message
         }

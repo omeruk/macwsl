@@ -173,7 +173,12 @@ Virtualization.framework's virtiofs device, and the initramfs mounts it at `/mnt
   `settings.json` names the new-tab profile, such as `distribution:<name>`. A pane's notice
   never shows a name that is not a valid distribution name, because the notice goes to the
   terminal emulator, where control characters would take effect
-  (`LinuxSessionTests.anInvalidNameOpensTheDefaultAndSaysSo`).
+  (`LinuxSessionTests.anInvalidNameOpensTheDefaultAndSaysSo`). The local shell's path from
+  `localShell` reaches the pane only in an error, with its control and format characters
+  replaced by `?` (`LocalShellSessionTests.showsAMissingShellsPathWithoutControlCharacters`).
+  The setting itself names the program that a local tab runs as the owner, so a guest that
+  writes `settings.json` can already run a program on the Mac, as through
+  `~/Library/LaunchAgents`.
 
 ### The guest agent over vsock
 
