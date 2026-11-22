@@ -311,6 +311,8 @@ import os
         let (signals, sender) = AsyncStream.makeStream(of: Int32.self)
         var importing = command(daemon, file: file)
         importing.cancelTimeout = Self.answeredCancelTimeout
+        // The import's failure comes after the cancellation's answer, through the pool as well.
+        importing.replyTimeout = Self.answeredCancelTimeout
         let running = Task { [importing] in try await importing.run(signals: signals) }
         try await waitUntil { daemon.requests.contains("import Copy") }
         sender.yield(SIGINT)
