@@ -64,7 +64,7 @@ private let peerDeadline = Duration.seconds(60)
                 try? connection.flush(until: .now + peerDeadline)
             }
         }
-        return GuestAgentClient { () throws(MawError) in host }
+        return GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in host }
     }
 
     @Test func returnsTheAgentsAnswer() async throws {

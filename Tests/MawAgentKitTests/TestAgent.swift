@@ -4,8 +4,9 @@ import MawCore
 import MawProtocol
 import Testing
 
-/// The deadline of each step of a scripted side on a thread of its own, and the agent's and its
-/// client's timeouts in `TestAgent`. It is only a bound, so that a side whose counterpart stops
+/// The deadline of each step of a scripted side on a thread of its own, the agent's and its
+/// client's timeouts in `TestAgent`, and the reply timeout of any other client that talks to a
+/// scripted side. It is only a bound, so that a side whose counterpart stops
 /// leaves no thread behind; it is longer than any stall of the cooperative pool, during which
 /// its clock runs on while the side under test, which needs the pool, cannot answer
 /// (docs/known-limitations.md).

@@ -89,7 +89,7 @@ private let peerDeadline = Duration.seconds(60)
 
     @Test func clientReportsAGuestWithAnotherVersion() async throws {
         let (host, peer) = try Self.socketPair()
-        let client = GuestAgentClient { () throws(MawError) in host }
+        let client = GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in host }
         // A guest from a future build: it sends the next version and closes after the mismatch.
         let future = ProtocolVersion.current + 1
         startDetachedThread {
@@ -110,7 +110,7 @@ private let peerDeadline = Duration.seconds(60)
     /// naming both versions, before it reads the request.
     @Test func sampleReportsAnAgentOfVersion4() async throws {
         let (host, peer) = try Self.socketPair()
-        let client = GuestAgentClient { () throws(MawError) in host }
+        let client = GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in host }
         startDetachedThread {
             guard let connection = try? FrameConnection(peer) else { return }
             connection.enqueue(.version(4))
@@ -135,7 +135,7 @@ private let peerDeadline = Duration.seconds(60)
     /// an error naming both versions.
     @Test func clientReportsAnAgentFromAnEarlierBuild() async throws {
         let (host, peer) = try Self.socketPair()
-        let client = GuestAgentClient { () throws(MawError) in host }
+        let client = GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in host }
         let earlier = ProtocolVersion.current - 1
         startDetachedThread {
             guard let connection = try? FrameConnection(peer) else { return }
@@ -242,7 +242,7 @@ private let peerDeadline = Duration.seconds(60)
                 dialBack: { () throws(DialBackError) -> OwnedDescriptor in dialedAgent },
                 powerOff: {}))
         server.serveOnNewThread(agentSide)
-        let client = GuestAgentClient { () throws(MawError) in request }
+        let client = GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in request }
         let nonce = DialBackNonce.random()
         try await client.dialBack(nonce)
 
@@ -260,7 +260,7 @@ private let peerDeadline = Duration.seconds(60)
                 dialBack: { () throws(DialBackError) -> OwnedDescriptor in throw .noFreePort },
                 powerOff: {}))
         server.serveOnNewThread(agentSide)
-        let client = GuestAgentClient { () throws(MawError) in request }
+        let client = GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in request }
         await #expect(
             throws: MawError.sessionDialBackFailed(reason: "no source port below 1024 is free")
         ) {

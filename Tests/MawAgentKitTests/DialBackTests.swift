@@ -146,7 +146,9 @@ extension DialBackDialerTests {
         decoder.append(first)
         #expect(try decoder.nextFrame()?.dialBackNonce() == nonce)
 
-        let client = GuestAgentClient { () throws(MawError) in dialed.host }
+        let client = GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in
+            dialed.host
+        }
         let output = Output()
         let process = try await client.exec(
             ExecRequest(argv: ["/bin/echo", "dialed"]), output: output.handler)

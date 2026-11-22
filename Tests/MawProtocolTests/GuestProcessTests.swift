@@ -41,7 +41,7 @@ private let peerDeadline = Duration.seconds(60)
             }
             peer.close()
         }
-        return GuestAgentClient { () throws(MawError) in host }
+        return GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in host }
     }
 
     @Test func deliversOutputThatArrivesWithTheStartedReply() async throws {
@@ -107,7 +107,7 @@ private let peerDeadline = Duration.seconds(60)
             while (try? connection.receiveFrame(until: .now + peerDeadline)) != nil {}
             peer.close()
         }
-        let client = GuestAgentClient { () throws(MawError) in host }
+        let client = GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in host }
         let process = try await client.exec(ExecRequest(argv: ["cat"])) { _, _ in }
         // 8 MiB: 32 times the client's input limit.
         let size = 8 << 20
@@ -187,7 +187,7 @@ private let peerDeadline = Duration.seconds(60)
             while (try? connection.receiveFrame(until: .now + peerDeadline)) != nil {}
             peer.close()
         }
-        let client = GuestAgentClient { () throws(MawError) in host }
+        let client = GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in host }
         let process = try await client.exec(ExecRequest(argv: ["cat"])) { _, _ in }
         let size = 16 << 20
         startDetachedThread {
@@ -309,7 +309,8 @@ extension GuestProcessTests {
         func keepsInputWithinTheWindowAndSendsControlMessagesAheadOfIt() async throws {
             let (host, peer) = try HandshakeTests.socketPair()
             let agentConnection = try FrameConnection(peer)
-            let client = GuestAgentClient { () throws(MawError) in host }
+            let client = GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in host
+            }
             startDetachedThread {
                 _ = try? agentConnection.exchangeVersions(until: .now + peerDeadline)
                 _ = try? agentConnection.receiveControl(

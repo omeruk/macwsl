@@ -6,8 +6,9 @@ import MawProtocol
 import MawXPC
 import Testing
 
-/// The deadline of each step of a scripted peer on a thread of its own. It is only a bound, so
-/// that a peer whose counterpart stops leaves no thread behind; it is longer than any stall of
+/// The deadline of each step of a scripted peer on a thread of its own, and the reply timeout of
+/// the client that talks to it. It is only a bound, so that a peer whose counterpart stops
+/// leaves no thread behind; it is longer than any stall of
 /// the cooperative pool, during which the peer's clock runs on while the side under test,
 /// which needs the pool, cannot answer (docs/known-limitations.md).
 private let peerDeadline = Duration.seconds(60)
@@ -137,7 +138,9 @@ private let peerDeadline = Duration.seconds(60)
         }
 
         let received = Received()
-        let client = GuestAgentClient(guestName: Self.machine.name) { () throws(MawError) in host }
+        let client = GuestAgentClient(replyTimeout: peerDeadline, guestName: Self.machine.name) {
+            () throws(MawError) in host
+        }
         let process = try await client.exec(ExecRequest(argv: ["seq", "1", "inf"])) { _, bytes in
             received.append(bytes)
         }
