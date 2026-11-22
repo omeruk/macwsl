@@ -10,7 +10,7 @@ import os
 
 /// `maw --import`'s archive, its result, and its cancellation, with a fake daemon that reads
 /// the descriptor it receives.
-@Suite struct ImportCommandTests {
+@Suite(.timeLimit(.minutes(2))) struct ImportCommandTests {
     final class FakeDaemon: ImportDaemon, @unchecked Sendable {
         let events: AsyncStream<DaemonClient.Event>
         private let continuation: AsyncStream<DaemonClient.Event>.Continuation
@@ -269,7 +269,9 @@ import os
         let daemon = FakeDaemon()
         daemon.holdsUntilCancelled = true
         let (signals, sender) = AsyncStream.makeStream(of: Int32.self)
-        let running = Task { try await command(daemon, file: file).run(signals: signals) }
+        var importing = command(daemon, file: file)
+        importing.cancelTimeout = Self.answeredCancelTimeout
+        let running = Task { [importing] in try await importing.run(signals: signals) }
         try await waitUntil { daemon.requests.contains("import Copy") }
         sender.yield(SIGINT)
         #expect(try await running.value == 128 + SIGINT)
@@ -286,7 +288,11 @@ import os
         daemon.holdsUntilCancelled = true
         daemon.succeedsWhenCancelled = true
         let (signals, sender) = AsyncStream.makeStream(of: Int32.self)
-        let running = Task { try await command(daemon, file: file).run(signals: signals) }
+        var importing = command(daemon, file: file)
+        importing.cancelTimeout = Self.answeredCancelTimeout
+        // The import's reply comes after the cancellation's answer, through the pool as well.
+        importing.replyTimeout = Self.answeredCancelTimeout
+        let running = Task { [importing] in try await importing.run(signals: signals) }
         try await waitUntil { daemon.requests.contains("import Copy") }
         sender.yield(SIGINT)
         #expect(try await running.value == 0)
@@ -303,7 +309,11 @@ import os
         daemon.failsWhenCancelled = .importInitNotSystemd(
             try DistroName("Copy"), reason: "/sbin/init leads to /bin/busybox")
         let (signals, sender) = AsyncStream.makeStream(of: Int32.self)
-        let running = Task { try await command(daemon, file: file).run(signals: signals) }
+        var importing = command(daemon, file: file)
+        importing.cancelTimeout = Self.answeredCancelTimeout
+        // The import's failure comes after the cancellation's answer, through the pool as well.
+        importing.replyTimeout = Self.answeredCancelTimeout
+        let running = Task { [importing] in try await importing.run(signals: signals) }
         try await waitUntil { daemon.requests.contains("import Copy") }
         sender.yield(SIGINT)
         #expect(try await running.value == 1)
@@ -359,11 +369,32 @@ import os
             ])
     }
 
+    /// Unless a test changes them, maw waits 5 seconds for the daemon to confirm a
+    /// cancellation and 500 ms for the import's own reply after it, as before they could be set.
+    @Test func keepsItsTimeoutsByDefault() throws {
+        let importing = command(FakeDaemon(), file: path("u.tar"))
+        #expect(ImportCommand.cancelTimeout == .seconds(5))
+        #expect(importing.cancelTimeout == .seconds(5))
+        #expect(ImportCommand.replyTimeout == .milliseconds(500))
+        #expect(importing.replyTimeout == .milliseconds(500))
+    }
+
+    /// The cancellation's timeout for tests in which the daemon answers the cancellation: longer
+    /// than any stall of the cooperative pool, during which the timeout's sleep runs on while the
+    /// fake daemon's answer cannot, so that the answer always comes first
+    /// (docs/known-limitations.md).
+    static let answeredCancelTimeout = Duration.seconds(60)
+
+    /// Waits until `condition` holds, for at most 500 sleeps of 10 ms. It counts its sleeps
+    /// instead of reading a clock: a stall of the cooperative pool delays the sleeps as much as
+    /// the work that the condition waits for, so it cannot use the wait up
+    /// (docs/known-limitations.md).
     private func waitUntil(_ condition: @Sendable () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(5)
+        var sleeps = 0
         while !condition() {
-            try #require(ContinuousClock.now < deadline, "The condition did not become true.")
+            try #require(sleeps < 500, "The condition did not become true.")
             try await Task.sleep(for: .milliseconds(10))
+            sleeps += 1
         }
     }
 }
@@ -384,11 +415,7 @@ extension ImportCommandTests {
             command.cancelTimeout = .milliseconds(200)
             let (signals, sender) = AsyncStream.makeStream(of: Int32.self)
             let running = Task { try await command.run(signals: signals) }
-            let deadline = ContinuousClock.now + .seconds(5)
-            while !daemon.requests.contains("import Copy") {
-                try #require(ContinuousClock.now < deadline)
-                try await Task.sleep(for: .milliseconds(10))
-            }
+            try await tests.waitUntil { daemon.requests.contains("import Copy") }
             sender.yield(SIGINT)
             #expect(try await running.value == 128 + SIGINT)
             #expect(

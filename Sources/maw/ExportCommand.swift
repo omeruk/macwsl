@@ -39,6 +39,12 @@ struct ExportCommand {
 
     /// How long maw waits for the daemon to confirm a cancellation.
     static let cancelTimeout = Duration.seconds(5)
+    /// The same, for this command. The tests lengthen it.
+    var cancelTimeout = ExportCommand.cancelTimeout
+    /// How long maw waits for the export's own reply after a cancellation.
+    static let replyTimeout = Duration.milliseconds(500)
+    /// The same, for this command. The tests lengthen it.
+    var replyTimeout = ExportCommand.replyTimeout
 
     func run() async throws -> Int32 {
         signal(SIGPIPE, SIG_IGN)
@@ -86,13 +92,13 @@ struct ExportCommand {
         case .signal(let number):
             view.interrupt()
             output.writeError("Cancelling the export...\n")
-            await Self.cancel(on: client)
+            await Self.cancel(on: client, timeout: cancelTimeout)
             // An export whose archive was complete before the cancellation reached it succeeds,
             // also when the cancellation came while its machine stopped; its reply has been sent
             // by then, but may still be on its way (`OperationReply`). The file is then complete,
             // and maw keeps it.
             if case .success(let summary) = await OperationReply.reply(
-                of: export, timeout: .milliseconds(500))
+                of: export, timeout: replyTimeout)
             {
                 archive.keep()
                 output.writeError(Self.summary(summary, file: file) + "\n")
@@ -163,9 +169,9 @@ struct ExportCommand {
         }
     }
 
-    /// Asks the daemon to cancel, and waits at most `cancelTimeout` for its answer; the
-    /// export's own reply then says how it ended.
-    static func cancel(on client: any ExportDaemon) async {
+    /// Asks the daemon to cancel, and waits at most `timeout` for its answer; the export's own
+    /// reply then says how it ended.
+    static func cancel(on client: any ExportDaemon, timeout: Duration = cancelTimeout) async {
         let first = FirstResult<Void>()
         await withCheckedContinuation { continuation in
             first.onResult { continuation.resume() }
@@ -174,7 +180,7 @@ struct ExportCommand {
                 first.settle(())
             }
             Task {
-                try? await Task.sleep(for: cancelTimeout)
+                try? await Task.sleep(for: timeout)
                 first.settle(())
             }
         }

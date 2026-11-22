@@ -8,7 +8,7 @@ import Testing
 
 /// The daemon's service and `DaemonClient`, over real XPC connections through an anonymous
 /// listener, with fake machines.
-@Suite struct DaemonServiceTests {
+@Suite(.timeLimit(.minutes(2))) struct DaemonServiceTests {
     final class Daemon: Sendable {
         let clock = TestClock()
         let factory: FakeFactory

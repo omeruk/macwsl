@@ -163,7 +163,7 @@ final class FakeImportingMachine: ImportingMachine, @unchecked Sendable {
 ///
 /// The tasks that run an import are untyped: Swift 6.4.2's IR generation crashed on a task's
 /// closure that calls `import` with `throws(MawError)`.
-@Suite struct ImporterTests {
+@Suite(.timeLimit(.minutes(2))) struct ImporterTests {
     static let copy = try! DistroName("Copy")
 
     let distros: TemporaryStore
@@ -574,7 +574,7 @@ final class FakeImportingMachine: ImportingMachine, @unchecked Sendable {
 }
 
 /// `maw --import` through the daemon's interface.
-@Suite struct ImportTests {
+@Suite(.timeLimit(.minutes(2))) struct ImportTests {
     static let copy = try! DistroName("Copy")
 
     /// A daemon without an importer, as some unit tests wire it, says so.

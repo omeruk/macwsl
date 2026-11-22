@@ -2,7 +2,7 @@ import MawDaemonKit
 import Testing
 import os
 
-@Suite struct DaemonLifetimeTests {
+@Suite(.timeLimit(.minutes(2))) struct DaemonLifetimeTests {
     let clock = TestClock()
     let exits = OSAllocatedUnfairLock(initialState: 0)
 

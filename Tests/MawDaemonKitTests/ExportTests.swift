@@ -109,7 +109,7 @@ final class FakeExportingMachine: ExportingMachine, @unchecked Sendable {
 }
 
 /// The exporter against a fake exporting machine and a store in a temporary directory.
-@Suite struct ExporterTests {
+@Suite(.timeLimit(.minutes(2))) struct ExporterTests {
     let distros: TemporaryStore
     let operations = DistributionOperations()
     let machine: FakeExportingMachine
@@ -370,7 +370,7 @@ final class FakeExportingMachine: ExportingMachine, @unchecked Sendable {
 }
 
 /// `checkExport` and `export` through XPC, and the requests that an export refuses or allows.
-@Suite struct ExportServiceTests {
+@Suite(.timeLimit(.minutes(2))) struct ExportServiceTests {
     static let copy = try! DistroName("Copy")
 
     static func daemon(_ distros: TemporaryStore, machine: FakeExportingMachine)

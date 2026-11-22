@@ -6,6 +6,13 @@ import MawProtocol
 import MawXPC
 import Testing
 
+/// The deadline of each step of a scripted peer on a thread of its own, and the reply timeout of
+/// the client that talks to it. It is only a bound, so that a peer whose counterpart stops
+/// leaves no thread behind; it is longer than any stall of
+/// the cooperative pool, during which the peer's clock runs on while the side under test,
+/// which needs the pool, cannot answer (docs/known-limitations.md).
+private let peerDeadline = Duration.seconds(60)
+
 /// A session whose connection ends before the command's exit status, without a virtual
 /// machine: a socket pair whose other end plays the agent, sends output frames, then nothing
 /// more or part of a frame, and closes. The session runs through `SessionEnding`, which `maw`
@@ -14,7 +21,7 @@ import Testing
 /// A reset is not tested: a Unix-domain socket pair, the kind a session's connection is on
 /// the host, reports a peer's close as end-of-file even with unread data or `SO_LINGER` 0, and
 /// `FrameConnection` treats a reset as end-of-file anyway.
-@Suite struct SessionEndingTests {
+@Suite(.timeLimit(.minutes(2))) struct SessionEndingTests {
     static let machine = MachineID.distribution(try! DistroName("Ubuntu-24.04"))
 
     /// Case a: output frames, then part of a frame, then the end.
@@ -103,8 +110,8 @@ import Testing
                 agentClosed.continuation.finish()
             }
             guard let connection = try? FrameConnection(peer) else { return }
-            _ = try? connection.exchangeVersions(until: .now + .seconds(5))
-            _ = try? connection.receiveControl(until: .now + .seconds(5), expecting: "exec")
+            _ = try? connection.exchangeVersions(until: .now + peerDeadline)
+            _ = try? connection.receiveControl(until: .now + peerDeadline, expecting: "exec")
             connection.enqueue(.control(.started(pid: 7)))
             for text in output {
                 connection.enqueue(Frame(type: .stdout, payload: Array(text.utf8)))
@@ -112,7 +119,7 @@ import Testing
             if let exitCode {
                 connection.enqueue(.control(.exited(.exited(code: exitCode))))
             }
-            try? connection.flush(until: .now + .seconds(5))
+            try? connection.flush(until: .now + peerDeadline)
             if !partialFrame.isEmpty {
                 _ = partialFrame.withUnsafeBytes {
                     Darwin.write(peer.rawValue, $0.baseAddress, $0.count)
@@ -120,7 +127,7 @@ import Testing
             }
             if exitCode != nil {
                 // Waits for the client to close, as the agent does after `exited`.
-                while (try? connection.receiveFrame(until: .now + .seconds(10))) != nil {}
+                while (try? connection.receiveFrame(until: .now + peerDeadline)) != nil {}
             }
         }.start()
         Task {
@@ -131,7 +138,9 @@ import Testing
         }
 
         let received = Received()
-        let client = GuestAgentClient(guestName: Self.machine.name) { () throws(MawError) in host }
+        let client = GuestAgentClient(replyTimeout: peerDeadline, guestName: Self.machine.name) {
+            () throws(MawError) in host
+        }
         let process = try await client.exec(ExecRequest(argv: ["seq", "1", "inf"])) { _, bytes in
             received.append(bytes)
         }

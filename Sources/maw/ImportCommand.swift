@@ -44,8 +44,12 @@ struct ImportCommand {
 
     /// How long maw waits for the daemon to confirm a cancellation.
     static let cancelTimeout = Duration.seconds(5)
-    /// The same, for this command. The tests shorten it.
+    /// The same, for this command. The tests shorten or lengthen it.
     var cancelTimeout = ImportCommand.cancelTimeout
+    /// How long maw waits for the import's own reply after a cancellation that came too late.
+    static let replyTimeout = Duration.milliseconds(500)
+    /// The same, for this command. The tests lengthen it.
+    var replyTimeout = ImportCommand.replyTimeout
 
     func run() async throws -> Int32 {
         let signals = SignalMonitor([SIGINT, SIGTERM, SIGHUP])
@@ -99,7 +103,7 @@ struct ImportCommand {
             case .alreadyFinished:
                 // The import had registered its distribution, or ended, before the daemon
                 // received the cancellation. Its own reply says how (`OperationReply`).
-                switch await OperationReply.reply(of: running, timeout: .milliseconds(500)) {
+                switch await OperationReply.reply(of: running, timeout: replyTimeout) {
                 case .success(let summary):
                     return await finish(summary)
                 case .failure(let failure):

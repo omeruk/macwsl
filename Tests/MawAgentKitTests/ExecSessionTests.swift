@@ -11,7 +11,7 @@ import Testing
 #endif
 
 /// `GuestAgentClient` against the agent's session code over socket pairs.
-@Suite struct ExecSessionTests {
+@Suite(.timeLimit(.minutes(2))) struct ExecSessionTests {
     let agent = TestAgent()
 
     // MARK: Pipe mode
@@ -80,7 +80,7 @@ import Testing
         // On a thread of its own: each step waits for the agent.
         let (version, started, reply) = try await runOnDedicatedThread {
             () throws -> (UInt32, ControlMessage, ControlMessage?) in
-            let deadline = ContinuousClock.now + .seconds(10)
+            let deadline = ContinuousClock.now + peerDeadline
             let version = try connection.exchangeVersions(until: deadline)
             connection.enqueue(.control(.exec(ExecRequest(argv: ["sleep", "1000"]))))
             try connection.flush(until: deadline)
@@ -248,7 +248,7 @@ extension ExecSessionTests {
         /// Ctrl-C reaches a process that never reads its standard input, however much input waits
         /// for it. Before the input window, the agent stopped reading the connection once 256 KiB
         /// waited, and the signal stayed behind the rest for good.
-        @Test(.timeLimit(.minutes(1)), arguments: [nil, TerminalSize(rows: 24, columns: 80)])
+        @Test(.timeLimit(.minutes(2)), arguments: [nil, TerminalSize(rows: 24, columns: 80)])
         func deliversASignalAheadOfUnreadInput(terminal: TerminalSize?) async throws {
             let process = try await agent.client.exec(
                 ExecRequest(argv: ["sleep", "1000"], terminal: terminal), output: Output().handler)
@@ -272,7 +272,7 @@ extension ExecSessionTests {
         /// The cases run one after the other: each keeps a `yes` at full CPU, and two at once on a
         /// small CI runner delayed the signal to about 200 ms.
         @Test(
-            .serialized, .timeLimit(.minutes(1)),
+            .serialized, .timeLimit(.minutes(2)),
             arguments: [nil, TerminalSize(rows: 24, columns: 80)])
         func deliversASignalWhileTheOutputIsNotRead(terminal: TerminalSize?) async throws {
             let marker = "/tmp/maw-test-signal-\(getpid())-\(UInt32.random(in: 0...UInt32.max))"
@@ -301,7 +301,7 @@ extension ExecSessionTests {
         }
 
         /// A resize reaches a terminal whose process reads none of a large paste.
-        @Test(.timeLimit(.minutes(1)))
+        @Test(.timeLimit(.minutes(2)))
         func resizesATerminalAheadOfUnreadInput() async throws {
             let output = Output()
             let process = try await agent.client.exec(
@@ -352,7 +352,7 @@ extension ExecSessionTests {
         /// A reader slower than the connection, such as a decompressor, keeps the agent's input
         /// backlog full, so that the client must wait for the input window and resume as the
         /// process drains its pipe.
-        @Test(.timeLimit(.minutes(1)))
+        @Test(.timeLimit(.minutes(2)))
         func relaysLargeInputToASlowReader() async throws {
             let output = Output()
             let script = """

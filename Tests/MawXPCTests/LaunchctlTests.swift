@@ -38,11 +38,14 @@ import Testing
         #expect(result.status == 128 + SIGTERM)
     }
 
-    /// `bootout` returns while launchd still lists the job; the wait ends once it does not.
-    @Test func waitsUntilLaunchdNoLongerListsTheJob() async throws {
+    /// `bootout` returns while launchd still lists the job; the wait ends once it does not. The
+    /// timeout of 60 s, on a running clock, is longer than any stall of the cooperative pool,
+    /// which delays the polls while the clock runs on (docs/known-limitations.md). A wait that
+    /// went on after the last answer would crash on `answers.removeFirst()`.
+    @Test(.timeLimit(.minutes(2))) func waitsUntilLaunchdNoLongerListsTheJob() async throws {
         var answers = [true, true, true, false]
         try await Launchctl.waitUntilRemoved(
-            service: "gui/501/test", timeout: .seconds(10), interval: .milliseconds(1),
+            service: "gui/501/test", timeout: .seconds(60), interval: .milliseconds(1),
             clock: SuspendingClock()
         ) { () throws(MawError) in answers.removeFirst() }
         #expect(answers.isEmpty)

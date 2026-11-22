@@ -8,7 +8,7 @@ import os
 @testable import MawDaemonKit
 
 /// `ImageCache` against a stub HTTP server, a `URLProtocol` that answers from memory.
-@Suite(.serialized) struct ImageCacheTests {
+@Suite(.serialized, .timeLimit(.minutes(2))) struct ImageCacheTests {
     static let content = Data((0..<(3 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 7) })
     static let image = CatalogImage(
         url: URL(string: "https://images.example.com/test.tar.gz")!, format: .tarGzip,

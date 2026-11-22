@@ -7,7 +7,7 @@ import os
 @testable import MawDaemonKit
 
 /// The installer against a fake image source and a fake provisioning machine.
-@Suite struct InstallerTests {
+@Suite(.timeLimit(.minutes(2))) struct InstallerTests {
     let home: URL
     let store: DistributionStore
     let images = FakeImageSource()
@@ -476,9 +476,13 @@ final class FakeImageSource: ImageSource, @unchecked Sendable {
     func verify(_ image: CatalogImage) async throws -> URL {
         lock.withLock { _verifications += 1 }
         if blocksVerification {
-            let deadline = ContinuousClock.now + .seconds(10)
-            while !Task.isCancelled, ContinuousClock.now < deadline {
+            // Until cancelled, for at most 1,000 sleeps of 10 ms: counted rather than read from a
+            // clock, so that a stall of the cooperative pool, which also delays the cancellation,
+            // cannot end the hold first (docs/known-limitations.md).
+            var sleeps = 0
+            while !Task.isCancelled, sleeps < 1_000 {
                 try? await Task.sleep(for: .milliseconds(10))
+                sleeps += 1
             }
         }
         return URL(filePath: "/cache/\(image.cacheFileName)")

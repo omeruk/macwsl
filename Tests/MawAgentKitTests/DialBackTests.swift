@@ -111,7 +111,7 @@ extension DialBackDialerTests {
 }
 
 /// The agent's server answering `dialBack`, over socket pairs.
-@Suite struct DialBackServerTests {
+@Suite(.timeLimit(.minutes(2))) struct DialBackServerTests {
     /// The agent sends the nonce first on the connection it dialed, then serves that
     /// connection as a new one; the request connection ends with `dialedBack`.
     @Test func servesTheConnectionItDials() async throws {
@@ -126,7 +126,7 @@ extension DialBackDialerTests {
             () throws(ConnectionError) -> (
                 UInt32, ControlMessage, Result<Frame, ConnectionError>, [UInt8]?
             ) in
-            let deadline = ContinuousClock.now + .seconds(10)
+            let deadline = ContinuousClock.now + peerDeadline
             let version = try request.exchangeVersions(until: deadline)
             request.enqueue(.control(.dialBack(nonce)))
             try request.flush(until: deadline)
@@ -146,7 +146,9 @@ extension DialBackDialerTests {
         decoder.append(first)
         #expect(try decoder.nextFrame()?.dialBackNonce() == nonce)
 
-        let client = GuestAgentClient { () throws(MawError) in dialed.host }
+        let client = GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in
+            dialed.host
+        }
         let output = Output()
         let process = try await client.exec(
             ExecRequest(argv: ["/bin/echo", "dialed"]), output: output.handler)
@@ -199,7 +201,7 @@ extension DialBackDialerTests {
         // On a thread of its own: each step waits for the agent.
         let (started, reply) = try await runOnDedicatedThread {
             () throws(ConnectionError) -> (ControlMessage, ControlMessage?) in
-            let deadline = ContinuousClock.now + .seconds(10)
+            let deadline = ContinuousClock.now + peerDeadline
             _ = try connection.exchangeVersions(until: deadline)
             connection.enqueue(.control(.exec(ExecRequest(argv: ["sleep", "1000"]))))
             try connection.flush(until: deadline)
@@ -233,7 +235,7 @@ extension DialBackDialerTests {
     {
         // On a thread of its own: each step waits for the agent.
         try await runOnDedicatedThread { () throws(ConnectionError) in
-            let deadline = ContinuousClock.now + .seconds(10)
+            let deadline = ContinuousClock.now + peerDeadline
             _ = try connection.exchangeVersions(until: deadline)
             connection.enqueue(.control(message))
             return try GuestAgentClientReply.next(on: connection, until: deadline)
@@ -284,11 +286,11 @@ final class DialedPair: Sendable {
 }
 
 /// Reads exactly `count` bytes from a blocking or non-blocking descriptor, or returns `nil` at
-/// end-of-file or after 10 seconds.
+/// end-of-file or after `peerDeadline`.
 func readExactly(_ descriptor: Int32, count: Int) -> [UInt8]? {
     var bytes: [UInt8] = []
     var buffer = [UInt8](repeating: 0, count: count)
-    let deadline = ContinuousClock.now + .seconds(10)
+    let deadline = ContinuousClock.now + peerDeadline
     while bytes.count < count {
         var request = [pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)]
         guard (try? pollDescriptors(&request, timeout: pollTimeout(until: deadline))) ?? 0 > 0

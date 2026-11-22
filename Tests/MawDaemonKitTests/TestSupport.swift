@@ -93,17 +93,20 @@ final class TestClock: Clock, Sendable {
 }
 
 /// Waits until `condition` holds, without depending on how long other tasks take. Fails
-/// after 5 seconds of real time.
+/// after 5,000 sleeps of 1 ms. It counts its sleeps instead of reading a clock: a stall of the
+/// cooperative pool delays the sleeps as much as the work that the condition waits for, so it
+/// cannot use the wait up (docs/known-limitations.md). The suites that use it have time limits.
 func eventually(
     _ description: String = "the condition", _ condition: @Sendable () async -> Bool
 ) async throws {
-    let deadline = ContinuousClock.now + .seconds(5)
+    var sleeps = 0
     while !(await condition()) {
-        guard ContinuousClock.now < deadline else {
-            throw TestFailure("\(description) did not become true within 5 seconds")
+        guard sleeps < 5_000 else {
+            throw TestFailure("\(description) did not become true within 5,000 sleeps of 1 ms")
         }
         await Task.yield()
         try await Task.sleep(for: .milliseconds(1))
+        sleeps += 1
     }
 }
 

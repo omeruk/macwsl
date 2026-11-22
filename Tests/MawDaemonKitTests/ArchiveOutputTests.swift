@@ -111,7 +111,7 @@ func feed(_ output: ArchiveOutput, _ bytes: [UInt8], size: Int = 65536) async ->
     }
 }
 
-@Suite struct ArchiveOutputTests {
+@Suite(.timeLimit(.minutes(2))) struct ArchiveOutputTests {
     @Test func writesATarArchiveAsTheGuestMadeIt() async throws {
         let pipe = try DrainedPipe()
         let output = try ArchiveOutput(
@@ -198,7 +198,10 @@ func feed(_ output: ArchiveOutput, _ bytes: [UInt8], size: Int = 65536) async ->
         output.abort()
         let chunks = await producer.value
         let outcome = await output.finish()
-        #expect(ContinuousClock.now - aborted < .seconds(2))
+        // Within 30 s of real time rather than 2 s: a stall of the cooperative pool delays the
+        // producer's task by up to about 12 s in CI (docs/known-limitations.md), and an abort
+        // that waited for the reader, which never reads, would not return at all.
+        #expect(ContinuousClock.now - aborted < .seconds(30))
         #expect(chunks < (archive.count + 65535) / 65536, "The producer was never held up.")
         #expect(outcome.failure == .aborted)
     }

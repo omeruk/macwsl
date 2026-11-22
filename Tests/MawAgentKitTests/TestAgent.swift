@@ -4,6 +4,14 @@ import MawCore
 import MawProtocol
 import Testing
 
+/// The deadline of each step of a scripted side on a thread of its own, the agent's and its
+/// client's timeouts in `TestAgent`, and the reply timeout of any other client that talks to a
+/// scripted side. It is only a bound, so that a side whose counterpart stops
+/// leaves no thread behind; it is longer than any stall of the cooperative pool, during which
+/// its clock runs on while the side under test, which needs the pool, cannot answer
+/// (docs/known-limitations.md).
+let peerDeadline = Duration.seconds(60)
+
 #if canImport(Darwin)
     import Darwin
 #elseif canImport(Glibc)
@@ -30,15 +38,15 @@ final class TestAgent: Sendable {
         let requests = powerOffRequests
         server = AgentServer(
             configuration: AgentConfiguration(
-                maximumConnections: maximumConnections, system: system, dialBack: dialBack,
-                processDirectory: processDirectory
+                maximumConnections: maximumConnections, requestTimeout: peerDeadline,
+                system: system, dialBack: dialBack, processDirectory: processDirectory
             ) {
                 requests.increment()
             })
     }
 
     var client: GuestAgentClient {
-        GuestAgentClient(replyTimeout: .seconds(10)) { [self] () throws(MawError) in
+        GuestAgentClient(replyTimeout: peerDeadline) { [self] () throws(MawError) in
             try connect()
         }
     }
@@ -77,9 +85,23 @@ final class Output: @unchecked Sendable {
     var standardOutputBytes: [UInt8] { lock.withLock { stdout } }
 
     /// Waits until standard output contains `text`. Returns whether it did.
-    func waitForOutput(containing text: String, timeout: Duration = .seconds(10)) async -> Bool {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
+    ///
+    /// Without `timeout`, it waits for at most 500 sleeps of 20 ms, counted instead of read from
+    /// a clock: a stall of the cooperative pool delays the sleeps as much as the output, so it
+    /// cannot use the wait up (docs/known-limitations.md). With `timeout`, it waits for that much
+    /// real time, for the tests of the latency group, which assert it and run one at a time.
+    func waitForOutput(containing text: String, timeout: Duration? = nil) async -> Bool {
+        if let timeout {
+            let deadline = ContinuousClock.now + timeout
+            while ContinuousClock.now < deadline {
+                if standardOutput.contains(text) {
+                    return true
+                }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+            return standardOutput.contains(text)
+        }
+        for _ in 0..<500 {
             if standardOutput.contains(text) {
                 return true
             }
@@ -107,16 +129,17 @@ final class UnreadOutput: @unchecked Sendable {
         }
     }
 
-    /// Waits until the handler has received output and blocked. Returns whether it did.
-    func waitUntilBlocked(timeout: Duration = .seconds(10)) async -> Bool {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
+    /// Waits until the handler has received output and blocked, for at most 1,000 sleeps of
+    /// 10 ms, counted instead of read from a clock (`TestAgent.waitForOutput`). Returns whether
+    /// it did.
+    func waitUntilBlocked() async -> Bool {
+        for _ in 0..<1_000 {
             if lock.withLock({ entered }) {
                 return true
             }
             try? await Task.sleep(for: .milliseconds(10))
         }
-        return false
+        return lock.withLock { entered }
     }
 
     func release() {

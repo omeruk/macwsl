@@ -10,7 +10,7 @@ import os
 @testable import MawDaemonKit
 
 /// The sampler, with fake machines, a fake process table, and the test clock.
-@Suite struct FigureSamplerTests {
+@Suite(.timeLimit(.minutes(2))) struct FigureSamplerTests {
     /// A registry whose state changes reach a sampler, as `mawd serve` connects them, with
     /// installed distributions whose disk images exist.
     final class Sampling: Sendable {

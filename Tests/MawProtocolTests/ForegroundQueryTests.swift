@@ -9,8 +9,15 @@ import Testing
     import Glibc
 #endif
 
+/// The deadline of each step of a scripted side on a thread of its own, and the reply timeout
+/// of a client that talks to one. It is only a bound, so that a side whose counterpart stops
+/// leaves no thread behind; it is longer than any stall of the cooperative pool, during which
+/// its clock runs on while the side under test, which needs the pool, cannot answer
+/// (docs/known-limitations.md).
+private let peerDeadline = Duration.seconds(60)
+
 /// `GuestProcess.foregroundProgram(within:)` and `hangUp()` against a scripted agent.
-@Suite struct ForegroundQueryTests {
+@Suite(.timeLimit(.minutes(2))) struct ForegroundQueryTests {
     /// What the scripted agent saw.
     final class Observed: @unchecked Sendable {
         private let lock = ConditionLock()
@@ -41,12 +48,12 @@ import Testing
         startDetachedThread {
             defer { peer.close() }
             guard let connection = try? FrameConnection(peer) else { return }
-            _ = try? connection.exchangeVersions(until: .now + .seconds(5))
-            _ = try? connection.receiveControl(until: .now + .seconds(5), expecting: "exec")
+            _ = try? connection.exchangeVersions(until: .now + peerDeadline)
+            _ = try? connection.receiveControl(until: .now + peerDeadline, expecting: "exec")
             connection.enqueue(.control(.started(pid: 7)))
-            try? connection.flush(until: .now + .seconds(5))
+            try? connection.flush(until: .now + peerDeadline)
             while true {
-                guard let frame = try? connection.receiveFrame(until: .now + .seconds(30)) else {
+                guard let frame = try? connection.receiveFrame(until: .now + peerDeadline) else {
                     observed.close()
                     return
                 }
@@ -54,10 +61,10 @@ import Testing
                 for message in reply(id, observed.query(id)) {
                     connection.enqueue(.control(message))
                 }
-                try? connection.flush(until: .now + .seconds(5))
+                try? connection.flush(until: .now + peerDeadline)
             }
         }
-        return GuestAgentClient { () throws(MawError) in host }
+        return GuestAgentClient(replyTimeout: peerDeadline) { () throws(MawError) in host }
     }
 
     @Test func returnsTheAgentsAnswer() async throws {
@@ -203,9 +210,12 @@ import Testing
         #expect(!process.connectionEndedBeforeExit)
         #expect(!process.write(Array("ignored\n".utf8)))
         #expect(await process.foregroundProgram(within: .seconds(10)) == .none)
-        let deadline = ContinuousClock.now + .seconds(10)
-        while !observed.sawTheClose && ContinuousClock.now < deadline {
+        // At most 1,000 sleeps of 10 ms, counted instead of read from a clock: a stall of the
+        // cooperative pool delays the sleeps as much as the close (docs/known-limitations.md).
+        var sleeps = 0
+        while !observed.sawTheClose && sleeps < 1_000 {
             try await Task.sleep(for: .milliseconds(10))
+            sleeps += 1
         }
         #expect(observed.sawTheClose)
     }

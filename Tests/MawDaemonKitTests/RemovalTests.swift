@@ -235,7 +235,7 @@ extension TemporaryStore {
     }
 }
 
-@Suite struct RemovalStoreTests {
+@Suite(.timeLimit(.minutes(2))) struct RemovalStoreTests {
     /// A removal moves the directory into the label's staging directory, from where a crash
     /// leaves it for the next start, which removes it.
     @Test func leavesAnInterruptedRemovalForTheNextStart() throws {

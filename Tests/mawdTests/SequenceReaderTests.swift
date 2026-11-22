@@ -3,7 +3,7 @@ import Foundation
 import Testing
 
 /// The freeze tests rely on `SequenceReader` to find a lost line.
-@Suite struct SequenceReaderTests {
+@Suite(.timeLimit(.minutes(1))) struct SequenceReaderTests {
     func read(_ text: String, until done: (SequenceReader.Progress) -> Bool) async throws
         -> SequenceReader.Progress
     {
@@ -16,9 +16,12 @@ import Testing
         try await Task.sleep(for: .milliseconds(50))
         #expect(reader.progress == SequenceReader.Progress())
         reader.resume()
-        let deadline = ContinuousClock.now + .seconds(10)
-        while !done(reader.progress) && ContinuousClock.now < deadline {
+        // At most 1,000 sleeps of 10 ms, counted instead of read from a clock: a stall of the
+        // cooperative pool delays the sleeps as much as the reader (docs/known-limitations.md).
+        var sleeps = 0
+        while !done(reader.progress) && sleeps < 1_000 {
             try await Task.sleep(for: .milliseconds(10))
+            sleeps += 1
         }
         return reader.progress
     }

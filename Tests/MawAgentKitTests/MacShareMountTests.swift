@@ -12,7 +12,7 @@ import Testing
 
 /// The mount of the Mac's home directory from the initramfs, against a root file system laid
 /// out in a temporary directory.
-@Suite struct MacShareMountTests {
+@Suite(.timeLimit(.minutes(2))) struct MacShareMountTests {
     // MARK: Files read inside the root
 
     @Test func readsARegularFile() throws {

@@ -3,7 +3,7 @@ import MawCore
 import MawDaemonKit
 import Testing
 
-@Suite struct DistributionOperationsTests {
+@Suite(.timeLimit(.minutes(2))) struct DistributionOperationsTests {
     static func name(_ name: String) -> DistroName {
         try! DistroName(name)
     }
@@ -62,7 +62,7 @@ import Testing
     }
 }
 
-@Suite struct RegistryOperationTests {
+@Suite(.timeLimit(.minutes(2))) struct RegistryOperationTests {
     /// While an export or a removal holds a distribution's name, its machine does not start,
     /// and no session opens; an installation's first start goes on.
     @Test(arguments: [DistributionOperation.export, .removal])
