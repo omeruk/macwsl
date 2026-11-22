@@ -100,10 +100,12 @@ struct SpawnPlan: Equatable, Sendable {
     var terminalOwner: TerminalOwner? = nil
     /// How the foreground probe recognizes the session's shell.
     var shell: ShellIdentity = .child
-    /// Whether the process is `runuser -l` with the agent as its shell helper
-    /// (`LoginShellHelper`), which reports on descriptor 3 whether it entered the working
-    /// directory before it starts the user's shell.
-    var reportsThroughHelper = false
+    /// The directory that the agent, as `runuser -l`'s shell helper (`LoginShellHelper`),
+    /// enters before it starts the user's shell, reporting the result on descriptor 3; `nil`
+    /// when the process is not started through the helper.
+    var helperDirectory: String? = nil
+    /// Whether the process is `runuser -l` with the agent as its shell helper.
+    var reportsThroughHelper: Bool { helperDirectory != nil }
     /// The descriptor that the process gets as descriptor 3, set when it is spawned.
     var inheritedDescriptor: Int32? = nil
 }
@@ -182,9 +184,13 @@ enum SessionPlanner {
                 fallbackDirectory: fallbackDirectory, credentials: credentials,
                 waitsForSystemBus: false, terminalOwner: terminalOwner)
         case .loginShell:
+            // The helper takes only absolute operands; a relative directory or shell, which no
+            // request from maw has, starts without it, so that its own error names the path.
+            let helperApplies =
+                requested.map { $0.hasPrefix("/") && account.shell.hasPrefix("/") } ?? true
             if system.initSystem() == .systemd,
                 let runuser = runuserPaths.first(where: system.isExecutable),
-                requested == nil || system.isExecutable(agentPath)
+                requested == nil || (helperApplies && system.isExecutable(agentPath))
             {
                 // runuser -l opens the PAM session, which registers the shell with
                 // systemd-logind, and changes to the home directory. In another directory,
@@ -206,7 +212,7 @@ enum SessionPlanner {
                     workingDirectory: "/", credentials: nil, waitsForSystemBus: true,
                     terminalOwner: terminalOwner,
                     shell: .loginShell(account.shell, position: .childOfChild),
-                    reportsThroughHelper: requested != nil)
+                    helperDirectory: requested)
             }
             let shellName = account.shell.split(separator: "/").last.map(String.init) ?? "sh"
             return SpawnPlan(
@@ -215,6 +221,21 @@ enum SessionPlanner {
                 credentials: credentials, waitsForSystemBus: false, terminalOwner: terminalOwner,
                 shell: .loginShell(account.shell, position: .child))
         }
+    }
+
+    /// `request` with the fallback that is known before the spawn: a directory under
+    /// `/mnt/mac` that may fall back, while the share is not mounted, becomes the home
+    /// directory, with `shareNotMounted`. The empty mount point `/mnt/mac` would otherwise be
+    /// entered without a word.
+    static func fallingBackEarly(
+        _ request: ExecRequest, shareMounted: () -> Bool
+    ) -> (ExecRequest, WorkingDirectoryFallback?) {
+        guard request.fallsBackToHome, let directory = request.workingDirectory,
+            MacShare.contains(linuxPath: directory), !shareMounted()
+        else { return (request, nil) }
+        var request = request
+        request.workingDirectory = nil
+        return (request, .shareNotMounted)
     }
 
     /// `~` and `~/<path>` as the user's home directory and a path under it; anything else as

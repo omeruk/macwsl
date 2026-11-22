@@ -89,6 +89,8 @@ distribution. The helper is the agent's binary, which `/init` already copies to 
   the session cannot enter it, it starts in the user's home directory, and `started`'s
   `workingDirectoryFallback` says why, as a code: the share is not mounted, the directory does
   not exist, the user may not enter it, a component is not a directory, or another error.
+  While the share is not mounted, a directory under `/mnt/mac`, `/mnt/mac` itself included,
+  falls back before the spawn, because the empty mount point could be entered.
   `maw` words the line itself and names the console log when the share is not mounted. A
   `--cd` directory never falls back.
 - **Commands** (`maw <command>`, `maw -- <command>`, `-e`) follow the same rules. The fallback

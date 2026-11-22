@@ -315,7 +315,6 @@ final class ChildProcess {
         return exitStatus != nil
     }
 
-    /// Kills the whole process group and waits for the process. Used when a session fails.
     /// Waits up to `limit` for the process to exit by itself, and terminates it after that.
     func waitBriefly(_ limit: Duration = .seconds(2)) {
         let deadline = ContinuousClock.now + limit
@@ -325,6 +324,7 @@ final class ChildProcess {
         terminate()
     }
 
+    /// Kills the whole process group and waits for the process. Used when a session fails.
     func terminate() {
         guard exitStatus == nil else { return }
         _ = kill(-pid, SIGKILL)
@@ -355,7 +355,6 @@ final class ChildProcess {
     }
 }
 
-/// A NULL-terminated array of C strings that lives as long as the instance.
 /// `body` with `string` as a C string, or with `NULL` for `nil`.
 private func withOptionalCString<Result>(
     _ string: String?, _ body: (UnsafePointer<CChar>?) -> Result
@@ -364,6 +363,7 @@ private func withOptionalCString<Result>(
     return string.withCString { body($0) }
 }
 
+/// A NULL-terminated array of C strings that lives as long as the instance.
 private final class CStringArray {
     let pointer: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
     private let count: Int

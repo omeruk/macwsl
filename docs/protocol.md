@@ -273,9 +273,12 @@ host                                   agent
 - **Working directory**: the request's `workingDirectory`, with `~` expanded, or the user's
   home directory, or `/` if the home directory does not exist. The process enters it as the
   user. If it cannot, it fails with `spawnFailed`, unless `fallsBackToHome` is set: then it
-  starts in the home directory, and `started` carries the reason. The reason is
-  `shareNotMounted` for a directory under `/mnt/mac` that does not exist while the share is not
-  mounted, from `/proc/self/mountinfo`.
+  starts in the home directory, and `started` carries the reason. While the share is not
+  mounted, from `/proc/self/mountinfo`, a directory under `/mnt/mac`, `/mnt/mac` itself
+  included, falls back with `shareNotMounted` before the process starts, without being
+  entered: the empty mount point would otherwise be.
+- **Login shells in a working directory** start through the shell helper only when the
+  directory and the account's shell are absolute; otherwise the agent starts the shell itself.
 - **Descriptors**: the process gets standard input, output, and error, and no other descriptor
   of the agent's; the shell helper's descriptor 3 is closed before the user's shell starts.
 - **PATH** always includes `/usr/local/bin`, where `mawpath` is linked.

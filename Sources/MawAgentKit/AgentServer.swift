@@ -238,17 +238,21 @@ public final class AgentServer: @unchecked Sendable {
     /// Plans and starts an exec request's process. A login shell in a working directory under
     /// systemd starts through `runuser -l` with the agent as its shell helper, whose report
     /// comes before `started` (`LoginShellHelper`).
+    /// A directory under `/mnt/mac` that may fall back does so before the spawn when the share
+    /// is not mounted (`SessionPlanner.fallingBackEarly`).
     private func start(_ request: ExecRequest) throws(SpawnFailure) -> StartedSession {
+        let (request, knownFallback) = SessionPlanner.fallingBackEarly(
+            request, shareMounted: { macShareMounted() })
         var plan = try SessionPlanner.plan(request, system: configuration.system)
         if plan.waitsForSystemBus {
             waitForSystemBus()
         }
-        guard plan.reportsThroughHelper else {
+        guard let directory = plan.helperDirectory else {
             let child = try ChildProcess.spawn(plan, terminal: request.terminal)
             return StartedSession(
                 child: child, shell: plan.shell,
                 fallback: child.workingDirectoryError == 0
-                    ? nil
+                    ? knownFallback
                     : fallback(for: child.workingDirectoryError, directory: plan.workingDirectory))
         }
 
@@ -272,10 +276,6 @@ public final class AgentServer: @unchecked Sendable {
         // Only runuser and the helper hold the writing end now: it reaches end-of-file when
         // both have closed it, so a runuser that ends before the helper reports is noticed.
         writer.close()
-        let directory =
-            request.workingDirectory.map {
-                SessionPlanner.expandingHome($0, home: plan.environment["HOME"] ?? "/")
-            } ?? "/"
         let (report, timedOut) = LoginShellHelper.awaitReport(
             on: reader.rawValue, until: .now + LoginShellHelper.reportTimeout)
         switch report {

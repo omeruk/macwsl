@@ -56,6 +56,34 @@ import Testing
         #expect(home.fallbackDirectory == nil)
     }
 
+    /// Without the share, `/mnt/mac` is an empty directory that a session could enter: a
+    /// directory under it that may fall back starts in the home directory before the spawn.
+    @Test func fallsBackBeforeTheSpawnWhenTheShareIsNotMounted() {
+        for directory in ["/mnt/mac", "/mnt/mac/src"] {
+            let request = ExecRequest(
+                program: .loginShell, workingDirectory: directory, fallsBackToHome: true)
+            let (early, fallback) = SessionPlanner.fallingBackEarly(
+                request, shareMounted: { false })
+            #expect(early.workingDirectory == nil)
+            #expect(early.fallsBackToHome)
+            #expect(fallback == .shareNotMounted)
+            let (mounted, none) = SessionPlanner.fallingBackEarly(
+                request, shareMounted: { true })
+            #expect(mounted == request && none == nil)
+        }
+        // A directory that --cd names, or one outside the share, is left to the spawn.
+        for request in [
+            ExecRequest(program: .loginShell, workingDirectory: "/mnt/mac"),
+            ExecRequest(program: .loginShell, workingDirectory: "/mnt/macx", fallsBackToHome: true),
+            ExecRequest(program: .loginShell, workingDirectory: "/tmp", fallsBackToHome: true),
+            ExecRequest(program: .loginShell, fallsBackToHome: true),
+        ] {
+            let (unchanged, fallback) = SessionPlanner.fallingBackEarly(
+                request, shareMounted: { false })
+            #expect(unchanged == request && fallback == nil)
+        }
+    }
+
     @Test func startsALoginShellInADirectoryThroughRunuserAndTheHelper() throws {
         for fallsBack in [true, false] {
             let plan = try SessionPlanner.plan(
@@ -73,9 +101,19 @@ import Testing
             #expect(plan.workingDirectory == "/")
             #expect(plan.credentials == nil)
             #expect(plan.waitsForSystemBus)
-            #expect(plan.reportsThroughHelper)
+            #expect(plan.helperDirectory == "/mnt/mac/My Projects")
             #expect(plan.shell == ShellIdentity(position: .childOfChild, commandName: "bash"))
         }
+    }
+
+    /// The helper refuses a relative operand; such a directory starts without it, and the
+    /// spawn's own error names the path.
+    @Test func startsALoginShellInARelativeDirectoryWithoutTheHelper() throws {
+        let plan = try SessionPlanner.plan(
+            ExecRequest(program: .loginShell, workingDirectory: "src"), system: Self.ubuntu())
+        #expect(!plan.reportsThroughHelper)
+        #expect(plan.path == "/bin/bash" && plan.argv == ["-bash"])
+        #expect(plan.workingDirectory == "src")
     }
 
     @Test func startsALoginShellInTheHomeDirectoryThroughRunuserAlone() throws {
@@ -258,6 +296,20 @@ import Testing
         #expect(output.standardOutput.hasSuffix("/tmp\n"))
     }
 
+    /// The client hands over the fallback before any output, so that maw's line about it
+    /// precedes the first output.
+    @Test func handsOverTheFallbackBeforeTheFirstOutput() async throws {
+        let events = EventLog()
+        let process = try await agent.client.exec(
+            ExecRequest(
+                program: .argv(["/bin/echo", "out"]), workingDirectory: "/no/such/directory",
+                fallsBackToHome: true),
+            output: { _, _ in events.record("output") },
+            started: { fallback in events.record("started \(fallback.map(\.rawValue) ?? "-")") })
+        #expect(try await process.waitForExit() == .exited(code: 0))
+        #expect(events.entries == ["started notFound", "output"])
+    }
+
     @Test func reportsNoFallbackForADirectoryItEntered() async throws {
         let process = try await agent.client.exec(
             ExecRequest(program: .argv(["true"]), workingDirectory: "/usr", fallsBackToHome: true),
@@ -318,4 +370,13 @@ import Testing
         }
         return String(decoding: bytes, as: UTF8.self)
     }
+}
+
+/// Events in the order in which they happened, from any thread.
+private final class EventLog: @unchecked Sendable {
+    private let lock = ConditionLock()
+    private var recorded: [String] = []
+
+    func record(_ event: String) { lock.withLock { recorded.append(event) } }
+    var entries: [String] { lock.withLock { recorded } }
 }

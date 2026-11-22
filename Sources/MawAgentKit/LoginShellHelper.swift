@@ -197,10 +197,8 @@ extension WorkingDirectoryFallback {
     /// The reason for an errno value of a failed change to `directory`. A directory under
     /// `/mnt/mac` that does not exist while the share is not mounted is `shareNotMounted`.
     init(error: Int32, directory: String, shareMounted: () -> Bool) {
-        let underShare =
-            directory == MacShare.linuxPath || directory.hasPrefix(MacShare.linuxPath + "/")
         switch error {
-        case ENOENT where underShare && !shareMounted():
+        case ENOENT where MacShare.contains(linuxPath: directory) && !shareMounted():
             self = .shareNotMounted
         case ENOENT:
             self = .notFound

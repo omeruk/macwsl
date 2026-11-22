@@ -7,6 +7,11 @@ public enum MacShare {
     /// Where the guest mounts the share.
     public static let linuxPath = "/mnt/mac"
 
+    /// Whether `path` is `/mnt/mac` or a path under it, as written.
+    public static func contains(linuxPath path: String) -> Bool {
+        path == linuxPath || path.hasPrefix(linuxPath + "/")
+    }
+
     /// The kernel command line argument, `maw.share=<tag>`, with which the daemon asks the
     /// initramfs to mount the share. A machine without the share device never gets it.
     public static let kernelArgument = "maw.share"

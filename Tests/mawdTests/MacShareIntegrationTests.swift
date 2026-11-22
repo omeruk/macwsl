@@ -125,6 +125,19 @@ struct MacShareIntegrationTests {
                 session.standardError.contains(
                     "maw: /mnt/mac is not mounted in \(name); starting in the home directory."),
                 "\(session.standardError)")
+            // From the Mac home directory, the session would start in /mnt/mac itself, which
+            // exists here: it falls back all the same instead of entering it without a word.
+            let fromHome = try await maw.inDirectory(
+                FileManager.default.homeDirectoryForCurrentUser.path(percentEncoded: false)
+            ) {
+                try await maw.session(["--", "pwd"], in: name)
+            }
+            #expect(fromHome.status == 0, "\(fromHome.standardError)")
+            #expect(fromHome.output == "/home/\(maw.user)\n")
+            #expect(
+                fromHome.standardError.contains(
+                    "maw: /mnt/mac is not mounted in \(name); starting in the home directory."),
+                "\(fromHome.standardError)")
             #expect(
                 maw.consoleLogLines(of: name).contains(
                     "maw-initramfs: /mnt/mac is not mounted: /mnt/mac is a symbolic link"))
