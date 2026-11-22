@@ -23,6 +23,9 @@ import MawCore
 public final class GuestProcess: @unchecked Sendable {
     /// The process ID in the guest.
     public let pid: Int32
+    /// Why the process started in the home directory instead of the requested working
+    /// directory, or `nil` if it did not (`ExecRequest.fallsBackToHome`).
+    public let workingDirectoryFallback: WorkingDirectoryFallback?
 
     /// Standard input that `write` may queue before it blocks.
     static let inputLimit = 256 << 10
@@ -69,9 +72,12 @@ public final class GuestProcess: @unchecked Sendable {
     private let wakeWriter: OwnedDescriptor
 
     init(
-        connection: FrameConnection, pid: Int32, output: @escaping GuestAgentClient.OutputHandler
+        connection: FrameConnection, pid: Int32,
+        workingDirectoryFallback: WorkingDirectoryFallback? = nil,
+        output: @escaping GuestAgentClient.OutputHandler
     ) throws(MawError) {
         self.pid = pid
+        self.workingDirectoryFallback = workingDirectoryFallback
         var fds: [Int32] = [-1, -1]
         let error = maw_pipe(&fds)
         guard error == 0 else {

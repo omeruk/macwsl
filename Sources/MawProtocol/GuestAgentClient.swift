@@ -141,20 +141,23 @@ public struct GuestAgentClient: Sendable {
         }
         let guestName = self.guestName
         return try await runOnDedicatedThread { () throws(MawError) -> GuestProcess in
-            let (connection, pid) = try Self.mapErrors(
+            let (connection, pid, fallback) = try Self.mapErrors(
                 during: "exec", command: command, guestName: guestName
             ) {
-                () throws(ConnectionError) -> (FrameConnection, Int32) in
+                () throws(ConnectionError) -> (FrameConnection, Int32, WorkingDirectoryFallback?)
+                in
                 let connection = try Self.open(
                     descriptor, sending: .exec(request), timeout: timeout)
                 switch try Self.reply(on: connection, timeout: timeout, to: "exec") {
-                case .started(let pid):
-                    return (connection, pid)
+                case .started(let pid, let fallback):
+                    return (connection, pid, fallback)
                 case let other:
                     throw .unexpectedMessage("expected started, received \(other.name)")
                 }
             }
-            return try GuestProcess(connection: connection, pid: pid, output: output)
+            return try GuestProcess(
+                connection: connection, pid: pid, workingDirectoryFallback: fallback,
+                output: output)
         }
     }
 

@@ -41,8 +41,10 @@ public enum ControlMessage: Equatable, Sendable {
 
     // Guest to host.
 
-    /// The command started with this process ID.
-    case started(pid: Int32)
+    /// The command started with this process ID. `workingDirectoryFallback` says why the
+    /// session started in the home directory instead of the request's `workingDirectory`, when
+    /// the request allowed that (`fallsBackToHome`).
+    case started(pid: Int32, workingDirectoryFallback: WorkingDirectoryFallback? = nil)
     /// The command ended. The last message of an exec session.
     case exited(ExitStatus)
     /// The reply to `info`.
@@ -158,21 +160,27 @@ public struct ExecRequest: Codable, Equatable, Sendable {
     public var locale: String?
     /// Environment variables, applied on top of the session's login environment.
     public var environment: [String: String]
-    /// The working directory. `nil` means the user's home directory.
+    /// The working directory. `nil` means the user's home directory; `~` and `~/<path>` are
+    /// the home directory and a path under it.
     public var workingDirectory: String?
+    /// Whether the session starts in the user's home directory when it cannot enter
+    /// `workingDirectory`, rather than failing. The host sets it only for a directory that it
+    /// chose itself, never for one that the user named.
+    public var fallsBackToHome: Bool
     /// The initial window size of a pseudo-terminal, or `nil` for separate pipes.
     public var terminal: TerminalSize?
 
     public init(
         program: ExecProgram, user: String? = nil, locale: String? = nil,
         environment: [String: String] = [:], workingDirectory: String? = nil,
-        terminal: TerminalSize? = nil
+        fallsBackToHome: Bool = false, terminal: TerminalSize? = nil
     ) {
         self.program = program
         self.user = user
         self.locale = locale
         self.environment = environment
         self.workingDirectory = workingDirectory
+        self.fallsBackToHome = fallsBackToHome
         self.terminal = terminal
     }
 
@@ -194,8 +202,44 @@ public struct ExecRequest: Codable, Equatable, Sendable {
         environment =
             try container.decodeIfPresent([String: String].self, forKey: .environment) ?? [:]
         workingDirectory = try container.decodeIfPresent(String.self, forKey: .workingDirectory)
+        fallsBackToHome =
+            try container.decodeIfPresent(Bool.self, forKey: .fallsBackToHome) ?? false
         terminal = try container.decodeIfPresent(TerminalSize.self, forKey: .terminal)
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case program, user, locale, environment, workingDirectory, fallsBackToHome, terminal
+    }
+
+    /// Absent optional fields are left out, and `fallsBackToHome` is written only when it is
+    /// true, so that a request without the fallback reads as before.
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(program, forKey: .program)
+        try container.encodeIfPresent(user, forKey: .user)
+        try container.encodeIfPresent(locale, forKey: .locale)
+        try container.encode(environment, forKey: .environment)
+        try container.encodeIfPresent(workingDirectory, forKey: .workingDirectory)
+        if fallsBackToHome {
+            try container.encode(true, forKey: .fallsBackToHome)
+        }
+        try container.encodeIfPresent(terminal, forKey: .terminal)
+    }
+}
+
+/// Why a session that was allowed to fall back (`ExecRequest.fallsBackToHome`) started in the
+/// user's home directory. The host words the message itself; nothing from the guest is shown.
+public enum WorkingDirectoryFallback: String, Codable, Equatable, Sendable {
+    /// The directory is under `/mnt/mac`, and the Mac's home directory is not mounted there.
+    case shareNotMounted
+    /// The directory does not exist.
+    case notFound
+    /// The user may not enter the directory.
+    case permissionDenied
+    /// A component of the path is not a directory.
+    case notADirectory
+    /// Another error.
+    case other
 }
 
 /// A terminal's window size in character cells.
@@ -469,6 +513,7 @@ extension ControlMessage: Codable {
 
     private struct StartedFields: Codable {
         var pid: Int32
+        var workingDirectoryFallback: WorkingDirectoryFallback?
     }
 
     private struct ExitedFields: Codable {
@@ -513,8 +558,9 @@ extension ControlMessage: Codable {
                 ForegroundProgramFields(
                     id: id, processGroup: program?.processGroup, name: program?.name),
                 forKey: key)
-        case .started(let pid):
-            try container.encode(StartedFields(pid: pid), forKey: key)
+        case .started(let pid, let fallback):
+            try container.encode(
+                StartedFields(pid: pid, workingDirectoryFallback: fallback), forKey: key)
         case .exited(.exited(let code)):
             try container.encode(ExitedFields(code: code), forKey: key)
         case .exited(.signaled(let signal)):
@@ -594,7 +640,9 @@ extension ControlMessage: Codable {
                         debugDescription: "foregroundProgram has a name without a processGroup"))
             }
         case "started":
-            self = .started(pid: try container.decode(StartedFields.self, forKey: key).pid)
+            let fields = try container.decode(StartedFields.self, forKey: key)
+            self = .started(
+                pid: fields.pid, workingDirectoryFallback: fields.workingDirectoryFallback)
         case "exited":
             let fields = try container.decode(ExitedFields.self, forKey: key)
             switch (fields.code, fields.signal) {

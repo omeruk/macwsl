@@ -11,6 +11,10 @@ import Testing
                 environment: ["TERM": "xterm-256color"], workingDirectory: "/tmp",
                 terminal: TerminalSize(rows: 24, columns: 80))),
         .exec(ExecRequest(program: .shellCommand("uname -a | wc -c"), user: "root")),
+        .exec(
+            ExecRequest(
+                program: .loginShell, workingDirectory: "/mnt/mac/My Projects",
+                fallsBackToHome: true)),
         .info,
         .shutdown,
         .dialBack(DialBackNonce(bytes: Array(repeating: 0xA5, count: 32))!),
@@ -20,6 +24,8 @@ import Testing
         .foregroundQuery(id: 7),
         .foregroundQuery(id: UInt32.max),
         .started(pid: 42),
+        .started(pid: 43, workingDirectoryFallback: .shareNotMounted),
+        .started(pid: 44, workingDirectoryFallback: .permissionDenied),
         .exited(.exited(code: 3)),
         .exited(.signaled(signal: 9)),
         .agentInfo(
@@ -89,6 +95,9 @@ import Testing
             json(.resize(TerminalSize(rows: 24, columns: 80)))
                 == #"{"resize":{"columns":80,"rows":24}}"#)
         #expect(json(.started(pid: 7)) == #"{"started":{"pid":7}}"#)
+        #expect(
+            json(.started(pid: 7, workingDirectoryFallback: .notFound))
+                == #"{"started":{"pid":7,"workingDirectoryFallback":"notFound"}}"#)
         let nonce = DialBackNonce(bytes: Array(0..<32))!
         #expect(
             json(.dialBack(nonce))
@@ -143,9 +152,29 @@ import Testing
     }
 
     /// Version 5 adds `sample`, `sampled`, and `sampleFailed`; version 6 adds `agentInfo`'s
-    /// `macShareMounted`.
-    @Test func speaksVersion6() {
-        #expect(ProtocolVersion.current == 6)
+    /// `macShareMounted`; version 7 adds `exec`'s `fallsBackToHome` and `started`'s
+    /// `workingDirectoryFallback`.
+    @Test func speaksVersion7() {
+        #expect(ProtocolVersion.current == 7)
+    }
+
+    @Test func writesTheFallbackOnlyWhenItIsAllowed() throws {
+        func json(_ message: ControlMessage) -> String {
+            String(decoding: message.encodedJSON(), as: UTF8.self)
+        }
+        #expect(
+            json(
+                .exec(
+                    ExecRequest(
+                        program: .argv(["pwd"]), workingDirectory: "/mnt/mac", fallsBackToHome: true
+                    )))
+                == #"{"exec":{"environment":{},"fallsBackToHome":true,"program":{"argv":["pwd"]},"workingDirectory":"/mnt/mac"}}"#
+        )
+        let message = try ControlMessage(
+            json: Array(#"{"exec":{"program":{"argv":["pwd"]},"workingDirectory":"~/src"}}"#.utf8))
+        guard case .exec(let request) = message else { return }
+        #expect(!request.fallsBackToHome)
+        #expect(request.workingDirectory == "~/src")
     }
 
     /// An `agentInfo` without `macShareMounted` comes from an agent of another version, and is
