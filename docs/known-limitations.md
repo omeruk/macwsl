@@ -575,12 +575,17 @@ from `main`.
     hold through a stall:
     - a wait in a task counts its sleeps instead of reading a clock, so that the stall, which
       delays the sleeps as much as the work waited for, cannot use it up;
-    - every scripted peer on a thread of its own, whose clock runs on during the stall, and
-      every `GuestAgentClient` that talks to one have a deadline of 60 s, longer than any stall
-      seen: in `HandshakeTests`, `GuestProcessTests`, `ForegroundQueryTests`,
-      `FrameConnectionTests`, `SessionEndingTests`, `DistributionSessionTests`,
-      `DialBackTests`, `ExecSessionTests`, `FuzzTests`, `DialBackGateTests`' fake agent, and
-      `TestAgent`'s agent and client;
+    - every scripted peer on a thread of its own, whose clock runs on during the stall, has a
+      deadline of 60 s, longer than any stall seen, in `HandshakeTests`, `GuestProcessTests`,
+      `ForegroundQueryTests`, `FrameConnectionTests`, `SessionEndingTests`,
+      `DistributionSessionTests`, `DialBackTests`, `ExecSessionTests`, `FuzzTests`,
+      `DialBackGateTests`' fake agent, and `TestAgent`'s agent; so does every
+      `GuestAgentClient` that a test makes to talk to one, in `HandshakeTests`,
+      `GuestProcessTests`, `ForegroundQueryTests`, `SessionEndingTests`, `DialBackTests`,
+      `DialBackGateTests`, and `TestAgent`. The exceptions are the deadlines that a test
+      asserts, listed below; the peer of `GuestProcessTests.Latency`, which reads for the time
+      that the test measures; and `DistributionSessionTests`' client, which the product makes
+      with 10 s (below);
     - `maw --export` and `maw --import` wait for the daemon's answer to a cancellation and for
       the operation's own reply with timeouts that a test can lengthen, `cancelTimeout` and
       `replyTimeout`, which keep 5 s and 500 ms otherwise;
@@ -600,7 +605,10 @@ from `main`.
     What still reads a running clock in the unit tests, and why it stays:
     - **Deadlines that a test asserts**, which counting would no longer measure:
       `HandshakeTests.clientTimesOutOnASilentPeer` (200 ms); `DialBackTests`' dialer timeouts
-      (200 ms and 2 s); `DialBackGateTests`' own limits (`:265`, `:367`, `:409`), its latency
+      (200 ms and 2 s); `DialBackGateTests`' own limits
+      (`Tests/MawVirtualizationTests/DialBackGateTests.swift:265`,
+      `Tests/MawVirtualizationTests/DialBackGateTests.swift:367`,
+      `Tests/MawVirtualizationTests/DialBackGateTests.swift:409`), its latency
       test of the nonce's read timeout (2 to 3 s), and
       `endsAnExpiredWaitWhenAnotherSessionRegisters` (2 s, compared with the gate's real-time
       expiry); the 200 ms of `foregroundProgram(within:)` in
@@ -623,14 +631,20 @@ from `main`.
       hangs up, and checks again after its deadline.
     - **Waits not shown to survive a stall**, which did not fail in the runs of the
       `fix/test-waits` pull request:
-      - the bounds of 10 s and 60 s on `foregroundProgram(within:)` in
-        `ForegroundQueryTests`, `ForegroundSessionTests` and `DistributionSessionTests`;
+      - the bounds of 10 s on `foregroundProgram(within:)` in `ForegroundQueryTests`,
+        `ForegroundSessionTests` and `DistributionSessionTests`, and of 60 s in
+        `ForegroundQueryTests` only (`Tests/MawProtocolTests/ForegroundQueryTests.swift:154`,
+        `Tests/MawProtocolTests/ForegroundQueryTests.swift:176`);
+      - `DistributionSessionTests`' 10 s for the scripted agent's replies: the session's
+        client comes from `DaemonSession.agentClient()`
+        (`Sources/MawClient/DaemonClient.swift:377`), which keeps `GuestAgentClient`'s default,
+        and a test cannot lengthen it;
       - `SessionEndingTests`' 10 s of `relay.next(within:)`;
       - `DiskImageTests.seesALockThatAnotherProcessHolds`' 10 s of `waitUntilUnlocked`;
       - `InstallEndedBeforeTheCancellationTests`' 5 s wait for the output of an interrupted
         installation, and `InstallCancellationOutcomeTests`' cancellation of 30 s;
-      - `GuestProcessTests`' 70 s of `exitStatus(of:within:)`, longer than its reading peer's
-        60 s;
+      - `GuestProcessTests`' 70 s of `exitStatus(of:within:)`, longer than the 60 s of its
+        reading peer's read loop, though not than the peer's later steps;
       - `LaunchctlTests.waitsUntilLaunchdNoLongerListsTheJob`' 60 s on `SuspendingClock`.
     - **Holds that spin on a thread of the pool**, whose bounds a longer value would make worse:
       `FigureSamplerTests.reportsTheGuestsAnswerBeforeCancellingItsTimeout` holds the sampler's
