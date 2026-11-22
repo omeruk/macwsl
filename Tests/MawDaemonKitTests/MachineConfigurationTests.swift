@@ -29,7 +29,28 @@ import Testing
         #expect(configuration.directoryShares.first?.isReadOnly == false)
         #expect(
             configuration.commandLine
-                == "console=hvc0 maw.root=/dev/vda maw.clock=1800000000 maw.share=maw-mac")
+                == "console=hvc0 maw.root=/dev/vda maw.clock=1800000000 maw.share=maw-mac"
+                + " maw.home=/Users/ayse")
+    }
+
+    /// The home directory's path reaches `mawpath` intact, spaces and non-ASCII letters
+    /// included, and one too long for the kernel command line is left out.
+    @Test func putsTheHomeDirectoryOnTheCommandLineForMawpath() throws {
+        let home = URL(filePath: "/Users/Ayşe Öz/", directoryHint: .isDirectory)
+        let configuration = VirtualMachineHandle.distributionConfiguration(
+            Self.base, disk: URL(filePath: "/d/disk.img"), metadata: Self.metadata,
+            macHome: home, now: Date(timeIntervalSince1970: 1_800_000_000))
+        // URL gives the name decomposed (NFD), as the file system stores it.
+        #expect(configuration.commandLine.contains(" maw.home=/Users/Ays%CC%A7e%20O%CC%88z"))
+        let decoded = try #require(MacShare.home(fromCommandLine: configuration.commandLine))
+        #expect(Array(decoded.utf8) == Array(VirtualMachineHandle.displayPath(home).utf8))
+        let long = URL(
+            filePath: "/" + String(repeating: "ü", count: 200), directoryHint: .isDirectory)
+        let without = VirtualMachineHandle.distributionConfiguration(
+            Self.base, disk: URL(filePath: "/d/disk.img"), metadata: Self.metadata,
+            macHome: long, now: Date(timeIntervalSince1970: 1_800_000_000))
+        #expect(!without.commandLine.contains("maw.home"))
+        #expect(without.commandLine.hasSuffix("maw.share=maw-mac"))
     }
 
     /// `mawd serve --without-mac-share`, for the measurements: no device and no argument.

@@ -102,7 +102,8 @@
 
         /// A distribution's machine: its disk as the root file system, NAT networking with its
         /// MAC address, every CPU and half the memory, the clock set from the Mac's, and
-        /// `macHome`, read-write, as the share that the initramfs mounts at `/mnt/mac`.
+        /// `macHome`, read-write, as the share that the initramfs mounts at `/mnt/mac`, with
+        /// its path on the kernel command line (`maw.home`) for `mawpath`.
         static func distributionConfiguration(
             _ base: VMConfiguration, disk: URL, metadata: DistroMetadata, macHome: URL?,
             now: Date = Date()
@@ -117,6 +118,11 @@
             if let macHome {
                 configuration.directoryShares = [.init(url: macHome, tag: MacShare.tag)]
                 arguments += " \(MacShare.commandLineArgument)"
+                // For mawpath. A home directory too long to encode is left out, and mawpath
+                // then says that it is not known.
+                if let home = MacShare.homeCommandLineArgument(displayPath(macHome)) {
+                    arguments += " \(home)"
+                }
             }
             configuration.commandLine = VMConfiguration.commandLine(appending: arguments)
             return configuration
