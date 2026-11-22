@@ -150,7 +150,7 @@ private let peerDeadline = Duration.seconds(60)
             var buffer = [UInt8](repeating: 0, count: 1 << 20)
             var count = 0
             // Ends on its own if the client stalls, so that a failing run leaves no thread behind.
-            let deadline = ContinuousClock.now + .seconds(25)
+            let deadline = ContinuousClock.now + peerDeadline
             reading: while ContinuousClock.now < deadline {
                 usleep(20_000)
                 while true {

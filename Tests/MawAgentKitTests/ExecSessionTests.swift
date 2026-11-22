@@ -80,7 +80,7 @@ import Testing
         // On a thread of its own: each step waits for the agent.
         let (version, started, reply) = try await runOnDedicatedThread {
             () throws -> (UInt32, ControlMessage, ControlMessage?) in
-            let deadline = ContinuousClock.now + .seconds(10)
+            let deadline = ContinuousClock.now + peerDeadline
             let version = try connection.exchangeVersions(until: deadline)
             connection.enqueue(.control(.exec(ExecRequest(argv: ["sleep", "1000"]))))
             try connection.flush(until: deadline)

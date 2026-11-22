@@ -6,6 +6,13 @@ import os
 
 @testable import MawVirtualization
 
+/// The deadline of the fake agent, a scripted side on a thread of its own, and the reply timeout
+/// of the client that talks to it. It is only a bound, so that a fake agent whose counterpart
+/// stops leaves no thread behind; it is longer than any stall of the cooperative pool, during
+/// which its clock runs on while the gate, which needs the pool, cannot answer
+/// (docs/known-limitations.md). The gate's own limits, which tests measure, are unchanged.
+private let peerDeadline = Duration.seconds(60)
+
 @Suite(.timeLimit(.minutes(2))) struct DialBackGateTests {
     // MARK: Admission, before anything is read
 
@@ -588,7 +595,7 @@ private final class FakeAgent: Sendable {
     }
 
     var client: GuestAgentClient {
-        GuestAgentClient(replyTimeout: .seconds(5)) { [self] () throws(MawError) in
+        GuestAgentClient(replyTimeout: peerDeadline) { [self] () throws(MawError) in
             if connectDelay > .zero {
                 try? await Task.sleep(for: connectDelay)
             }
@@ -613,7 +620,7 @@ private final class FakeAgent: Sendable {
             descriptor.close()
             served.update { $0 += 1 }
         }
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + peerDeadline
         guard let connection = try? FrameConnection(descriptor),
             (try? connection.exchangeVersions(until: deadline)) != nil,
             let request = try? connection.receiveControl(until: deadline, expecting: "a request")
