@@ -200,8 +200,9 @@ private let peerDeadline = Duration.seconds(60)
             process.closeInput()
         }
         // Without the fix, the client stops sending for good; a bounded wait reports that as a
-        // failure instead of hanging the test run.
-        let status = await Self.exitStatus(of: process, within: .seconds(20))
+        // failure instead of hanging the test run. 70 s, longer than the reading peer's
+        // `peerDeadline`, so that the peer has ended when a failing run reports.
+        let status = await Self.exitStatus(of: process, within: .seconds(70))
         #expect(status == .exited(code: 0))
         #expect(received.value == size)
     }
