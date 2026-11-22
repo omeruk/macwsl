@@ -42,6 +42,9 @@ struct SessionRunner {
     private func runSession() async throws -> Int32 {
         // Before anything else, so that output to a closed pipe (`| head`) cannot kill maw.
         signal(SIGPIPE, SIG_IGN)
+        if let notice = plan.notice {
+            FileHandle.standardError.write(Data((notice + "\n").utf8))
+        }
         let client = try await DaemonClient.connect()
         defer { client.close() }
         let events = EventRelay(client.events)
@@ -52,7 +55,7 @@ struct SessionRunner {
                 languageCode: Locale.current.language.languageCode?.identifier,
                 regionCode: Locale.current.region?.identifier),
             environment: mode.environment(host: ProcessInfo.processInfo.environment),
-            workingDirectory: plan.workingDirectory,
+            workingDirectory: plan.workingDirectory, fallsBackToHome: plan.fallsBackToHome,
             terminal: mode == .terminal
                 ? (Terminal.windowSize() ?? TerminalSize(rows: 24, columns: 80)) : nil)
 
@@ -105,10 +108,21 @@ struct SessionRunner {
             process: process, events: events, signals: signals.signals)
     }
 
+    /// Starts the process, and says on standard error when it started in the home directory
+    /// instead of the directory that maw translated. In terminal mode the line ends with
+    /// CR LF, because the terminal is in raw mode by then.
     private func start(_ request: ExecRequest, session: DaemonSession) async throws(MawError)
         -> GuestProcess
     {
-        try await session.agentClient().exec(request, output: Self.writeOutput)
+        let process = try await session.agentClient().exec(request, output: Self.writeOutput)
+        if let fallback = process.workingDirectoryFallback, let directory = request.workingDirectory
+        {
+            let line = WorkingDirectory.fallbackLine(
+                fallback, directory: directory, distribution: session.info.machine.name)
+            let ending = mode == .terminal ? "\r\n" : "\n"
+            FileHandle.standardError.write(Data((line + ending).utf8))
+        }
+        return process
     }
 
     // MARK: Standard streams
