@@ -575,13 +575,20 @@ from `main`.
     during a stall:
     - a wait in a task counts its sleeps instead of reading a clock, so that the stall, which
       delays the sleeps as much as the work waited for, cannot use it up;
-    - a scripted peer on a thread of its own, whose clock runs on during the stall, has a
-      deadline of 60 s, longer than any stall seen;
+    - a scripted peer on a thread of its own, whose clock runs on during the stall, and a
+      client that talks to one have a deadline of 60 s, longer than any stall seen: in
+      `HandshakeTests`, `GuestProcessTests`, `ForegroundQueryTests`, `FrameConnectionTests`,
+      `SessionEndingTests`, `DistributionSessionTests`, `DialBackTests`, `ExecSessionTests`,
+      `FuzzTests`, `DialBackGateTests`' fake agent, and `TestAgent`'s agent and client.
+      Deadlines that a test asserts keep their values: the 200 ms of
+      `HandshakeTests.clientTimesOutOnASilentPeer`, the dial-back gate's own limits, and the
+      2 s of `DialBackGateTests.endsAnExpiredWaitWhenAnotherSessionRegisters`, which is
+      compared with the gate's real-time expiry and would no longer measure it if counted;
     - `maw --export` and `maw --import` wait for the daemon's answer to a cancellation and for
       the operation's own reply with timeouts that a test can lengthen, `cancelTimeout` and
       `replyTimeout`, which keep 5 s and 500 ms otherwise;
-    - `ArchiveOutputTests.endsAtOnceWhenAbortedWhileTheReaderDoesNotRead` checks the order of
-      the abort and the reader, not the time;
+    - `ArchiveOutputTests.endsAtOnceWhenAbortedWhileTheReaderDoesNotRead` allows the abort
+      30 s of real time instead of 2 s;
     - every test whose wait no longer ends on a clock of its own has a time limit.
 
     Before that branch, such waits failed in CI: `HandshakeTests.exchangesMatchingVersions()`
@@ -599,7 +606,12 @@ from `main`.
     publishes the figures, so it cannot pass while the pool has one thread
     (`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`), on `main` or since the branch. It has not
     failed in CI, where the pool has a thread per core. `ImageCacheTests`'
-    `stopsACancelledCheckWithinOnePiece` holds a read the same way, for at most 10 s.
+    `stopsACancelledCheckWithinOnePiece` holds a read the same way, for at most 10 s. Two waits
+    keep a clock because a stall cannot make them fail: `Tests/MawTestSupport/Process+Exit.swift`
+    waits for processes outside the pool and checks again after its deadline, and
+    `ForegroundSessionTests.hangsUpOnTheProcessWhenTheHostHangsUp` waits for a file that a
+    child process writes after the test agent, which serves on threads of its own, hangs up,
+    and checks again after its deadline.
   - **Evidence:** In each of those runs and in the passing run 42516767842 of `main`, tests
     from unrelated modules finish with the same duration to the millisecond, for example
     `reportsTheHostLimits()` at 5.373 s with about 60 others in run 42574910845, and the test
