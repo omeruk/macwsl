@@ -193,23 +193,19 @@ public final class AgentServer: @unchecked Sendable {
                 connection.enqueue(.control(.error(AgentError(.shutdownFailed, "\(error)"))))
             }
         case .exec(let execRequest):
-            let child: ChildProcess
-            let shell: ShellIdentity
+            let started: StartedSession
             do {
-                let plan = try SessionPlanner.plan(execRequest, system: configuration.system)
-                shell = plan.shell
-                if plan.waitsForSystemBus {
-                    waitForSystemBus()
-                }
-                child = try ChildProcess.spawn(plan, terminal: execRequest.terminal)
+                started = try start(execRequest)
             } catch {
                 connection.enqueue(
                     .control(.error(AgentError(error.code, error.message, user: error.user))))
                 break
             }
             try ExecSession(
-                connection: connection, child: child, logger: logger, shell: shell,
-                probe: ForegroundProbe(processDirectory: configuration.processDirectory)
+                connection: connection, child: started.child, logger: logger,
+                shell: started.shell,
+                probe: ForegroundProbe(processDirectory: configuration.processDirectory),
+                workingDirectoryFallback: started.fallback
             ).run()
             return nil
         case .dialBack(let nonce):
@@ -231,6 +227,87 @@ public final class AgentServer: @unchecked Sendable {
         }
         try connection.flush(until: .now + configuration.requestTimeout)
         return nil
+    }
+
+    private struct StartedSession {
+        var child: ChildProcess
+        var shell: ShellIdentity
+        var fallback: WorkingDirectoryFallback?
+    }
+
+    /// Plans and starts an exec request's process. A login shell in a working directory under
+    /// systemd starts through `runuser -l` with the agent as its shell helper, whose report
+    /// comes before `started` (`LoginShellHelper`).
+    private func start(_ request: ExecRequest) throws(SpawnFailure) -> StartedSession {
+        var plan = try SessionPlanner.plan(request, system: configuration.system)
+        if plan.waitsForSystemBus {
+            waitForSystemBus()
+        }
+        guard plan.reportsThroughHelper else {
+            let child = try ChildProcess.spawn(plan, terminal: request.terminal)
+            return StartedSession(
+                child: child, shell: plan.shell,
+                fallback: child.workingDirectoryError == 0
+                    ? nil
+                    : fallback(for: child.workingDirectoryError, directory: plan.workingDirectory))
+        }
+
+        var fds: [Int32] = [-1, -1]
+        let error = maw_pipe(&fds)
+        guard error == 0 else {
+            throw SpawnFailure(
+                code: .spawnFailed, message: "pipe: \(SystemError.message(for: error))")
+        }
+        let reader = OwnedDescriptor(fds[0])
+        defer { reader.close() }
+        let writer = OwnedDescriptor(fds[1])
+        plan.inheritedDescriptor = writer.rawValue
+        let child: ChildProcess
+        do {
+            child = try ChildProcess.spawn(plan, terminal: request.terminal)
+        } catch {
+            writer.close()
+            throw error
+        }
+        // Only runuser and the helper hold the writing end now: it reaches end-of-file when
+        // both have closed it, so a runuser that ends before the helper reports is noticed.
+        writer.close()
+        let directory =
+            request.workingDirectory.map {
+                SessionPlanner.expandingHome($0, home: plan.environment["HOME"] ?? "/")
+            } ?? "/"
+        let (report, timedOut) = LoginShellHelper.awaitReport(
+            on: reader.rawValue, until: .now + LoginShellHelper.reportTimeout)
+        switch report {
+        case .entered:
+            return StartedSession(child: child, shell: plan.shell, fallback: nil)
+        case .fellBack(let error):
+            return StartedSession(
+                child: child, shell: plan.shell,
+                fallback: fallback(for: error, directory: directory))
+        case .failed(let error):
+            child.waitBriefly()
+            throw SpawnFailure(
+                code: .spawnFailed,
+                message: "cannot change to the working directory \(directory): "
+                    + SystemError.message(for: error))
+        case nil:
+            child.terminate()
+            let seconds = LoginShellHelper.reportTimeout.components.seconds
+            throw SpawnFailure(
+                code: .spawnFailed,
+                message: timedOut
+                    ? "the login shell did not start within \(seconds) seconds:"
+                        + " runuser -l did not run the shell helper"
+                    : "the login shell did not start: runuser -l ended before the shell helper"
+                        + " entered the working directory")
+        }
+    }
+
+    /// Why a session fell back from `directory`, from the errno value of the failed change.
+    private func fallback(for error: Int32, directory: String) -> WorkingDirectoryFallback {
+        WorkingDirectoryFallback(
+            error: error, directory: directory, shareMounted: { macShareMounted() })
     }
 
     /// Opens the connection that a `dialBack` request asks for. On failure, queues a

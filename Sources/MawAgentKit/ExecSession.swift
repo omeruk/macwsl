@@ -45,6 +45,8 @@ final class ExecSession {
     /// How `probe` recognizes the session's shell, for `foregroundQuery`.
     private let shell: ShellIdentity
     private let probe: ForegroundProbe
+    /// Sent with `started`.
+    private let workingDirectoryFallback: WorkingDirectoryFallback?
 
     /// Input for the process: the host's bytes, then, after `stdinEOF` in terminal mode, the
     /// terminal's end-of-file character.
@@ -61,13 +63,15 @@ final class ExecSession {
 
     init(
         connection: FrameConnection, child: ChildProcess, logger: Logger,
-        shell: ShellIdentity = .child, probe: ForegroundProbe = ForegroundProbe()
+        shell: ShellIdentity = .child, probe: ForegroundProbe = ForegroundProbe(),
+        workingDirectoryFallback: WorkingDirectoryFallback? = nil
     ) {
         self.connection = connection
         self.child = child
         self.logger = logger
         self.shell = shell
         self.probe = probe
+        self.workingDirectoryFallback = workingDirectoryFallback
     }
 
     private var pendingInputCount: Int { pendingInput.count }
@@ -89,7 +93,8 @@ final class ExecSession {
     }
 
     private func relay() throws(ConnectionError) {
-        connection.enqueue(.control(.started(pid: child.pid)))
+        connection.enqueue(
+            .control(.started(pid: child.pid, workingDirectoryFallback: workingDirectoryFallback)))
         while true {
             try takeBufferedFrames()
 

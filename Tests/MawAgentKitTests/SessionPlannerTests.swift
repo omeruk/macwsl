@@ -159,7 +159,8 @@ import Testing
     }
 
     @Test func startsALoginShellInARequestedDirectoryItself() throws {
-        // runuser -l always changes to the home directory.
+        // Without the agent at /run/maw/maw-agent there is no shell helper, and runuser -l
+        // always changes to the home directory (WorkingDirectoryPlanTests).
         let plan = try SessionPlanner.plan(
             ExecRequest(program: .loginShell, workingDirectory: "/tmp"), system: Self.ubuntu())
         #expect(plan.argv == ["-bash"])
