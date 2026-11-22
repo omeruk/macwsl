@@ -367,6 +367,18 @@ struct MawIntegration: Sendable {
         return try await body(mac, "\(MacShare.linuxPath)/Library/Caches/maw/\(name)")
     }
 
+    /// Runs `body` with `directory` as this process's current directory, which every maw it
+    /// starts inherits, and changes back afterwards, also when `body` throws. The integration
+    /// tests run one at a time (`--no-parallel`), so no other test sees the change.
+    func inDirectory<T>(_ directory: String, _ body: () async throws -> T) async throws -> T {
+        let previous = FileManager.default.currentDirectoryPath
+        try #require(
+            FileManager.default.changeCurrentDirectoryPath(directory),
+            "cannot change to \(directory)")
+        defer { _ = FileManager.default.changeCurrentDirectoryPath(previous) }
+        return try await body()
+    }
+
     /// Removes a directory that `withMacDirectory` created, after making everything in it
     /// writable by the owner, because a test may have changed modes from the guest. Links in it
     /// are not followed.
