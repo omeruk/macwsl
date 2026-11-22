@@ -200,6 +200,16 @@ from `main`.
   - **Evidence:** `docs/security.md`, "Entry points"; pull request #19, "Review results",
     SR-M-3.
   - **Phase:** 12b, as part of the review of `docs/security.md` as a whole.
+- **`IntegrationTests.bootsAndPowersOff` misses the banner's timing line about once in three
+  runs.**
+  - **Seen:** `mawd debug-boot --cmdline maw.test=poweroff` exits before its separate task
+    prints `boot: banner after <n> ms`, although the banner itself is in the output, and the
+    test fails at `Tests/mawdTests/IntegrationTests.swift:52`. It failed in the full
+    integration run at `7c0433e` and in 1 of 3 runs of the test alone afterwards; the full run
+    before it passed.
+  - **Evidence:** `DebugBoot.reportBanner` in `Sources/mawd/DebugBoot.swift:458`, unchanged
+    since phase 05; pull request #35, "Verification".
+  - **Phase:** 12b. Awaiting the banner task before `debug-boot` exits would resolve it.
 - **The integration tests' waits count time asleep.**
   - **Seen:** A Mac that sleeps during an integration run fails waits such as
     `waitForPrompt` at once on waking. The final runs of phase 05 used `caffeinate -dims`.
