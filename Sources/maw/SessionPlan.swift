@@ -81,24 +81,26 @@ struct SessionPlan: Equatable, Sendable {
 /// What the Mac tells maw about directories, so that tests can supply it.
 struct MacDirectories: Sendable {
     /// The current directory from `getcwd`, or the errno value with which it failed.
-    var current: @Sendable () -> Result<String, SystemErrorCode>
+    var current: @Sendable () -> CurrentDirectory
     /// The owner's home directory, as the daemon shares it.
     var home: String
     /// `realpath(3)` of an existing path, or `nil`.
     var resolve: @Sendable (String) -> String?
 
-    struct SystemErrorCode: Error, Equatable {
-        var value: Int32
+    /// What `getcwd` returned.
+    enum CurrentDirectory: Equatable, Sendable {
+        case path(String)
+        case failed(errno: Int32)
     }
 
     static let live = MacDirectories(
         current: {
             var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
             guard getcwd(&buffer, buffer.count) != nil else {
-                return .failure(SystemErrorCode(value: errno))
+                return .failed(errno: errno)
             }
             let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
-            return .success(String(decoding: bytes, as: UTF8.self))
+            return .path(String(decoding: bytes, as: UTF8.self))
         },
         home: FileManager.default.homeDirectoryForCurrentUser.path(percentEncoded: false),
         resolve: { path in
@@ -131,9 +133,9 @@ enum WorkingDirectory {
     static func choose(_ requested: String?, mac: MacDirectories) throws(MawError) -> Choice {
         guard let requested else {
             switch mac.current() {
-            case .failure(let error):
-                return Choice(directory: nil, notice: unreadableNotice(error.value))
-            case .success(let current):
+            case .failed(let error):
+                return Choice(directory: nil, notice: unreadableNotice(error))
+            case .path(let current):
                 guard let linux = linuxPath(of: current, mac: mac) else {
                     return Choice(
                         directory: nil,
@@ -159,9 +161,9 @@ enum WorkingDirectory {
         }
         let current: String
         switch mac.current() {
-        case .failure(let error):
-            throw .currentDirectoryUnreadable(reason: String(cString: strerror(error.value)))
-        case .success(let directory):
+        case .failed(let error):
+            throw .currentDirectoryUnreadable(reason: String(cString: strerror(error)))
+        case .path(let directory):
             current = directory
         }
         let absolute = MacPath.absolute(requested, in: current)

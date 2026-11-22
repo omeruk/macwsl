@@ -243,7 +243,7 @@ extension MacDirectories {
     ) -> MacDirectories {
         MacDirectories(
             current: {
-                current.map { .success($0) } ?? .failure(SystemErrorCode(value: currentError))
+                current.map { .path($0) } ?? .failed(errno: currentError)
             },
             home: home,
             resolve: { path in
