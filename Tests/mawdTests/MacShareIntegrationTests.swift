@@ -109,12 +109,22 @@ struct MacShareIntegrationTests {
     /// says why, and the daemon notes that the share is not mounted.
     @Test func bootsWhenTheMountIsRefused() async throws {
         try await maw.withDistribution("share-refused") { name in
-            let replaced = try await guest(
-                "umount /mnt/mac && rmdir /mnt/mac && ln -s /tmp /mnt/mac", as: "root", in: name)
+            // --cd /: a session in the test runner's directory, under /mnt/mac, would keep the
+            // share busy.
+            let replaced = try await maw.run([
+                "-d", name, "-u", "root", "--cd", "/", "-e", "sh", "-c",
+                "umount /mnt/mac && rmdir /mnt/mac && ln -s /tmp /mnt/mac",
+            ])
             try #require(replaced.status == 0, "\(replaced.standardError)")
             try await restart(name)
+            // The session would start under /mnt/mac, which is not mounted: it starts in the
+            // home directory, and maw names the console log.
             let session = try await guest("echo works", in: name)
             #expect(session.status == 0 && session.output == "works\n")
+            #expect(
+                session.standardError.contains(
+                    "maw: /mnt/mac is not mounted in \(name); starting in the home directory."),
+                "\(session.standardError)")
             #expect(
                 maw.consoleLogLines(of: name).contains(
                     "maw-initramfs: /mnt/mac is not mounted: /mnt/mac is a symbolic link"))

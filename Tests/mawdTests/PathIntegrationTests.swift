@@ -36,11 +36,12 @@ struct PathIntegrationTests {
 
     @Test func startsInTheLinuxPathOfTheCurrentDirectory() async throws {
         try await maw.withMacDirectory { mac, linux in
+            // Joined as text: URL would write the name decomposed (NFD).
             let name = "My Projects ç"
-            try #require(mkdir(mac.appending(path: name).path(percentEncoded: false), 0o755) == 0)
+            let named = mac.path(percentEncoded: false) + name
+            try #require(mkdir(named, 0o755) == 0)
             for (directory, expected) in [
-                (mac.path(percentEncoded: false), linux),
-                (mac.appending(path: name).path(percentEncoded: false), "\(linux)/\(name)"),
+                (mac.path(percentEncoded: false), linux), (named, "\(linux)/\(name)"),
             ] {
                 try await maw.inDirectory(directory) {
                     for arguments in [["--", "pwd"], ["pwd"], ["-e", "pwd"]] {
@@ -85,35 +86,42 @@ struct PathIntegrationTests {
     }
 
     /// A translated directory that the user cannot enter in the guest falls back, for a
-    /// command and for a login shell; the same directory named with --cd fails.
+    /// command and for a login shell; the same directory named with --cd fails. The directory
+    /// has mode 700: the owner enters it on the Mac, and the guest holds a user other than the
+    /// default user, the files' owner there, to its mode.
     @Test func fallsBackOnlyForTheDirectoryThatMawChose() async throws {
+        let other = "mawit\(UUID().uuidString.prefix(6).lowercased())"
+        let added = try await maw.run([
+            "-d", maw.distribution, "-u", "root", "--cd", "/", "-e", "useradd", "-m", "-s",
+            "/bin/bash", other,
+        ])
+        try #require(added.status == 0, "\(added.standardError)")
         try await maw.withMacDirectory { mac, linux in
-            let locked = mac.appending(path: "locked").path(percentEncoded: false)
-            try #require(mkdir(locked, 0o755) == 0)
+            let locked = mac.path(percentEncoded: false) + "locked"
+            try #require(mkdir(locked, 0o700) == 0)
             try await maw.inDirectory(locked) {
-                try #require(chmod(locked, 0) == 0)
-                defer { _ = chmod(locked, 0o755) }
                 let line =
                     "maw: \(linux)/locked cannot be entered (permission denied); starting"
                     + " in the home directory."
-                let command = try await run(["--", "pwd"])
+                let command = try await run(["-u", other, "--", "pwd"])
                 #expect(command.status == 0, "\(command.standardError)")
-                #expect(command.output == "\(linuxHome)\n")
+                #expect(command.output == "/home/\(other)\n")
                 #expect(command.standardError == line + "\n")
 
-                let shell = try maw.interactive(["-d", maw.distribution])
+                let shell = try maw.interactive(["-d", maw.distribution, "-u", other])
                 try #require(
                     await shell.waitForPrompt(
-                        user: maw.user, host: maw.hostname(of: maw.distribution)),
+                        user: other, host: maw.hostname(of: maw.distribution)),
                     "\(shell.plainOutput)")
                 #expect(shell.plainOutput.contains(line), "\(shell.plainOutput)")
                 shell.type("echo cwd=$(pwd)\r")
-                #expect(await shell.waitForOutput(containing: "cwd=\(linuxHome)"))
+                #expect(await shell.waitForOutput(containing: "cwd=/home/\(other)"))
                 shell.type("exit\r")
                 _ = await shell.waitForExit(timeout: .seconds(30))
 
                 for arguments in [
-                    ["--cd", "\(linux)/locked", "--", "pwd"], ["--cd", locked, "--", "pwd"],
+                    ["-u", other, "--cd", "\(linux)/locked", "--", "pwd"],
+                    ["-u", other, "--cd", locked, "--", "pwd"],
                 ] {
                     let named = try await run(arguments)
                     #expect(named.status != 0)
@@ -123,11 +131,34 @@ struct PathIntegrationTests {
                             "cannot change to the working directory \(linux)/locked"),
                         "\(named.standardError)")
                 }
-                let namedShell = try maw.interactive(["-d", maw.distribution, "--cd", locked])
+                let namedShell = try maw.interactive([
+                    "-d", maw.distribution, "-u", other, "--cd", locked,
+                ])
                 #expect(await namedShell.waitForExit(timeout: .seconds(30)) != 0)
                 #expect(
                     namedShell.plainOutput.contains("cannot change to the working directory"),
                     "\(namedShell.plainOutput)")
+            }
+        }
+        _ = try await maw.run([
+            "-d", maw.distribution, "-u", "root", "--cd", "/", "-e", "userdel", "-r", other,
+        ])
+    }
+
+    /// The Mac refuses getcwd in a directory that the owner cannot read.
+    @Test func startsInTheLinuxHomeDirectoryWhenTheCurrentDirectoryCannotBeRead() async throws {
+        try await maw.withMacDirectory { mac, _ in
+            let locked = mac.path(percentEncoded: false) + "unreadable"
+            try #require(mkdir(locked, 0o755) == 0)
+            try await maw.inDirectory(locked) {
+                try #require(chmod(locked, 0) == 0)
+                defer { _ = chmod(locked, 0o755) }
+                let result = try await run(["--", "pwd"])
+                #expect(result.output == "\(linuxHome)\n")
+                #expect(
+                    result.standardError
+                        == "maw: the current directory cannot be read (Permission denied);"
+                        + " starting in the home directory.\n")
             }
         }
     }
@@ -173,11 +204,13 @@ struct PathIntegrationTests {
                     await shell.waitForPrompt(
                         user: maw.user, host: maw.hostname(of: maw.distribution)),
                     "\(shell.plainOutput)")
+                // The listing runs without a command substitution, whose pipe the shell would
+                // hold open while it runs.
                 shell.type(
                     "echo \"cwd=$(pwd) runtime=$XDG_RUNTIME_DIR shell=$SHELL\";"
                         + " loginctl list-sessions --no-legend | awk '{ print $1 }'"
                         + " | grep -qx \"$XDG_SESSION_ID\" && echo listed=yes;"
-                        + " echo \"fds=$(ls /proc/$$/fd | tr '\\n' ' ')end\"\r")
+                        + " echo fds\"=\"; ls -1 /proc/$$/fd; echo \"end\"of-fds\r")
                 #expect(
                     await shell.waitForOutput(containing: "cwd=\(linux) runtime=/run/user/"),
                     "\(shell.plainOutput)")
@@ -185,11 +218,12 @@ struct PathIntegrationTests {
                 #expect(
                     await shell.waitForOutput(containing: "listed=yes"),
                     "loginctl does not list the session: \(shell.plainOutput)")
-                #expect(await shell.waitForOutput(containing: "end"), "\(shell.plainOutput)")
+                #expect(
+                    await shell.waitForOutput(containing: "endof-fds"), "\(shell.plainOutput)")
                 let fds =
                     shell.plainOutput.components(separatedBy: "fds=").last?
-                    .components(separatedBy: "end").first?.split(separator: " ").map(String.init)
-                    ?? []
+                    .components(separatedBy: "endof-fds").first?
+                    .split(whereSeparator: \.isWhitespace).map(String.init) ?? []
                 #expect(Set(fds).isSubset(of: ["0", "1", "2", "255"]), "\(fds)")
                 shell.type("exit\r")
                 _ = await shell.waitForExit(timeout: .seconds(30))
@@ -202,7 +236,9 @@ struct PathIntegrationTests {
             try await maw.inDirectory(mac.path(percentEncoded: false)) {
                 let result = try await run(["-e", "sh", "-c", "ls /proc/$$/fd"])
                 #expect(result.status == 0, "\(result.standardError)")
-                #expect(result.lines.sorted() == ["0", "1", "2"], "\(result.output)")
+                #expect(
+                    result.lines.filter { !$0.isEmpty }.sorted() == ["0", "1", "2"],
+                    "\(result.output)")
             }
         }
     }

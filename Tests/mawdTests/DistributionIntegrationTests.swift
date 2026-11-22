@@ -31,7 +31,11 @@ struct DistributionIntegrationTests {
     // MARK: The account
 
     @Test func runsAsTheNewUserInTheHomeDirectory() async throws {
-        let result = try await maw.session(["--", "id -un; pwd; echo $SHELL; hostname"])
+        // --cd '~': without it, the session starts in the test runner's directory, under
+        // /mnt/mac (PathIntegrationTests).
+        let result = try await maw.session([
+            "--cd", "~", "--", "id -un; pwd; echo $SHELL; hostname",
+        ])
         #expect(result.status == 0, "\(result.standardError)")
         #expect(
             result.output
