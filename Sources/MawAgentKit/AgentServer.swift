@@ -253,10 +253,6 @@ public final class AgentServer: @unchecked Sendable {
         return nil
     }
 
-    /// Waits until the system bus's socket exists, for at most `systemBusTimeout`. Right after
-    /// boot, a login shell can be requested before `dbus.socket` listens; `pam_systemd` would
-    /// then skip the session's registration. Once the socket exists, `pam_systemd` waits for
-    /// `systemd-logind` itself.
     /// Whether the Mac's home directory is mounted at `/mnt/mac`, from the mount table, which
     /// looks nothing up in the share (`MountTable`).
     private func macShareMounted() -> Bool {
@@ -267,6 +263,10 @@ public final class AgentServer: @unchecked Sendable {
         return MountTable.showsMacShare(mountinfo: String(decoding: bytes, as: UTF8.self))
     }
 
+    /// Waits until the system bus's socket exists, for at most `systemBusTimeout`. Right after
+    /// boot, a login shell can be requested before `dbus.socket` listens; `pam_systemd` would
+    /// then skip the session's registration. Once the socket exists, `pam_systemd` waits for
+    /// `systemd-logind` itself.
     private func waitForSystemBus() {
         let deadline = ContinuousClock.now + configuration.systemBusTimeout
         while !configuration.system.exists(SessionPlanner.systemBusSocket) {

@@ -2,6 +2,12 @@ import CMawSystem
 import MawCore
 import MawProtocol
 
+#if canImport(FoundationEssentials)
+    import FoundationEssentials
+#else
+    import Foundation
+#endif
+
 #if canImport(Darwin)
     import Darwin
 #elseif canImport(Glibc)
@@ -132,22 +138,20 @@ public enum MacShareMount {
                 because:
                     "the default user \(printable(name)) of /etc/maw.conf is not in /etc/passwd")
         }
+        // (uid_t)-1 means "no change" to the kernel, which refuses it as an owner option.
+        guard account.uid != UInt32.max, account.gid != UInt32.max else {
+            return .root(
+                because:
+                    "the default user \(printable(name)) has the uid or gid \(UInt32.max),"
+                    + " which the kernel refuses")
+        }
         return Owner(user: name, uid: account.uid, gid: account.gid, fallbackReason: nil)
     }
 
-    /// Text from the distribution, made safe for the console: control and format characters
-    /// become `?`, and at most 64 characters are kept.
+    /// Text from the distribution, made safe for the console (`DisplayableText`): unsafe
+    /// characters become `?`, and at most 64 bytes are kept.
     static func printable(_ text: String) -> String {
-        let scalars = text.unicodeScalars.prefix(64).map { scalar -> Character in
-            switch scalar.properties.generalCategory {
-            case .control, .format, .lineSeparator, .paragraphSeparator, .surrogate,
-                .privateUse, .unassigned:
-                return "?"
-            default:
-                return Character(scalar)
-            }
-        }
-        return String(scalars)
+        DisplayableText.make(text, replacement: "?", byteLimit: 64)
     }
 
     static func describe(_ error: Int32) -> String {
@@ -155,14 +159,51 @@ public enum MacShareMount {
     }
 }
 
+/// What `fdopendir` returns: a pointer to `DIR` on Darwin, an opaque pointer on Linux.
+#if canImport(Darwin)
+    typealias DirectoryStream = UnsafeMutablePointer<DIR>
+#else
+    typealias DirectoryStream = OpaquePointer
+#endif
+
 /// `/mnt` and `/mnt/mac` under the root, examined and opened without following links.
 enum MountPoint {
-    struct Refusal: Error, Equatable {
-        var reason: String
-    }
+    /// Why `/mnt` or `/mnt/mac` cannot be the mount point. `errorDescription` is the reason
+    /// that the console line gives.
+    enum Refusal: LocalizedError, Equatable {
+        case cannotExamine(path: String, error: Int32)
+        case cannotCreate(path: String, error: Int32)
+        case symbolicLink(path: String)
+        case notADirectory(path: String)
+        case cannotOpen(path: String, error: Int32)
+        case notEmpty
+        case cannotRead(error: Int32)
 
-    struct SystemError: Error {
-        var code: Int32
+        var reason: String {
+            switch self {
+            case .cannotExamine(let path, let error):
+                "\(path) cannot be examined (\(MacShareMount.describe(error)))"
+            case .cannotCreate(let path, let error):
+                "\(path) cannot be created (\(MacShareMount.describe(error)))"
+            case .symbolicLink(let path):
+                "\(path) is a symbolic link"
+            case .notADirectory(let path):
+                "\(path) is not a directory"
+            case .cannotOpen(let path, let error):
+                "\(path) cannot be opened (\(MacShareMount.describe(error)))"
+            case .notEmpty:
+                "\(MacShare.linuxPath) is not empty"
+            case .cannotRead(let error):
+                "\(MacShare.linuxPath) cannot be read (\(MacShareMount.describe(error)))"
+            }
+        }
+
+        var errorDescription: String? { reason }
+
+        var recoverySuggestion: String? {
+            "Move what is at \(MacShare.linuxPath) away, or replace it with an empty directory,"
+                + " and start the distribution again."
+        }
     }
 
     /// Opens `/mnt/mac` under `root`, creating `/mnt` and `/mnt/mac` with mode 755 where they
@@ -185,13 +226,10 @@ enum MountPoint {
             return .success(mountPoint)
         case .success(false):
             mountPoint.close()
-            return .failure(Refusal(reason: "\(MacShare.linuxPath) is not empty"))
-        case .failure(let error):
+            return .failure(.notEmpty)
+        case .failure(let refusal):
             mountPoint.close()
-            return .failure(
-                Refusal(
-                    reason: "\(MacShare.linuxPath) cannot be read"
-                        + " (\(MacShareMount.describe(error.code)))"))
+            return .failure(refusal)
         }
     }
 
@@ -203,51 +241,53 @@ enum MountPoint {
         if fstatat(parent, name, &status, AT_SYMLINK_NOFOLLOW) != 0 {
             let error = errno
             guard error == ENOENT else {
-                return .failure(
-                    Refusal(
-                        reason: "\(path) cannot be examined (\(MacShareMount.describe(error)))"))
+                return .failure(.cannotExamine(path: path, error: error))
             }
             if mkdirat(parent, name, 0o755) != 0 && errno != EEXIST {
-                return .failure(
-                    Refusal(
-                        reason: "\(path) cannot be created (\(MacShareMount.describe(errno)))"))
+                return .failure(.cannotCreate(path: path, error: errno))
             }
             if fstatat(parent, name, &status, AT_SYMLINK_NOFOLLOW) != 0 {
-                return .failure(
-                    Refusal(
-                        reason: "\(path) cannot be examined (\(MacShareMount.describe(errno)))"))
+                return .failure(.cannotExamine(path: path, error: errno))
             }
         }
         switch status.st_mode & mode_t(S_IFMT) {
         case mode_t(S_IFDIR):
             break
         case mode_t(S_IFLNK):
-            return .failure(Refusal(reason: "\(path) is a symbolic link"))
+            return .failure(.symbolicLink(path: path))
         default:
-            return .failure(Refusal(reason: "\(path) is not a directory"))
+            return .failure(.notADirectory(path: path))
         }
         var descriptor: Int32 = -1
         let error = maw_openat(
             parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC, &descriptor)
         guard error == 0 else {
-            return .failure(
-                Refusal(reason: "\(path) cannot be opened (\(MacShareMount.describe(error)))"))
+            return .failure(.cannotOpen(path: path, error: error))
         }
         return .success(OwnedDescriptor(descriptor))
     }
 
     /// Whether the directory has no entries but `.` and `..`, read through a duplicate of the
-    /// descriptor, which `closedir` closes.
-    private static func isEmpty(_ directory: Int32) -> Result<Bool, SystemError> {
+    /// descriptor, which `closedir` closes. `readdir` returns `NULL` both at the end and on an
+    /// error, which only `errno` tells apart, so `errno` is cleared before each call.
+    static func isEmpty(
+        _ directory: Int32,
+        readEntry: (DirectoryStream) -> UnsafeMutablePointer<dirent>? = { readdir($0) }
+    ) -> Result<Bool, Refusal> {
         let duplicate = dup(directory)
-        guard duplicate >= 0 else { return .failure(SystemError(code: errno)) }
+        guard duplicate >= 0 else { return .failure(.cannotRead(error: errno)) }
         guard let stream = fdopendir(duplicate) else {
             let error = errno
             close(duplicate)
-            return .failure(SystemError(code: error))
+            return .failure(.cannotRead(error: error))
         }
         defer { closedir(stream) }
-        while let entry = readdir(stream) {
+        while true {
+            errno = 0
+            guard let entry = readEntry(stream) else {
+                let error = errno
+                return error == 0 ? .success(true) : .failure(.cannotRead(error: error))
+            }
             let name = withUnsafeBytes(of: entry.pointee.d_name) { bytes in
                 String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
             }
@@ -255,7 +295,6 @@ enum MountPoint {
                 return .success(false)
             }
         }
-        return .success(true)
     }
 }
 
@@ -266,7 +305,7 @@ enum InRootFile {
     /// The most links followed for one path, as Linux allows (`MAXSYMLINKS`).
     static let linkLimit = 40
 
-    enum Failure: Error, Equatable, CustomStringConvertible {
+    enum Failure: LocalizedError, Equatable, CustomStringConvertible {
         case missing
         case tooManyLinks
         case notADirectory(String)
@@ -290,6 +329,14 @@ enum InRootFile {
             case .failed(let operation, let error):
                 return "cannot be read: \(operation) failed (\(MacShareMount.describe(error)))"
             }
+        }
+
+        var errorDescription: String? { description }
+
+        var recoverySuggestion: String? {
+            "Check the file in the distribution: it must be a regular file of at most"
+                + " \(MacShareMount.fileLimit) bytes, reached through at most"
+                + " \(InRootFile.linkLimit) links that stay inside the root file system."
         }
     }
 
@@ -372,17 +419,11 @@ enum InRootFile {
             return .failure(.notARegularFile)
         }
         guard status.st_size <= off_t(limit) else { return .failure(.tooLarge(limit)) }
-        var bytes: [UInt8] = []
-        var buffer = [UInt8](repeating: 0, count: 64 << 10)
-        while true {
-            let count = read(file.rawValue, &buffer, buffer.count)
-            if count < 0 && errno == EINTR { continue }
-            guard count >= 0 else { return .failure(.failed("read", errno)) }
-            if count == 0 { break }
-            bytes.append(contentsOf: buffer[..<count])
-            guard bytes.count <= limit else { return .failure(.tooLarge(limit)) }
+        switch readAll(file.rawValue, limit: limit) {
+        case .bytes(let bytes): return .success(String(decoding: bytes, as: UTF8.self))
+        case .tooLarge: return .failure(.tooLarge(limit))
+        case .failed(let error): return .failure(.failed("read", error))
         }
-        return .success(String(decoding: bytes, as: UTF8.self))
     }
 }
 
