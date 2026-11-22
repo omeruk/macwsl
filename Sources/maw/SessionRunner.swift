@@ -114,15 +114,16 @@ struct SessionRunner {
     private func start(_ request: ExecRequest, session: DaemonSession) async throws(MawError)
         -> GuestProcess
     {
-        let process = try await session.agentClient().exec(request, output: Self.writeOutput)
-        if let fallback = process.workingDirectoryFallback, let directory = request.workingDirectory
-        {
+        let distribution = session.info.machine.name
+        let ending = mode == .terminal ? "\r\n" : "\n"
+        // Written before the output relay starts, so that the line precedes the first output.
+        return try await session.agentClient().exec(request, output: Self.writeOutput) {
+            fallback in
+            guard let fallback, let directory = request.workingDirectory else { return }
             let line = WorkingDirectory.fallbackLine(
-                fallback, directory: directory, distribution: session.info.machine.name)
-            let ending = mode == .terminal ? "\r\n" : "\n"
+                fallback, directory: directory, distribution: distribution)
             FileHandle.standardError.write(Data((line + ending).utf8))
         }
-        return process
     }
 
     // MARK: Standard streams

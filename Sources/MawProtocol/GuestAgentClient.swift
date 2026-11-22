@@ -128,9 +128,11 @@ public struct GuestAgentClient: Sendable {
         }
     }
 
-    /// Starts a command. Returns once the agent reports it started.
+    /// Starts a command. Returns once the agent reports it started. `started` runs with the
+    /// working directory's fallback, if any, before the first output reaches `output`.
     public func exec(
-        _ request: ExecRequest, output: @escaping OutputHandler
+        _ request: ExecRequest, output: @escaping OutputHandler,
+        started: @escaping @Sendable (WorkingDirectoryFallback?) -> Void = { _ in }
     ) async throws(MawError) -> GuestProcess {
         let descriptor = try await connect()
         let timeout = replyTimeout
@@ -155,6 +157,7 @@ public struct GuestAgentClient: Sendable {
                     throw .unexpectedMessage("expected started, received \(other.name)")
                 }
             }
+            started(fallback)
             return try GuestProcess(
                 connection: connection, pid: pid, workingDirectoryFallback: fallback,
                 output: output)
