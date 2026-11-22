@@ -37,7 +37,8 @@ Option 2 for login shells, and the agent's own identity switch for everything el
   system bus's socket; `pam_systemd` then waits for `systemd-logind` itself.
 - A login shell in a requested working directory (`--cd`), or on a machine without systemd,
   starts directly from the agent, as `-<shell>`, without a logind session, because
-  `runuser -l` always changes to the home directory.
+  `runuser -l` always changes to the home directory. Phase 07 replaces this for a working
+  directory under systemd ([decision record 0022](0022-working-directory-and-logind.md)).
 - New users **linger** (`/var/lib/systemd/linger/<user>`), so that their user manager runs from
   boot and a shell does not wait for it to start.
 
@@ -72,6 +73,10 @@ about 10 MB.
 - A user who removes linger (`loginctl disable-linger`) gets slower shells, as measured above.
 
 ## Consequence for phase 07
+
+Resolved by [decision record 0022](0022-working-directory-and-logind.md), which chooses
+option 2 below: the agent is `runuser -l`'s shell helper, and every shell under systemd is a
+logind session again, whatever its working directory.
 
 Phase 07 will send the Mac's working directory with every `maw` call. Under this decision, a
 login shell with a working directory (`--cd`) skips `runuser -l`, because `runuser -l` always

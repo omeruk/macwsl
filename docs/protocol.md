@@ -1,7 +1,7 @@
 # Host and guest agent protocol
 
 The host (`mawd`, and the client library in `MawProtocol`) talks to the guest agent,
-`maw-agent`, over vsock. This document specifies protocol version **6**. The code is in
+`maw-agent`, over vsock. This document specifies protocol version **7**. The code is in
 `Sources/MawProtocol` (both sides) and `Sources/MawAgentKit` (the agent). Version 2 added the
 user a session runs as, its program (a command, a shell command line, or a login shell), its
 locale, and the input window, with which `signal` and `resize` overtake queued standard input
@@ -10,7 +10,10 @@ request, its `dialedBack` reply, the `dialBackNonce` frame, and the `dialBackFai
 Every session runs on a connection that the agent dials. Version 4 adds `foregroundQuery` and
 `foregroundProgram`. Version 5 adds `sample`, its `sampled` reply, and the `sampleFailed`
 error ([0020](decisions/0020-distribution-figures.md)). Version 6 adds `macShareMounted` to
-`agentInfo` ([0021](decisions/0021-mac-share.md)).
+`agentInfo` ([0021](decisions/0021-mac-share.md)). Version 7 adds `exec`'s `fallsBackToHome`
+and `started`'s `workingDirectoryFallback`, gives `~` in `workingDirectory` its meaning, and
+starts a login shell in a working directory through the agent as `runuser -l`'s shell helper
+([0022](decisions/0022-working-directory-and-logind.md)).
 
 ## Transport
 
@@ -92,7 +95,7 @@ names, missing required fields, and wrong types are protocol errors.
 
 | Message | Fields | Reply |
 |---------|--------|-------|
-| `exec` | `program`: one of `{"argv": [string]}`, `{"shellCommand": string}`, `{"loginShell": {}}`, required. `user`: string, default: the distribution's default user. `locale`: string, the host's preferred locale, optional. `environment`: {string: string}, default `{}`. `workingDirectory`: string, default: the user's home directory. `terminal`: `{"rows": u16, "columns": u16}`, absent for pipe mode. | `started`, then the session; or `error` |
+| `exec` | `program`: one of `{"argv": [string]}`, `{"shellCommand": string}`, `{"loginShell": {}}`, required. `user`: string, default: the distribution's default user. `locale`: string, the host's preferred locale, optional. `environment`: {string: string}, default `{}`. `workingDirectory`: string, default: the user's home directory; `~` and `~/<path>` are the home directory and a path under it. `fallsBackToHome`: bool, default `false`, written only when true: the session starts in the home directory if it cannot enter `workingDirectory`. `terminal`: `{"rows": u16, "columns": u16}`, absent for pipe mode. | `started`, then the session; or `error` |
 | `info` | none | `agentInfo` |
 | `sample` | none | `sampled`, or `error` (`sampleFailed`); see [Sample](#sample) |
 | `shutdown` | none | `shutdownAcknowledged`, or `error` (`shutdownFailed`) |
@@ -115,7 +118,7 @@ TSTP TTIN TTOU URG XCPU XFSZ VTALRM PROF WINCH IO SYS`.
 
 | Message | Fields | Meaning |
 |---------|--------|---------|
-| `started` | `pid`: i32 | The process started; its ID in the guest. |
+| `started` | `pid`: i32, optional `workingDirectoryFallback`: string | The process started; its ID in the guest. `workingDirectoryFallback` is present when the request allowed the fallback and the process started in the home directory instead: `shareNotMounted`, `notFound`, `permissionDenied`, `notADirectory`, or `other`. |
 | `exited` | `code`: i32 (0 to 255), or `signal`: i32 | The process ended. Exactly one field is present. `signal` is the Linux signal number. The last message of a session. |
 | `agentInfo` | `agentVersion`: string, `protocolVersion`: u32, `kernelRelease`: string, `uptimeMilliseconds`: u64, `macShareMounted`: bool | Reply to `info`. `macShareMounted` is true when the last mount at `/mnt/mac` in `/proc/self/mountinfo` is the virtiofs share `maw-mac`; reading the table looks nothing up in the share. |
 | `shutdownAcknowledged` | none | The agent has asked `init` to power off. The VM stops shortly after. |
@@ -244,11 +247,17 @@ host                                   agent
     order, as `execvp` does.
   - `shellCommand`: run by the user's shell from `/etc/passwd` (`/bin/sh` if it names none),
     as `<shell> -c <command>`.
-  - `loginShell`: the user's shell as a login shell. Under systemd, with no `workingDirectory`,
-    the agent starts it through `runuser -l <user>`, whose PAM stack includes `pam_systemd`, so
-    that `systemd-logind` registers the session and `XDG_RUNTIME_DIR` and `systemctl --user`
-    work. Right after boot it first waits up to 2 seconds for the system bus's socket. Otherwise
-    the agent starts the shell itself, with `-<shell name>` as `argv[0]`.
+  - `loginShell`: the user's shell as a login shell. Under systemd, the agent starts it through
+    `runuser -l <user>`, whose PAM stack includes `pam_systemd`, so that `systemd-logind`
+    registers the session and `XDG_RUNTIME_DIR` and `systemctl --user` work. Right after boot it
+    first waits up to 2 seconds for the system bus's socket. With a `workingDirectory`, runuser
+    runs the agent (`/run/maw/maw-agent login-shell`) as its shell helper, which enters the
+    directory as the user, reports the result to the agent on descriptor 3, closes it, and
+    executes the user's shell; the agent sends `started` once the report has come, at most
+    5 seconds after the start, or answers with `error` (`spawnFailed`) if the helper could not
+    enter a directory without the fallback, if runuser ended before the report, or if the
+    report did not come in time. Without systemd, or without `/run/maw/maw-agent`, the agent
+    starts the shell itself, with `-<shell name>` as `argv[0]`.
 - **Environment**: the process does not inherit the agent's environment. It gets a login
   environment, as ssh builds one, with the request's `environment` applied on top:
 
@@ -261,8 +270,15 @@ host                                   agent
   | `XDG_RUNTIME_DIR` | `/run/user/<uid>`, if it exists |
 
   `maw` adds `TERM` from the host, or `xterm-256color` in terminal mode.
-- **Working directory**: the request's `workingDirectory`, or the user's home directory, or `/`
-  if the home directory does not exist.
+- **Working directory**: the request's `workingDirectory`, with `~` expanded, or the user's
+  home directory, or `/` if the home directory does not exist. The process enters it as the
+  user. If it cannot, it fails with `spawnFailed`, unless `fallsBackToHome` is set: then it
+  starts in the home directory, and `started` carries the reason. The reason is
+  `shareNotMounted` for a directory under `/mnt/mac` that does not exist while the share is not
+  mounted, from `/proc/self/mountinfo`.
+- **Descriptors**: the process gets standard input, output, and error, and no other descriptor
+  of the agent's; the shell helper's descriptor 3 is closed before the user's shell starts.
+- **PATH** always includes `/usr/local/bin`, where `mawpath` is linked.
 - **Signals**: the process starts with default dispositions and an empty signal mask, even
   though the agent ignores SIGPIPE.
 - **End of the session**: the agent sends `exited` once the process has been reaped and its

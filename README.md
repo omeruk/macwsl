@@ -185,7 +185,7 @@ changes, and where its files are.
 ### First steps
 
 ```sh
-maw                             # a login shell as your user, in your Linux home directory
+maw                             # a login shell as your user, in the current directory
 maw -- sudo apt update          # package management
 maw -- uname -r                 # the maw kernel, 6.18.x-maw
 maw -u root -- id -u            # run as root: prints 0
@@ -198,11 +198,66 @@ maw --version                   # the versions of maw, the daemon, and the guest
 
 The first command starts the daemon and boots the distribution, which takes under a second;
 later commands reuse it, and shells in several terminals share it. It stops a minute after the
-last session ends, and the daemon exits after five idle minutes. `maw <command>` passes the
-command line to your Linux shell with `-c`; the Mac's shell has already removed your quotes,
-so use `-e` when the arguments must arrive unchanged. A session ends when its command or shell
-exits. Without an installed distribution, `maw` reports that none is installed and names
-`maw --install`.
+last session ends, and the daemon exits after five idle minutes. A session ends when its
+command or shell exits. Without an installed distribution, `maw` reports that none is installed
+and names `maw --install`.
+
+**How `maw --` joins its arguments.** `maw <command> [<argument>...]` and `maw -- <command>`
+join their arguments with spaces into one command line for your Linux shell, as `wsl.exe`
+does, so the quoting of your Mac shell is lost: `maw -- sh -c 'echo a; echo b'` runs
+`sh -c echo a; echo b`, which prints an empty line and then `b`. Keep the arguments intact in
+one of two ways:
+
+```sh
+maw -e sh -c 'echo a; echo b'   # -e runs the command directly: prints a and b
+maw -- 'echo a; echo b'         # one quoted command line for the Linux shell: the same
+```
+
+### The working directory
+
+`maw` starts Linux in the directory you are in on the Mac, under `/mnt/mac`:
+
+```sh
+cd ~/Projects/app && maw -- pwd    # /mnt/mac/Projects/app
+cd ~ && maw -- pwd                 # /mnt/mac
+cd /tmp && maw -- pwd              # your Linux home directory, and on standard error:
+                                   # maw: /private/tmp is not shared with Linux; starting in
+                                   # the home directory.
+```
+
+- **Outside your home directory**, such as in `/tmp` or `/Volumes/USB`, Linux cannot see the
+  directory, so the session starts in your Linux home directory, and `maw` says so in one line
+  on standard error. The same happens when the directory you are in was deleted, or when Linux
+  cannot enter it, for example because `/mnt/mac` is not mounted; `maw` then says why.
+- **`--cd`** chooses the directory: `--cd /tmp` is Linux's `/tmp`, `--cd ~/src` a directory
+  under your Mac home directory, `--cd ../other` a path relative to where you are, and
+  `--cd '~'` your Linux home directory. A Mac path outside your home directory, such as
+  `--cd /Volumes/USB`, is an error, and so is a `--cd` directory that Linux cannot enter.
+- **Quote the `~`.** Your Mac shell turns an unquoted `~` into your Mac home directory before
+  `maw` sees it, so `maw --cd ~ -- pwd` prints `/mnt/mac`, and `maw --cd '~' -- pwd` prints
+  your Linux home directory.
+- **Shells are logind sessions** in any directory: `loginctl` lists them, and
+  `XDG_RUNTIME_DIR` and `systemctl --user` work.
+- **Tabs of the terminal app** start in your Linux home directory: a new tab has no Mac
+  directory of its own.
+
+### Translating paths with mawpath
+
+`mawpath` runs inside every distribution and translates paths, as `wslpath` does in WSL:
+
+```sh
+mawpath /Users/you/Projects/app     # Mac to Linux, the default: /mnt/mac/Projects/app
+mawpath -u /Users/you/Projects/app  # the same, -u stated
+mawpath -m /mnt/mac/Projects/app    # Linux to Mac: /Users/you/Projects/app
+mawpath -a -m .                     # the Mac path of the current directory
+mawpath -a src                      # an absolute result for a relative path
+```
+
+Without `-a`, a relative path gives a relative result. A path that the other side cannot see,
+outside `/mnt/mac` or outside your Mac home directory, is an error, and the path need not
+exist. `mawpath --help` describes the flags. maw links `/usr/local/bin/mawpath` to its guest
+agent when a distribution starts; if `/usr/local/bin` is missing or is a link, the console log
+says so ([docs/distributions.md](docs/distributions.md#mawpath)).
 
 ### The Mac's files in Linux (/mnt/mac)
 

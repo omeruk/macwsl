@@ -10,36 +10,6 @@ request #19 lists under "Review results". Commits from the branch of pull reques
 cited, because that pull request was squash-merged and its branch commits are not reachable
 from `main`.
 
-## Phase 07: File sharing and paths
-
-- **Shells with a working directory have no logind session.**
-  - **Seen:** A login shell started with `--cd` skips `runuser -l`, so it is not registered
-    with `systemd-logind`. Once phase 07 sends the Mac's working directory with every call, no
-    shell would be registered, and `XDG_RUNTIME_DIR` and `systemctl --user` would depend on
-    linger alone.
-  - **Evidence:** [Decision record 0015](decisions/0015-sessions-through-pam.md), "Consequence
-    for phase 07", which lists the options.
-  - **Phase:** 07, pull request B.
-- **A default user whose uid or gid the kernel refuses leaves `/mnt/mac` unmounted.**
-  - **Seen:** `/etc/passwd` can give the default user the uid or gid 4294967295. It parses as
-    a `UInt32`, but the kernel's `uid=` and `gid=` options refuse it as invalid, so the mount
-    fails and the share is not mounted at all; the console log says that the mount failed.
-    Files showing as root's would have been the better fallback, as for a user that cannot be
-    resolved.
-  - **Evidence:** `MacShareMount.owner(inRoot:)` and `MacShareMount.run(root:tag:mount:)` in
-    `Sources/MawAgentKit/MacShareMount.swift:92`; pull request #33, code review.
-  - **Phase:** 07, pull request B, which changes the agent: treat the uid or gid 4294967295 as
-    one that cannot be resolved.
-- **A read error in an existing `/mnt/mac` counts as an empty mount point.**
-  - **Seen:** The check that `/mnt/mac` is empty stops at the first `readdir` that returns
-    nothing, without telling an error from the end of the directory. If reading the directory
-    fails, for example with `EIO` on a damaged block, the share is mounted over it; the files
-    in it are hidden while the share is mounted, not lost.
-  - **Evidence:** `MountPoint.isEmpty` in `Sources/MawAgentKit/MacShareMount.swift:250`; pull
-    request #33, code review.
-  - **Phase:** 07, pull request B: clear `errno` before each `readdir`, and refuse the mount
-    point with "cannot be read" if it is set afterwards.
-
 ## Phase 08: Networking
 
 - **The first DNS query after the DHCP lease is not answered.**
@@ -535,8 +505,19 @@ from `main`.
     `refresh(isVisible:)` in
     `App/MawTerminalKit/Sources/MawTerminalKit/Session/LinuxSession.swift`;
     `prompts/11b-linux-sessions.md`, "Out of scope".
-  - **Phase:** None yet; phase 07, which translates working directories, is a candidate, for
-    example by having the distribution's shell send OSC 7.
+  - **Phase:** None yet. Phase 07 translates `maw`'s working directory and leaves the app
+    unchanged; a Linux tab still starts in the Linux home directory, because a new tab has no
+    Mac directory of its own. Having the distribution's shell send OSC 7 remains a candidate.
+- **A home directory whose own name has non-ASCII letters reaches `mawpath` decomposed.**
+  - **Seen:** The daemon takes the home directory's path from `URL`, which gives it in its
+    decomposed form (NFD), and puts that on the kernel command line as `maw.home`. `mawpath -m`
+    then prints the home directory's name in NFD, and `mawpath` given the name in NFC reports
+    it as outside the home directory. Names below the home directory pass through as they are.
+    `maw`'s own translation compares resolved paths and is not affected.
+  - **Evidence:** `MachineConfigurationTests.putsTheHomeDirectoryOnTheCommandLineForMawpath`
+    in `Tests/MawDaemonKitTests/MachineConfigurationTests.swift`; pull request #35.
+  - **Phase:** None yet. Taking the path from `getpwuid` or `realpath`, which return the bytes
+    that the file system stores, would resolve it.
 - **A Linux session does not reconnect after the daemon or the machine restarts.**
   - **Seen:** The pane shows maw's message and suggestion, such as `machineStopped` or
     `daemonConnectionLost`, and offers a new session, which Enter starts. The shell and its

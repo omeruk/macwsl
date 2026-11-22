@@ -161,7 +161,29 @@ its machine starts again.
   `maw-initramfs: /mnt/mac is not mounted: <reason>`, and the distributions screen shows no
   `mounts` row.
 - **Mount options.** `virtiofs maw-mac` with `nosuid`, `nodev`, and `uid=` and `gid=` of the
-  default user, as `/proc/self/mountinfo` shows them.
+  default user, as `/proc/self/mountinfo` shows them. A default user whose uid or gid is
+  4294967295, which the kernel refuses as an owner, gives root's ownership, as one that cannot be
+  resolved does.
+
+### mawpath
+
+`mawpath` translates paths between the Mac and the distribution, as `wslpath` does
+([decision record 0022](decisions/0022-working-directory-and-logind.md)): `mawpath <path>` or
+`mawpath -u <path>` gives a Mac path's place under `/mnt/mac`, `mawpath -m <path>` the Mac path
+of a path under `/mnt/mac`, and `-a` an absolute result for a relative path. A path that the
+other side cannot see is an error, and the path need not exist.
+
+- **The link.** When a distribution's machine starts, the agent links `/usr/local/bin/mawpath`
+  to `/run/maw/maw-agent`, the agent's binary, before it serves a session. This link is the one
+  file that `mawpath` adds to a distribution's disk. It dangles while the machine is stopped,
+  and an export contains it; an import into maw makes it work again.
+- **When there is none.** If `/usr`, `/usr/local`, or `/usr/local/bin` is missing or is itself
+  a symbolic link, the agent makes no link, and `mawpath` is not on PATH; a `mawpath` that is
+  not maw's link is left as it is. In both cases the console log has a line
+  `maw-agent: mawpath is not on PATH: <reason>`.
+- **The Mac home directory** comes from the kernel command line, `maw.home=<path>`,
+  percent-encoded. A home directory longer than 1,024 bytes once encoded is not passed, and
+  `mawpath` then reports that it is not known.
 
 ## Sessions
 
@@ -170,9 +192,27 @@ the user that `-u` names. [Decision record 0015](decisions/0015-sessions-through
 explains how the agent switches to the user and registers login shells with `systemd-logind`,
 and [docs/protocol.md](protocol.md) specifies the environment a session gets.
 
-- `maw` opens the user's login shell from `/etc/passwd`, in the home directory.
+- `maw` opens the user's login shell from `/etc/passwd`.
 - `maw <command>` runs the command line with the user's shell, as `<shell> -c <command>`.
 - `maw -e <program> [<argument>...]` runs the program directly.
+
+**The working directory** ([decision record 0022](decisions/0022-working-directory-and-logind.md)):
+
+- **Without `--cd`**, a session starts in the Linux path of `maw`'s current directory: the
+  home directory is `/mnt/mac`, and `~/Projects/app` is `/mnt/mac/Projects/app`. Outside the
+  home directory, such as in `/tmp` or `/Volumes/USB`, or when the current directory no longer
+  exists, it starts in the user's Linux home directory, and `maw` says so in one line on
+  standard error.
+- **When that directory cannot be used in Linux**, because the share is not mounted, the
+  directory is gone, or the user cannot enter it, the session also starts in the home
+  directory, and `maw` says why; when the share is not mounted, the line names the console
+  log.
+- **`--cd`** takes `'~'` and `'~/<path>'` for the Linux home directory and a path under it, an
+  absolute Linux path as given, a Mac path under the home directory, translated, and a path
+  relative to the current directory. A Mac path outside the home directory is an error. A
+  `--cd` directory that cannot be entered is an error too; it never falls back.
+- **A login shell in a directory** starts through `runuser -l`, with the agent as its shell
+  helper, so it is a `systemd-logind` session like any other.
 
 ## Files on the Mac
 
