@@ -571,19 +571,16 @@ from `main`.
     with `waitUntilExit()` in seven parallel cases; it now suspends instead, but `codesign`
     itself still competes for the CPU. While the pool is full, no other task in the process
     starts or resumes, so nearly every test that started before the stall reports its length
-    as its duration. Since the `fix/test-waits` branch, the unit tests' waits do not fail
-    during a stall:
+    as its duration. Since the `fix/test-waits` branch, the unit tests' waits that failed so
+    hold through a stall:
     - a wait in a task counts its sleeps instead of reading a clock, so that the stall, which
       delays the sleeps as much as the work waited for, cannot use it up;
-    - a scripted peer on a thread of its own, whose clock runs on during the stall, and a
-      client that talks to one have a deadline of 60 s, longer than any stall seen: in
-      `HandshakeTests`, `GuestProcessTests`, `ForegroundQueryTests`, `FrameConnectionTests`,
-      `SessionEndingTests`, `DistributionSessionTests`, `DialBackTests`, `ExecSessionTests`,
-      `FuzzTests`, `DialBackGateTests`' fake agent, and `TestAgent`'s agent and client.
-      Deadlines that a test asserts keep their values: the 200 ms of
-      `HandshakeTests.clientTimesOutOnASilentPeer`, the dial-back gate's own limits, and the
-      2 s of `DialBackGateTests.endsAnExpiredWaitWhenAnotherSessionRegisters`, which is
-      compared with the gate's real-time expiry and would no longer measure it if counted;
+    - every scripted peer on a thread of its own, whose clock runs on during the stall, and
+      every `GuestAgentClient` that talks to one have a deadline of 60 s, longer than any stall
+      seen: in `HandshakeTests`, `GuestProcessTests`, `ForegroundQueryTests`,
+      `FrameConnectionTests`, `SessionEndingTests`, `DistributionSessionTests`,
+      `DialBackTests`, `ExecSessionTests`, `FuzzTests`, `DialBackGateTests`' fake agent, and
+      `TestAgent`'s agent and client;
     - `maw --export` and `maw --import` wait for the daemon's answer to a cancellation and for
       the operation's own reply with timeouts that a test can lengthen, `cancelTimeout` and
       `replyTimeout`, which keep 5 s and 500 ms otherwise;
@@ -600,18 +597,51 @@ from `main`.
     17:31:08.5, and 944 of the 958 results in the log reported 9.0 to 12.0 s; in 44372965404,
     873 of 886 reported 9.3 to 11.7 s.
 
-    One test still needs a second thread of the pool:
-    `FigureSamplerTests.reportsTheGuestsAnswerBeforeCancellingItsTimeout` holds the sampler's
-    guest task in the test clock's cancellation, on a thread of the pool, until another task
-    publishes the figures, so it cannot pass while the pool has one thread
-    (`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`), on `main` or since the branch. It has not
-    failed in CI, where the pool has a thread per core. `ImageCacheTests`'
-    `stopsACancelledCheckWithinOnePiece` holds a read the same way, for at most 10 s. Two waits
-    keep a clock because a stall cannot make them fail: `Tests/MawTestSupport/Process+Exit.swift`
-    waits for processes outside the pool and checks again after its deadline, and
-    `ForegroundSessionTests.hangsUpOnTheProcessWhenTheHostHangsUp` waits for a file that a
-    child process writes after the test agent, which serves on threads of its own, hangs up,
-    and checks again after its deadline.
+    What still reads a running clock in the unit tests, and why it stays:
+    - **Deadlines that a test asserts**, which counting would no longer measure:
+      `HandshakeTests.clientTimesOutOnASilentPeer` (200 ms); `DialBackTests`' dialer timeouts
+      (200 ms and 2 s); `DialBackGateTests`' own limits (`:265`, `:367`, `:409`), its latency
+      test of the nonce's read timeout (2 to 3 s), and
+      `endsAnExpiredWaitWhenAnotherSessionRegisters` (2 s, compared with the gate's real-time
+      expiry); the 200 ms of `foregroundProgram(within:)` in
+      `ForegroundQueryTests` and `DistributionSessionTests` (`noAnswer`); `SessionEndingTests`'
+      50 ms of `relay.next(within:)`; `DiskImageTests`' 200 ms of `waitUntilUnlocked`;
+      `InstallCancellationOutcomeTests`' 50 ms cancellation and `ImportCommandTests.Latency`'s
+      200 ms;
+      `SequenceReaderTests.keepsTheBytesOfLaterReads`' 10 s of `waitForLines`, which expects
+      no lines; `LaunchctlTests`' tests of the timeouts of `waitUntilRemoved` and `run`;
+      `StreamingProcessTests`' bound of 5 s on a program that cannot start; and
+      `ArchiveOutputTests.endsAtOnceWhenAbortedWhileTheReaderDoesNotRead` (30 s). The tests of
+      the latency group (`ExecSessionTests.Latency` and `InstallCancellationTests.Latency`
+      among them) assert real time and run one at a time, beside no other test.
+    - **Waits for something outside the pool**, which a stall does not stop:
+      `Tests/MawTestSupport/Process+Exit.swift`, which waits for processes and checks again
+      after its deadline, and its users with 10 s to 30 s (`RootCheckScriptTests`,
+      `ShellFixtures`, `ProvisioningScriptTests`, `DiskImageTests`);
+      `ForegroundSessionTests.hangsUpOnTheProcessWhenTheHostHangsUp`, which waits for a file
+      that a child process writes after the test agent, which serves on threads of its own,
+      hangs up, and checks again after its deadline.
+    - **Waits not shown to survive a stall**, which did not fail in the runs of the
+      `fix/test-waits` pull request:
+      - the bounds of 10 s and 60 s on `foregroundProgram(within:)` in
+        `ForegroundQueryTests`, `ForegroundSessionTests` and `DistributionSessionTests`;
+      - `SessionEndingTests`' 10 s of `relay.next(within:)`;
+      - `DiskImageTests.seesALockThatAnotherProcessHolds`' 10 s of `waitUntilUnlocked`;
+      - `InstallEndedBeforeTheCancellationTests`' 5 s wait for the output of an interrupted
+        installation, and `InstallCancellationOutcomeTests`' cancellation of 30 s;
+      - `GuestProcessTests`' 70 s of `exitStatus(of:within:)`, longer than its reading peer's
+        60 s;
+      - `LaunchctlTests.waitsUntilLaunchdNoLongerListsTheJob`' 60 s on `SuspendingClock`.
+    - **Holds that spin on a thread of the pool**, whose bounds a longer value would make worse:
+      `FigureSamplerTests.reportsTheGuestsAnswerBeforeCancellingItsTimeout` holds the sampler's
+      guest task in the test clock's cancellation, for at most 2 s, until another task
+      publishes the figures, so it cannot pass while the pool has one thread
+      (`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`), on `main` or since the branch; it has not
+      failed in CI, where the pool has a thread per core. `ImageCacheTests`'
+      `stopsACancelledCheckWithinOnePiece` holds a read the same way, for at most 10 s.
+    - The integration tests in `Tests/mawdTests` and `Tests/maw-integration-probe` run only
+      through `scripts/integration-test.sh`, in a process of their own beside real virtual
+      machines, and keep their clocks.
   - **Evidence:** In each of those runs and in the passing run 42516767842 of `main`, tests
     from unrelated modules finish with the same duration to the millisecond, for example
     `reportsTheHostLimits()` at 5.373 s with about 60 others in run 42574910845, and the test
