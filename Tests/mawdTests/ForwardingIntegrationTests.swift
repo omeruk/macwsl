@@ -42,7 +42,8 @@ struct ForwardingIntegrationTests {
     }
 
     /// A port that a Mac program holds on 127.0.0.1 is forwarded on neither address, the Mac
-    /// program keeps it, and the snapshot says why.
+    /// program keeps it, and the snapshot says why. The daemon's probe is the program's one
+    /// connection, which ends without a byte.
     @Test func leavesAPortThatAMacProgramHolds() async throws {
         let watcher = try Watcher(maw)
         defer { watcher.stop() }
@@ -53,6 +54,11 @@ struct ForwardingIntegrationTests {
         _ = try await watcher.forwarding("port \(port) in use on the Mac") {
             $0?.notForwarded == [.init(port: port, reason: .inUseOnMac)]
         }
+        let probe = try #require(program.accept(within: .seconds(2)))
+        var byte: UInt8 = 0
+        #expect(read(probe, &byte, 1) == 0)
+        close(probe)
+        #expect(program.accept(within: .milliseconds(100)) == nil)
         #expect(reachesTheProgram(port, program))
         // ::1 was left free too.
         let other = MacListener(ipv6: true, port: port)
@@ -101,9 +107,8 @@ struct ForwardingIntegrationTests {
         var server = try await maw.startServer(host: "0.0.0.0", port: port)
         #expect(try await MawIntegration.waitUntil(url, answers: true))
         await maw.stopServer(server)
-        #expect(try await MawIntegration.waitUntil(url, answers: false, within: .seconds(2)))
+        #expect(try await MawIntegration.waitUntilRefused(port))
         _ = try await watcher.forwarding("no port") { $0?.forwarded == [] }
-        #expect(MacListener(ipv6: false, port: port).map { $0.close() } != nil)
 
         // A session that keeps the machine running while the server is ended by the stop.
         let keeper = try maw.start(["-d", maw.distribution, "-e", "sleep", "600"])
@@ -113,8 +118,38 @@ struct ForwardingIntegrationTests {
         let terminated = try await maw.run(["--terminate", maw.distribution])
         #expect(terminated.status == 0)
         #expect(try await MawIntegration.httpStatus(url) == nil)
-        #expect(MacListener(ipv6: false, port: port).map { $0.close() } != nil)
+        #expect(MawIntegration.refuses(port))
         _ = await server.waitForExit(timeout: .seconds(30))
+    }
+
+    /// A server restarted within 30 seconds is forwarded again: the forwarded connections that
+    /// its first run closed hold the Mac's port in TIME_WAIT, the daemon's probe is refused,
+    /// and the second bind sets SO_REUSEADDR.
+    @Test func forwardsAServerRestartedWithinThirtySeconds() async throws {
+        let watcher = try Watcher(maw)
+        defer { watcher.stop() }
+        let port = try MawIntegration.freePort()
+        let url = "http://127.0.0.1:\(port)/bytes/10"
+        var server = try await maw.startServer(host: "0.0.0.0", port: port)
+        #expect(try await MawIntegration.waitUntil(url, answers: true))
+        for _ in 0..<5 {
+            #expect(try await MawIntegration.httpStatus(url) == 200)
+        }
+        await maw.stopServer(server)
+        #expect(try await MawIntegration.waitUntilRefused(port))
+        _ = try await watcher.forwarding("no port") { $0?.forwarded == [] }
+        // The port is in TIME_WAIT: a bind without SO_REUSEADDR still fails.
+        #expect(MacListener(ipv6: false, port: port).map { $0.close() } == nil)
+
+        let restarted = ContinuousClock.now
+        server = try await maw.startServer(host: "0.0.0.0", port: port)
+        _ = try await watcher.forwarding("port \(port) forwarded again") {
+            $0?.forwarded == [port] && $0?.notForwarded == []
+        }
+        #expect(ContinuousClock.now - restarted < .seconds(30))
+        #expect(try await MawIntegration.waitUntil(url, answers: true))
+        #expect(try await MawIntegration.waitUntil("http://[::1]:\(port)/bytes/10", answers: true))
+        await maw.stopServer(server)
     }
 
     /// Two distributions listening on the same port: the first keeps it, the second reports
@@ -149,6 +184,9 @@ struct ForwardingIntegrationTests {
         try #require(made.status == 0, "\(made.output)\(made.standardError)")
         let expected = try #require(made.output.split(separator: " ").first.map(String.init))
         let server = try await maw.startServer(host: "127.0.0.1", port: port)
+        #expect(
+            try await MawIntegration.waitUntil(
+                "http://127.0.0.1:\(port)/bytes/1", answers: true))
         let pipeline = try DebugBootProcess(
             executable: URL(filePath: "/bin/sh"),
             arguments: [

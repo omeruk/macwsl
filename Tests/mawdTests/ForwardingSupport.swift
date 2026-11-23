@@ -106,6 +106,25 @@ extension MawIntegration {
         return false
     }
 
+    /// Whether a connection to `port` on the Mac's 127.0.0.1, and on ::1, is refused: nothing
+    /// listens there. A port in TIME_WAIT only is refused too.
+    static func refuses(_ port: UInt16) -> Bool {
+        MacListener.connect(ipv6: false, port: port) == ECONNREFUSED
+            && MacListener.connect(ipv6: true, port: port) == ECONNREFUSED
+    }
+
+    /// Waits until `refuses(port)`.
+    static func waitUntilRefused(_ port: UInt16, within timeout: Duration = .seconds(2))
+        async throws -> Bool
+    {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if refuses(port) { return true }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return refuses(port)
+    }
+
     /// A port that is free on the Mac's 127.0.0.1 and ::1 now, from 20000 to 60000.
     static func freePort() throws -> UInt16 {
         for _ in 0..<500 {
@@ -164,6 +183,49 @@ final class MacListener: Sendable {
 
     func close() {
         Darwin.close(descriptor)
+    }
+
+    /// Accepts one waiting connection within `timeout`; returns its descriptor, or nil.
+    func accept(within timeout: Duration) -> Int32? {
+        var request = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+        let milliseconds =
+            Int32(timeout.components.seconds * 1000)
+            + Int32(timeout.components.attoseconds / 1_000_000_000_000_000)
+        guard poll(&request, 1, milliseconds) == 1 else { return nil }
+        let accepted = Darwin.accept(descriptor, nil, nil)
+        return accepted >= 0 ? accepted : nil
+    }
+
+    /// Connects to `port` on 127.0.0.1 or ::1 and closes at once: 0, or the errno value.
+    static func connect(ipv6: Bool, port: UInt16) -> Int32 {
+        let fd = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return errno }
+        defer { Darwin.close(fd) }
+        var result: Int32
+        if ipv6 {
+            var address = sockaddr_in6()
+            address.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+            address.sin6_family = sa_family_t(AF_INET6)
+            address.sin6_port = port.bigEndian
+            address.sin6_addr = in6addr_loopback
+            result = withUnsafePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size))
+                }
+            }
+        } else {
+            var address = sockaddr_in()
+            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            address.sin_family = sa_family_t(AF_INET)
+            address.sin_port = port.bigEndian
+            address.sin_addr.s_addr = in_addr_t(0x7F00_0001).bigEndian
+            result = withUnsafePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+        }
+        return result == 0 ? 0 : errno
     }
 }
 
