@@ -274,11 +274,14 @@ host                                   agent
   home directory, or `/` if the home directory does not exist. The process enters it as the
   user. If it cannot, it fails with `spawnFailed`, unless `fallsBackToHome` is set: then it
   starts in the home directory, and `started` carries the reason. While the share is not
-  mounted, from `/proc/self/mountinfo`, a directory under `/mnt/mac`, `/mnt/mac` itself
+  mounted, as `/proc/self/mountinfo` shows, a directory under `/mnt/mac`, `/mnt/mac` itself
   included, falls back with `shareNotMounted` before the process starts, without being
-  entered: the empty mount point would otherwise be.
+  entered: the empty mount point would otherwise be. A mount table that cannot be read leaves
+  the directory to the spawn.
 - **Login shells in a working directory** start through the shell helper only when the
-  directory and the account's shell are absolute; otherwise the agent starts the shell itself.
+  directory and the account's shell are absolute; otherwise the agent starts the shell itself,
+  without a logind session. A relative directory, which `maw` never sends, is resolved
+  against `/`, the agent's directory, for every program.
 - **Descriptors**: the process gets standard input, output, and error, and no other descriptor
   of the agent's; the shell helper's descriptor 3 is closed before the user's shell starts.
 - **PATH** always includes `/usr/local/bin`, where `mawpath` is linked.

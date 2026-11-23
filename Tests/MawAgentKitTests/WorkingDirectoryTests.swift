@@ -67,9 +67,12 @@ import Testing
             #expect(early.workingDirectory == nil)
             #expect(early.fallsBackToHome)
             #expect(fallback == .shareNotMounted)
-            let (mounted, none) = SessionPlanner.fallingBackEarly(
-                request, shareMounted: { true })
-            #expect(mounted == request && none == nil)
+            // A mounted share, or a mount table that cannot be read, leaves it to the spawn.
+            for state in [true, nil] as [Bool?] {
+                let (unchanged, none) = SessionPlanner.fallingBackEarly(
+                    request, shareMounted: { state })
+                #expect(unchanged == request && none == nil)
+            }
         }
         // A directory that --cd names, or one outside the share, is left to the spawn.
         for request in [
@@ -106,8 +109,8 @@ import Testing
         }
     }
 
-    /// The helper refuses a relative operand; such a directory starts without it, and the
-    /// spawn's own error names the path.
+    /// The helper refuses a relative operand; such a directory starts without it, resolved
+    /// against `/`, the agent's directory, as a command's relative directory is.
     @Test func startsALoginShellInARelativeDirectoryWithoutTheHelper() throws {
         let plan = try SessionPlanner.plan(
             ExecRequest(program: .loginShell, workingDirectory: "src"), system: Self.ubuntu())

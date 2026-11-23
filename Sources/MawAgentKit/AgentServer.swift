@@ -175,7 +175,7 @@ public final class AgentServer: @unchecked Sendable {
                             protocolVersion: ProtocolVersion.current,
                             kernelRelease: SystemInfo.kernelRelease(),
                             uptimeMilliseconds: SystemInfo.uptimeMilliseconds(),
-                            macShareMounted: macShareMounted()))))
+                            macShareMounted: macShareMounted() == true))))
         case .sample:
             switch GuestFigures(processDirectory: configuration.processDirectory).sample() {
             case .success(let sample):
@@ -307,7 +307,7 @@ public final class AgentServer: @unchecked Sendable {
     /// Why a session fell back from `directory`, from the errno value of the failed change.
     private func fallback(for error: Int32, directory: String) -> WorkingDirectoryFallback {
         WorkingDirectoryFallback(
-            error: error, directory: directory, shareMounted: { macShareMounted() })
+            error: error, directory: directory, shareMounted: { macShareMounted() == true })
     }
 
     /// Opens the connection that a `dialBack` request asks for. On failure, queues a
@@ -331,12 +331,12 @@ public final class AgentServer: @unchecked Sendable {
     }
 
     /// Whether the Mac's home directory is mounted at `/mnt/mac`, from the mount table, which
-    /// looks nothing up in the share (`MountTable`).
-    private func macShareMounted() -> Bool {
+    /// looks nothing up in the share (`MountTable`), or `nil` when the table cannot be read.
+    private func macShareMounted() -> Bool? {
         guard
             let bytes = readBytes(
                 "\(configuration.processDirectory)/self/mountinfo", limit: 1 << 20)
-        else { return false }
+        else { return nil }
         return MountTable.showsMacShare(mountinfo: String(decoding: bytes, as: UTF8.self))
     }
 

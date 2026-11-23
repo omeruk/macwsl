@@ -185,7 +185,7 @@ enum SessionPlanner {
                 waitsForSystemBus: false, terminalOwner: terminalOwner)
         case .loginShell:
             // The helper takes only absolute operands; a relative directory or shell, which no
-            // request from maw has, starts without it, so that its own error names the path.
+            // request from maw has, starts without it, the directory resolved against `/`.
             let helperApplies =
                 requested.map { $0.hasPrefix("/") && account.shell.hasPrefix("/") } ?? true
             if system.initSystem() == .systemd,
@@ -226,12 +226,13 @@ enum SessionPlanner {
     /// `request` with the fallback that is known before the spawn: a directory under
     /// `/mnt/mac` that may fall back, while the share is not mounted, becomes the home
     /// directory, with `shareNotMounted`. The empty mount point `/mnt/mac` would otherwise be
-    /// entered without a word.
+    /// entered without a word. `shareMounted` is `nil` when the mount table cannot be read;
+    /// the directory is then left to the spawn.
     static func fallingBackEarly(
-        _ request: ExecRequest, shareMounted: () -> Bool
+        _ request: ExecRequest, shareMounted: () -> Bool?
     ) -> (ExecRequest, WorkingDirectoryFallback?) {
         guard request.fallsBackToHome, let directory = request.workingDirectory,
-            MacShare.contains(linuxPath: directory), !shareMounted()
+            MacShare.contains(linuxPath: directory), shareMounted() == false
         else { return (request, nil) }
         var request = request
         request.workingDirectory = nil
