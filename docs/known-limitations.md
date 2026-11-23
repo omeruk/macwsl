@@ -427,6 +427,19 @@ from `main`.
     ([0017](decisions/0017-dial-back-for-sessions.md)), and each side copies through user
     space once.
   - **Phase:** None yet.
+- **Binding a forwarded port can hold a distribution's forwarder for up to 500 ms.**
+  - **Seen:** The forwarder binds each port that the guest reports, and probes a port in
+    `TIME_WAIT`, on its own actor. The probe's connect waits up to 500 ms when a Mac program
+    holds the port and its accept queue is full, so that the connection is neither accepted nor
+    refused. Meanwhile that distribution's forwarder handles no other report and no new
+    connection. Every other bind and probe returns at once.
+  - **Evidence:** The code review of phase 08 pull request A; `LoopbackListeners.bind` in
+    `Sources/MawDaemonKit/LoopbackPorts.swift` and its call in
+    `Sources/MawDaemonKit/PortForwarder.swift`. The wait is bounded by
+    `LoopbackListeners.probeTimeoutMilliseconds`, and the probe runs at most once each time
+    the guest reports a port anew.
+  - **Phase:** None yet. Binding off the actor would need the forwarder to order a port's
+    bind against later reports of the same port, which this pull request does not do.
 - **The terminal app's status slot for port forwarding stays empty.**
   - **Seen:** `prompts/11a-terminal-app.md` plans a status slot for port forwarding; the app
     leaves it empty, and the distributions screen's `forwarded` row shows the ports.
