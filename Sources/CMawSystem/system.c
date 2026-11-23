@@ -550,15 +550,16 @@ static int maw_close_preserving_errno(int fd, int error) {
     return error;
 }
 
-int maw_tcp_listen_loopback(int ipv6, uint16_t port, int backlog, int *fd) {
+int maw_tcp_listen_loopback(int ipv6, uint16_t port, int backlog, int reuse_address, int *fd) {
     *fd = -1;
     int socket_fd = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0);
     if (socket_fd < 0) {
         return errno;
     }
-    // Close-on-exec and non-blocking, for the acceptor's poll. Neither SO_REUSEADDR nor
-    // SO_REUSEPORT is ever set: with either, macOS lets a bind to 127.0.0.1 succeed beside a
-    // Mac program on the wildcard address and take its loopback traffic (decision 0023).
+    // Close-on-exec and non-blocking, for the acceptor's poll. SO_REUSEPORT is never set, and
+    // SO_REUSEADDR only when the caller found nothing listening on the port: with either,
+    // macOS lets a bind to 127.0.0.1 succeed beside a Mac program on the wildcard address and
+    // take its loopback traffic (decision 0023).
     if (fcntl(socket_fd, F_SETFD, FD_CLOEXEC) < 0) {
         return maw_close_preserving_errno(socket_fd, errno);
     }
@@ -575,6 +576,12 @@ int maw_tcp_listen_loopback(int ipv6, uint16_t port, int backlog, int *fd) {
     if (ipv6) {
         int only = 1;
         if (setsockopt(socket_fd, IPPROTO_IPV6, IPV6_V6ONLY, &only, sizeof only) < 0) {
+            return maw_close_preserving_errno(socket_fd, errno);
+        }
+    }
+    if (reuse_address) {
+        int reuse = 1;
+        if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof reuse) < 0) {
             return maw_close_preserving_errno(socket_fd, errno);
         }
     }
@@ -663,6 +670,15 @@ int maw_tcp_connect_loopback(int ipv6, uint16_t port, int timeout_milliseconds, 
     setsockopt(socket_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
     *fd = socket_fd;
     return 0;
+}
+
+int maw_tcp_probe_loopback(int ipv6, uint16_t port, int timeout_milliseconds) {
+    int fd;
+    int error = maw_tcp_connect_loopback(ipv6, port, timeout_milliseconds, &fd);
+    if (error == 0) {
+        close(fd);
+    }
+    return error;
 }
 
 int maw_set_reset_on_close(int fd) {

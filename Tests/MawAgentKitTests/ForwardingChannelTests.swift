@@ -97,7 +97,7 @@ import Testing
     /// A TCP listener of the test process on 127.0.0.1, and its port.
     static func listen() throws -> (OwnedDescriptor, UInt16) {
         var descriptor: Int32 = -1
-        try #require(maw_tcp_listen_loopback(0, 0, 16, &descriptor) == 0)
+        try #require(maw_tcp_listen_loopback(0, 0, 16, 0, &descriptor) == 0)
         var address = sockaddr_in()
         var length = socklen_t(MemoryLayout<sockaddr_in>.size)
         _ = withUnsafeMutablePointer(to: &address) {
@@ -199,7 +199,7 @@ import Testing
     @Test func connectsOverIPv6() throws {
         let guest = Guest()
         var descriptor: Int32 = -1
-        try #require(maw_tcp_listen_loopback(1, 0, 16, &descriptor) == 0)
+        try #require(maw_tcp_listen_loopback(1, 0, 16, 0, &descriptor) == 0)
         let listener = OwnedDescriptor(descriptor)
         var address = sockaddr_in6()
         var length = socklen_t(MemoryLayout<sockaddr_in6>.size)

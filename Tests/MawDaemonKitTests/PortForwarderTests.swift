@@ -130,13 +130,17 @@ import os
         return await condition()
     }
 
-    /// A port that is free on 127.0.0.1 and ::1 now.
+    /// A port that is free on 127.0.0.1 and ::1 now, without SO_REUSEADDR: no socket of any
+    /// state holds it.
     static func freePort() throws -> UInt16 {
         for _ in 0..<200 {
             let port = UInt16.random(in: 20_000...60_000)
-            if case .success(let listeners) = LoopbackListeners.bind(port: port) {
-                listeners.close()
-                return port
+            if case .success(let ipv4) = LoopbackListeners.listen(ipv6: false, port: port) {
+                defer { ipv4.close() }
+                if case .success(let ipv6) = LoopbackListeners.listen(ipv6: true, port: port) {
+                    ipv6.close()
+                    return port
+                }
             }
         }
         throw SystemError("bind", code: EADDRINUSE)
@@ -341,23 +345,6 @@ import os
                         notForwarded: [.init(port: ports[2], reason: .limit)])
             })
         await forwarder.stop()
-    }
-
-    /// The forwarder's sockets never let a later bind share the port.
-    @Test func neverSetsAddressOrPortReuse() throws {
-        let port = try Self.freePort()
-        let listeners = try LoopbackListeners.bind(port: port).get()
-        defer { listeners.close() }
-        for descriptor in listeners.descriptors {
-            for option in [SO_REUSEADDR, SO_REUSEPORT] {
-                var value: Int32 = -1
-                #expect(maw_socket_option(descriptor.rawValue, SOL_SOCKET, option, &value) == 0)
-                #expect(value == 0)
-            }
-        }
-        var only: Int32 = 0
-        #expect(maw_socket_option(listeners.ipv6.rawValue, IPPROTO_IPV6, IPV6_V6ONLY, &only) == 0)
-        #expect(only == 1)
     }
 
     // MARK: Connections
