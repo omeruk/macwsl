@@ -83,6 +83,10 @@
         /// Admits the connections that the agent dials for sessions, on
         /// `AgentProtocol.dialBackPort`.
         public nonisolated let dialBackGate: DialBackGate
+        /// Admits the connections that the agent dials for forwarded connections, on
+        /// `AgentProtocol.forwardingPort`. A gate of its own, so that forwarded connections
+        /// and sessions never take each other's places (docs/decisions/0023).
+        public nonisolated let forwardingGate: DialBackGate
 
         public private(set) var state: State = .stopped
 
@@ -92,6 +96,7 @@
         private var machine: VZVirtualMachine?
         private var delegate: Delegate?
         private var dialBackListener: (VZVirtioSocketListener, DialBackListenerDelegate)?
+        private var forwardingListener: (VZVirtioSocketListener, DialBackListenerDelegate)?
         private var hasStarted = false
         private var stopWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
         private let logger = Logger.virtualization
@@ -120,6 +125,11 @@
                 Logger.virtualization.notice(
                     "\(name, privacy: .public): \(message, privacy: .public)")
                 console.note("dial-back: \(message)")
+            }
+            forwardingGate = DialBackGate { [console, name] message in
+                Logger.virtualization.notice(
+                    "\(name, privacy: .public): forwarding: \(message, privacy: .public)")
+                console.note("forwarding: \(message)")
             }
         }
 
@@ -184,14 +194,21 @@
             }
         }
 
-        /// Accepts the connections that the agent dials for sessions until the machine stops.
+        /// Accepts the connections that the agent dials for sessions and for forwarded
+        /// connections until the machine stops.
         private func listenForDialBacks(on machine: VZVirtualMachine) {
             guard let device = machine.socketDevices.first as? VZVirtioSocketDevice else { return }
-            let delegate = DialBackListenerDelegate(gate: dialBackGate, queue: queue)
-            let listener = VZVirtioSocketListener()
-            listener.delegate = delegate
-            device.setSocketListener(listener, forPort: AgentProtocol.dialBackPort)
-            dialBackListener = (listener, delegate)
+            func listen(_ gate: DialBackGate, on port: UInt32)
+                -> (VZVirtioSocketListener, DialBackListenerDelegate)
+            {
+                let delegate = DialBackListenerDelegate(gate: gate, queue: queue)
+                let listener = VZVirtioSocketListener()
+                listener.delegate = delegate
+                device.setSocketListener(listener, forPort: port)
+                return (listener, delegate)
+            }
+            dialBackListener = listen(dialBackGate, on: AgentProtocol.dialBackPort)
+            forwardingListener = listen(forwardingGate, on: AgentProtocol.forwardingPort)
         }
 
         // MARK: Stopping
@@ -436,10 +453,15 @@
         private func didStop(_ finalState: State) {
             transition(to: finalState)
             dialBackGate.close()
+            forwardingGate.close()
+            let device = machine?.socketDevices.first as? VZVirtioSocketDevice
             if dialBackListener != nil {
-                (machine?.socketDevices.first as? VZVirtioSocketDevice)?
-                    .removeSocketListener(forPort: AgentProtocol.dialBackPort)
+                device?.removeSocketListener(forPort: AgentProtocol.dialBackPort)
                 dialBackListener = nil
+            }
+            if forwardingListener != nil {
+                device?.removeSocketListener(forPort: AgentProtocol.forwardingPort)
+                forwardingListener = nil
             }
             for waiter in stopWaiters.values {
                 waiter.resume(returning: true)
