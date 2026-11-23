@@ -421,9 +421,13 @@ public final class DaemonDistributions: DistributionProvider {
         ]
         let forwarding = running ? figures.forwarding : nil
         let notForwardedHelp = forwarding.flatMap(Self.notForwardedHelp)
+        // Without a forwarded row, the ports that were not forwarded are explained on the ip
+        // row, or on the user row while the address is not known yet.
+        let hasRow = forwarding.map { !$0.forwarded.isEmpty } ?? false
+        if !hasRow, running, figures.ipv4Address == nil {
+            row.details[1].help = notForwardedHelp
+        }
         if running, let address = figures.ipv4Address {
-            // Without a forwarded row, the ports that were not forwarded are explained here.
-            let hasRow = forwarding.map { !$0.forwarded.isEmpty } ?? false
             row.details.append(
                 .init("ip", address, role: .number, help: hasRow ? nil : notForwardedHelp))
         }

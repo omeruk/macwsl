@@ -469,6 +469,12 @@ func figures(
         running.forwarding = PortForwarding(notForwarded: [.init(port: 5000, reason: .inUseOnMac)])
         #expect(detail(running, "forwarded") == nil)
         #expect(detail(running, "ip")?.help?.hasPrefix("Port 5000 is not forwarded") == true)
+        #expect(detail(running, "user")?.help == nil)
+        // Nor an ip row yet: the reasons go to the user row.
+        var early = running
+        early.ipv4Address = nil
+        #expect(detail(early, "ip") == nil)
+        #expect(detail(early, "user")?.help?.hasPrefix("Port 5000 is not forwarded") == true)
         running.forwarding = nil
         #expect(detail(running, "forwarded") == nil)
 
