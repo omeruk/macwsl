@@ -94,7 +94,9 @@ struct Serve: AsyncParsableCommand {
                 kernelDirectory: paths.kernelDirectory, logDirectory: settings.logDirectoryURL,
                 store: store, log: log, canRunVirtualMachines: canRunVirtualMachines,
                 samplesWithInfo: sampleWithInfo,
-                macHome: withoutMacShare ? nil : FileManager.default.homeDirectoryForCurrentUser),
+                macHome: withoutMacShare ? nil : FileManager.default.homeDirectoryForCurrentUser,
+                forwardedPorts: ForwardedPortRegistry(),
+                forwardingChanged: { changesContinuation.yield() }),
             activityChanged: { activityContinuation.yield($0) },
             stateChanged: { changesContinuation.yield() }, operations: operations)
         let sampler = FigureSampler(

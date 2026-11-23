@@ -36,6 +36,12 @@
                 macPath: Self.displayPath(share.url), linuxPath: MacShare.linuxPath)
         }
 
+        /// The distribution's `localhost` forwarding while its machine runs; `nil` before the
+        /// agent answers, after the machine stops, and for the initramfs machine.
+        public var forwarding: PortForwarding? {
+            forwarder.withLock { $0 }?.forwarding
+        }
+
         /// A directory's path without a trailing `/`, such as `/Users/ayse`.
         static func displayPath(_ url: URL) -> String {
             let path = url.standardizedFileURL.path(percentEncoded: false)
@@ -54,14 +60,22 @@
         /// For the measurements only: `sample()` sends `info` instead (`mawd serve
         /// --sample-with-info`).
         private let samplesWithInfo: Bool
+        /// The ports that every distribution forwards; `nil` turns forwarding off, as for the
+        /// initramfs machine and in tests.
+        private let forwardedPorts: ForwardedPortRegistry?
+        private let forwardingChanged: @Sendable () -> Void
+        private let forwarder = OSAllocatedUnfairLock<PortForwarder?>(initialState: nil)
 
         public init(
             machine: MachineID, configuration: VMConfiguration, log: DaemonLog = DaemonLog(),
-            samplesWithInfo: Bool = false
+            samplesWithInfo: Bool = false, forwardedPorts: ForwardedPortRegistry? = nil,
+            forwardingChanged: @escaping @Sendable () -> Void = {}
         ) throws(MawError) {
             self.machine = machine
             self.log = log
             self.samplesWithInfo = samplesWithInfo
+            self.forwardedPorts = forwardedPorts
+            self.forwardingChanged = forwardingChanged
             settings = configuration.clamped(to: .host)
             virtualMachine = try VirtualMachine(name: machine.name, configuration: configuration)
             (unexpectedStops, stopContinuation) = AsyncStream.makeStream(of: String.self)
@@ -74,7 +88,8 @@
         public static func factory(
             kernelDirectory: URL, logDirectory: URL, store: DistributionStore, log: DaemonLog,
             canRunVirtualMachines: Bool, samplesWithInfo: Bool = false,
-            macHome: URL?
+            macHome: URL?, forwardedPorts: ForwardedPortRegistry? = nil,
+            forwardingChanged: @escaping @Sendable () -> Void = {}
         ) -> MachineFactory {
             { (machine: MachineID) throws(MawError) -> any MachineHandle in
                 guard canRunVirtualMachines else {
@@ -96,7 +111,8 @@
                 }
                 return try VirtualMachineHandle(
                     machine: machine, configuration: configuration, log: log,
-                    samplesWithInfo: samplesWithInfo)
+                    samplesWithInfo: samplesWithInfo, forwardedPorts: forwardedPorts,
+                    forwardingChanged: forwardingChanged)
             }
         }
 
@@ -166,6 +182,40 @@
                         : "\(machine): \(MacShare.linuxPath) is not mounted; its console log says why"
                 )
             }
+            await startForwarding()
+        }
+
+        /// Starts the distribution's `localhost` forwarding, off the path of every session:
+        /// the forwarder opens its channel on a task of its own.
+        private func startForwarding() async {
+            guard case .distribution = machine, let forwardedPorts,
+                !stopRequested.withLock({ $0 })
+            else { return }
+            let virtualMachine = self.virtualMachine
+            let started = PortForwarder(
+                machine: machine,
+                environment: PortForwarder.Environment(
+                    openChannel: { () throws(MawError) -> OwnedDescriptor in
+                        try await virtualMachine.openSessionConnection(
+                            connectTimeout: Self.connectTimeout)
+                    }, gate: virtualMachine.forwardingGate),
+                registry: forwardedPorts, log: log, changed: forwardingChanged)
+            forwarder.withLock { $0 = started }
+            await started.start()
+            // A stop that began meanwhile may have found no forwarder to end.
+            if stopRequested.withLock({ $0 }) {
+                await stopForwarding()
+            }
+        }
+
+        /// Ends forwarding before the machine stops, so that its ports are free on the Mac at
+        /// once and every forwarded connection is reset.
+        private func stopForwarding() async {
+            let running = forwarder.withLock { current in
+                defer { current = nil }
+                return current
+            }
+            await running?.stop()
         }
 
         public func openSessionConnection() async throws(MawError) -> OwnedDescriptor {
@@ -185,6 +235,7 @@
 
         public func stop() async -> String {
             stopRequested.withLock { $0 = true }
+            await stopForwarding()
             let description: String
             do {
                 switch try await virtualMachine.stop(timeout: Self.stopTimeout) {
@@ -206,13 +257,14 @@
         /// Stops the machine at once, without asking the guest.
         public func forceStop(reason: String) async {
             stopRequested.withLock { $0 = true }
+            await stopForwarding()
             await virtualMachine.forceStop(reason: reason)
             stopContinuation.finish()
         }
 
         /// Reports a stop that `stop()` did not cause.
         private func watchForUnexpectedStops() {
-            Task { [virtualMachine, stopRequested, stopContinuation] in
+            Task { [self, virtualMachine, stopRequested, stopContinuation] in
                 var reason: String?
                 for await state in virtualMachine.states {
                     switch state {
@@ -225,6 +277,7 @@
                     }
                     break
                 }
+                await stopForwarding()
                 if let reason, !stopRequested.withLock({ $0 }) {
                     stopContinuation.yield(reason)
                 }

@@ -360,6 +360,7 @@
                 entry.bootMilliseconds = machine.handle.bootMilliseconds
                 entry.memoryLimitBytes = machine.handle.memoryBytes
                 entry.macShare = machine.handle.macShare
+                entry.forwarding = machine.handle.forwarding
                 if let run = runs[name], run.id == machine.run {
                     entry.memoryUsedBytes = run.figures.memoryUsedBytes
                     entry.ipv4Address = run.figures.ipv4Address

@@ -21,6 +21,8 @@
         /// The Mac's home directory and where the guest mounted it, if the guest agent reported
         /// it mounted when the machine started; `nil` before that, and without the share.
         var macShare: SharedDirectory? { get }
+        /// The distribution's `localhost` forwarding while it runs; `nil` otherwise.
+        var forwarding: PortForwarding? { get }
 
         /// Boots the machine and returns once its guest agent answers.
         func start() async throws(MawError)
@@ -40,6 +42,10 @@
         /// Yields once, with the reason, if the machine stops without `stop()`: the guest
         /// powered off or crashed, or Virtualization.framework reported an error.
         var unexpectedStops: AsyncStream<String> { get }
+    }
+
+    extension MachineHandle {
+        public var forwarding: PortForwarding? { nil }
     }
 
     /// Creates the handle for a machine. Throws if the machine cannot exist, for example
