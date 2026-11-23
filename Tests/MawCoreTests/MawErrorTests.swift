@@ -6,7 +6,8 @@ import Testing
     static let errors: [MawError] = [
         .notImplemented(feature: "--install", phase: "05"),
         .distributionNotInstalled(try! DistroName("Ubuntu")),
-        .unsupportedDirectory("projects"),
+        .directoryNotShared("/Volumes/USB"),
+        .currentDirectoryUnreadable(reason: "No such file or directory"),
         .daemonNotInstalled(label: "dev.maw.mawd"),
         .daemonUnreachable(reason: "launchd could not start it"),
         .daemonConnectionLost(during: "the session"),
@@ -57,12 +58,13 @@ import Testing
         #expect(error.recoverySuggestion == "maw --list shows the installed distributions.")
     }
 
-    @Test func explainsThatPathTranslationIsMissing() {
-        let error = MawError.unsupportedDirectory("projects")
+    @Test func explainsADirectoryThatIsNotShared() {
+        let error = MawError.directoryNotShared("/Volumes/USB")
         #expect(
             error.errorDescription
-                == "--cd needs an absolute Linux path, such as /root, but 'projects' is not one.")
-        #expect(error.recoverySuggestion?.contains("phase 07") == true)
+                == "/Volumes/USB is not shared with Linux: only your home directory is, at /mnt/mac."
+        )
+        #expect(error.recoverySuggestion?.contains("--cd '~'") == true)
     }
 
     @Test func suggestsInstallingTheDaemon() {

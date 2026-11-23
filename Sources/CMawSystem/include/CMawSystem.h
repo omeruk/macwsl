@@ -42,6 +42,12 @@ typedef struct maw_spawn_options {
     gid_t gid;
     const gid_t *groups;
     size_t group_count;
+    /// When `working_directory` cannot be entered: NULL to fail, or a directory to enter
+    /// instead, which `*fallback_error` then reports.
+    const char *fallback_directory;
+    /// A descriptor that the child gets as descriptor 3, not close-on-exec, or -1 for none.
+    /// Every other descriptor above 2 is closed on exec.
+    int inherited_fd;
 } maw_spawn_options;
 
 /// The step at which a failed `maw_spawn` stopped.
@@ -60,8 +66,11 @@ typedef enum maw_spawn_stage {
 /// is changed, and `path` is executed.
 ///
 /// Returns once the child has executed `path`, or has failed to. On failure, the child has
-/// already been reaped, and `*stage` names the step that failed.
-int maw_spawn(const maw_spawn_options *options, pid_t *pid, maw_spawn_stage *stage);
+/// already been reaped, and `*stage` names the step that failed. `*fallback_error` is 0, or
+/// the errno value with which `working_directory` could not be entered when the child entered
+/// `fallback_directory` instead.
+int maw_spawn(const maw_spawn_options *options, pid_t *pid, maw_spawn_stage *stage,
+              int *fallback_error);
 
 /// Opens a pseudo-terminal pair with the given window size. Both descriptors are close-on-exec,
 /// and neither becomes the caller's controlling terminal.

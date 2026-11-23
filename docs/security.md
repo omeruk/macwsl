@@ -165,10 +165,19 @@ Virtualization.framework's virtiofs device, and the initramfs mounts it at `/mnt
   characters in a name before the console shows it. It examines `/mnt` and `/mnt/mac` without
   following links, refuses a link, another kind of file, or a mount point that is not empty, and
   mounts on the directory that it opened, so that no link in the path is followed.
-- **Where the guest's input reaches the Mac.** The guest sends one Boolean, `macShareMounted` in
-  its `info` reply, which only decides whether the distributions screen shows its `mounts` row.
-  The Mac path in that row is the daemon's own; nothing that the guest sends is used as a Mac
-  path.
+- **Where the guest's input reaches the Mac.** Nothing that the guest sends is used as a Mac
+  path ([decision record 0022](decisions/0022-working-directory-and-logind.md)).
+  - The guest sends one Boolean, `macShareMounted` in its `info` reply, which only decides
+    whether the distributions screen shows its `mounts` row. The Mac path in that row is the
+    daemon's own.
+  - The working directory is computed on the Mac: `maw` translates its own `getcwd` and its
+    `--cd` argument into a Linux path and sends that to the guest, never the other way round.
+  - When the guest falls back from that directory, it sends a code from a fixed set in
+    `started` (`workingDirectoryFallback`, protocol version 7), and `maw` words the line from
+    the code and the Linux path that it computed itself; no text from the guest is shown.
+  - `mawpath`'s Mac home directory is the daemon's own, handed to the guest on the kernel
+    command line (`maw.home`), percent-encoded. `mawpath` runs in the guest and prints to the
+    guest; its results never return to the Mac.
 - **Files that the guest can now write, and the app reads.** The terminal app's
   `settings.json` names the new-tab profile, such as `distribution:<name>`. A pane's notice
   never shows a name that is not a valid distribution name, because the notice goes to the
@@ -211,14 +220,28 @@ as root without a password. An integration test now checks that a guest process 
 
 - The agent runs as root and starts any program as any user it is asked to. It is the
   boundary's guest side, not a boundary itself.
+- A login shell in a working directory starts through `runuser -l` with the agent as its shell
+  helper, which runs as the user. The agent passes the helper exactly one descriptor, a pipe
+  for its report, as descriptor 3; the helper closes it before the user's shell starts, so no
+  descriptor of the agent's reaches the user's programs
+  (`LoginShellHelperTests.reportsAndClosesItsDescriptorBeforeTheShellStarts`,
+  `SpawnDirectoryTests.passesOnlyTheInheritedDescriptor`,
+  `PathIntegrationTests.registersALoginShellInADirectoryWithLogind`). The helper's subcommand
+  can be run by any guest user, and then only changes its own directory and executes the shell
+  that it is given, as that user. The agent waits at most 5 seconds for the report.
+- At its start in a distribution, the agent, as root, links `/usr/local/bin/mawpath` to its
+  binary. It walks `/usr`, `/usr/local`, and `/usr/local/bin` without following links and makes
+  the link in the directory that it opened, so a link planted in that path cannot make it
+  create a file elsewhere, such as under `/mnt/mac`. It never replaces an existing file.
 - The host treats the guest as untrusted input: frames are length-checked before they are
   read, payloads are limited to 1 MiB, buffers are bounded in both directions, and a malformed
   frame closes only its connection. The fuzz test sends 10,000 random frames.
 - The foreground program's name (protocol version 4), which the terminal app shows when it asks
   before closing a Linux tab, is guest input as well. The host keeps at most 64 bytes of whole
-  Unicode scalars and replaces control, format, and separator characters with U+FFFD
-  (`ForegroundAnswer.displayableName`), so that a name cannot move the cursor, change colors,
-  or reorder the text of a dialog.
+  Unicode scalars and replaces control, format, separator, surrogate, private-use, and
+  unassigned scalars with U+FFFD (`ForegroundAnswer.displayableName`, through
+  `DisplayableText`), so that a name cannot move the cursor, change colors, reorder the text of
+  a dialog, or show as an icon of a font's own.
 - The kernel release in the agent's `info` reply is guest input too. The daemon keeps it for the
   distribution figures only after the same treatment (`ForegroundAnswer.displayableName`, in
   `VirtualMachineHandle.start()`), so that a client shows it as text.

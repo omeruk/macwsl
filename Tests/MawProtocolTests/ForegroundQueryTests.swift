@@ -124,6 +124,11 @@ private let peerDeadline = Duration.seconds(60)
         #expect(ForegroundAnswer.displayableName("çay ocağı") == "çay ocağı")
         #expect(ForegroundAnswer.displayableName("") == "")
         #expect(ForegroundAnswer.displayableName("a\u{2028}b\u{0085}c") == "a\u{FFFD}b\u{FFFD}c")
+        // Private-use scalars, which fonts draw as icons of their own, and unassigned ones.
+        #expect(ForegroundAnswer.displayableName("a\u{E0A0}b\u{0378}c") == "a\u{FFFD}b\u{FFFD}c")
+        #expect(
+            DisplayableText.make("a\u{1B}[2J\u{E000}", replacement: "?", byteLimit: 64) == "a?[2J?")
+        #expect(DisplayableText.make("çççç", replacement: "?", byteLimit: 7) == "ççç")
     }
 
     /// A query that the agent does not answer in time gets `noAnswer`, and its late reply does

@@ -13,7 +13,7 @@ pass on a real Apple Silicon Mac.
 | 05 | Distro install                 | `maw --install Ubuntu-24.04`: download, verify, provision, first user    | Done    |
 | 06a | Distro management             | list, set-default, terminate                                             | Done    |
 | 06b | Distro removal and transfer   | unregister, export, import                                               | Done    |
-| 07 | File sharing and paths         | `/mnt/mac` via virtiofs, cwd translation, `mawpath`                      | Planned |
+| 07 | File sharing and paths         | `/mnt/mac` via virtiofs, cwd translation, `mawpath`                      | Done    |
 | 08 | Networking                     | Port forwarding and `localhost` access from macOS, DNS under VPNs (NAT and DHCP arrived in 05) | Planned |
 | 09 | Interop                        | Run macOS commands from Linux, clipboard, `open`                         | Planned |
 | 10 | Rosetta                        | Run x86_64 Linux binaries through Rosetta                                 | Planned |
@@ -31,4 +31,6 @@ per installed distribution and the distributions screen's list and actions. Phas
 delivered in two pull requests: the first (#29) adds the figures in the daemon, and the
 second (#30) shows them on the distributions screen. Phase 06b is delivered in two pull
 requests: the first (#31) adds `maw --unregister` and `maw --export`, and the second (#32) adds
-`maw --import`.
+`maw --import`. Phase 07 is delivered in two pull requests: the first (#33) shares the home
+directory at `/mnt/mac`, and the second (#35) translates the working directory, registers login
+shells in a directory with `systemd-logind`, and adds `mawpath`.

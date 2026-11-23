@@ -35,6 +35,18 @@ struct Maw: AsyncParsableCommand {
             Anything after the options is a command to run there: "maw ls -la" is the same \
             as "maw -- ls -la". Use -- when the command itself starts with a dash.
 
+            maw <command> and maw -- <command> join their arguments with spaces into one \
+            command line for your Linux shell, as wsl.exe does, so the quoting of your Mac \
+            shell is lost: maw -- sh -c 'echo a; echo b' runs sh -c echo a; echo b. To keep \
+            the arguments intact, run the command directly with -e, as in \
+            maw -e sh -c 'echo a; echo b', or quote the whole command line once, as in \
+            maw -- 'echo a; echo b'.
+
+            Sessions start in the Linux path of your current directory: your home \
+            directory is /mnt/mac in Linux, and ~/Projects is /mnt/mac/Projects. Outside \
+            your home directory, such as in /tmp, they start in your Linux home directory, \
+            and maw says so on standard error.
+
             As in wsl.exe, -v means --verbose after --list, and --version anywhere else.
 
             --unregister permanently deletes the distribution and its disk, with every file in \
@@ -270,8 +282,11 @@ struct RunningOptions: ParsableArguments {
         help: ArgumentHelp(
             "Start in <directory>.",
             discussion: """
-                A Linux path, a macOS path (translated to its /mnt/mac location), or ~ for the \
-                Linux home directory. Defaults to the current macOS directory.
+                A Linux path, a macOS path under your home directory (translated to its \
+                /mnt/mac location), a path relative to the current macOS directory, or '~' \
+                for the Linux home directory. Defaults to the current macOS directory. Quote \
+                the ~: your Mac shell turns an unquoted ~ into your Mac home directory, so \
+                --cd ~ starts in /mnt/mac, and --cd '~' in the Linux home directory.
                 """,
             valueName: "directory"))
     var directory: String?

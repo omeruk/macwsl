@@ -212,6 +212,10 @@ struct spawn_failure {
     int error;
 };
 
+// The stage of a record that the child writes when it entered `fallback_directory`, after
+// which it goes on. It is not a `maw_spawn_stage`, because it is not a failure.
+#define SPAWN_RECORD_FELL_BACK 100
+
 // Runs in the child between fork and execve: async-signal-safe calls only.
 __attribute__((noreturn)) static void spawn_child(const maw_spawn_options *options,
                                                   int report) {
@@ -264,6 +268,24 @@ __attribute__((noreturn)) static void spawn_child(const maw_spawn_options *optio
         }
     }
 #endif
+    // The one descriptor that survives execve, as descriptor 3. The report pipe moves out of
+    // its way first; dup2 clears close-on-exec on the copy.
+    if (options->inherited_fd >= 0) {
+        if (report == 3) {
+            int moved = fcntl(report, F_DUPFD_CLOEXEC, 4);
+            if (moved < 0) {
+                goto fail;
+            }
+            report = moved;
+        }
+        if (options->inherited_fd == 3) {
+            if (fcntl(3, F_SETFD, 0) < 0) {
+                goto fail;
+            }
+        } else if (dup2(options->inherited_fd, 3) < 0) {
+            goto fail;
+        }
+    }
 
     // Groups first, then the group, then the user: once the user ID is not root, the other
     // two can no longer be changed. The working directory is entered as the new user, so
@@ -289,7 +311,15 @@ __attribute__((noreturn)) static void spawn_child(const maw_spawn_options *optio
 
     failure.stage = MAW_SPAWN_STAGE_WORKING_DIRECTORY;
     if (options->working_directory != NULL && chdir(options->working_directory) < 0) {
-        goto fail;
+        if (options->fallback_directory == NULL) {
+            goto fail;
+        }
+        struct spawn_failure fell_back = {SPAWN_RECORD_FELL_BACK, errno};
+        if (chdir(options->fallback_directory) < 0) {
+            goto fail;
+        }
+        while (write(report, &fell_back, sizeof fell_back) < 0 && errno == EINTR) {
+        }
     }
 
     sigset_t empty;
@@ -306,8 +336,10 @@ fail:
     _exit(127);
 }
 
-int maw_spawn(const maw_spawn_options *options, pid_t *pid, maw_spawn_stage *stage) {
+int maw_spawn(const maw_spawn_options *options, pid_t *pid, maw_spawn_stage *stage,
+              int *fallback_error) {
     *stage = MAW_SPAWN_STAGE_FORK;
+    *fallback_error = 0;
     int report[2];
     int error = maw_pipe(report);
     if (error != 0) {
@@ -332,12 +364,20 @@ int maw_spawn(const maw_spawn_options *options, pid_t *pid, maw_spawn_stage *sta
         return fork_error;
     }
 
-    // The report pipe closes on a successful execve, so reading it returns end-of-file.
+    // The report pipe closes on a successful execve, so reading it returns end-of-file. A
+    // record of the fallback directory may come first.
     struct spawn_failure failure;
     ssize_t count;
-    do {
-        count = read(report[0], &failure, sizeof failure);
-    } while (count < 0 && errno == EINTR);
+    for (;;) {
+        do {
+            count = read(report[0], &failure, sizeof failure);
+        } while (count < 0 && errno == EINTR);
+        if (count == (ssize_t)sizeof failure && failure.stage == SPAWN_RECORD_FELL_BACK) {
+            *fallback_error = failure.error != 0 ? failure.error : EIO;
+            continue;
+        }
+        break;
+    }
     close(report[0]);
     if (count == (ssize_t)sizeof failure) {
         while (waitpid(child, NULL, 0) < 0 && errno == EINTR) {

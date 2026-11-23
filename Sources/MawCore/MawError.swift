@@ -27,8 +27,13 @@ public enum MawError: Error, Equatable, Sendable, Codable {
 
     /// `-d`, `--set-default`, or `--terminate` names a distribution that is not installed.
     case distributionNotInstalled(DistroName)
-    /// `--cd` names a directory that maw cannot use yet: a relative or macOS path.
-    case unsupportedDirectory(String)
+    /// `--cd` names a Mac directory outside the home directory, which Linux cannot see: an
+    /// absolute macOS path (`SessionPlan.macOSDirectories`), or a relative path resolved
+    /// against the Mac's current directory.
+    case directoryNotShared(String)
+    /// `--cd` names a relative path, and the Mac's current directory, against which it is
+    /// resolved, cannot be read.
+    case currentDirectoryUnreadable(reason: String)
     /// A session needs a distribution, and none is installed.
     case noDistributionInstalled
     /// `-u` names a user that does not exist in the distribution.
@@ -258,8 +263,11 @@ extension MawError: LocalizedError {
             "'\(text)' is not a valid size: \(reason)."
         case .distributionNotInstalled(let name):
             "No distribution named '\(name)' is installed."
-        case .unsupportedDirectory(let path):
-            "--cd needs an absolute Linux path, such as /root, but '\(path)' is not one."
+        case .directoryNotShared(let path):
+            "\(path) is not shared with Linux: only your home directory is, at /mnt/mac."
+        case .currentDirectoryUnreadable(let reason):
+            "The current directory cannot be read (\(reason)), so a relative --cd path has "
+                + "nothing to start from."
         case .noDistributionInstalled:
             "No Linux distribution is installed."
         case .userNotFound(let user, let distribution):
@@ -475,9 +483,11 @@ extension MawError: LocalizedError {
             } else {
                 "maw --list shows the installed distributions."
             }
-        case .unsupportedDirectory:
-            "Translating relative and macOS paths arrives in phase 07. Until then, give an "
-                + "absolute path inside Linux."
+        case .directoryNotShared:
+            "Give a directory under your home directory, or a Linux path, such as --cd /tmp "
+                + "or --cd '~'."
+        case .currentDirectoryUnreadable:
+            "Change to an existing directory, or give an absolute path."
         case .noDistributionInstalled:
             "Install Ubuntu with maw --install."
         case .userNotFound:

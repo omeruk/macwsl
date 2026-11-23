@@ -23,6 +23,9 @@ import MawCore
 public final class GuestProcess: @unchecked Sendable {
     /// The process ID in the guest.
     public let pid: Int32
+    /// Why the process started in the home directory instead of the requested working
+    /// directory, or `nil` if it did not (`ExecRequest.fallsBackToHome`).
+    public let workingDirectoryFallback: WorkingDirectoryFallback?
 
     /// Standard input that `write` may queue before it blocks.
     static let inputLimit = 256 << 10
@@ -69,9 +72,13 @@ public final class GuestProcess: @unchecked Sendable {
     private let wakeWriter: OwnedDescriptor
 
     init(
-        connection: FrameConnection, pid: Int32, output: @escaping GuestAgentClient.OutputHandler
+        connection: FrameConnection, pid: Int32,
+        workingDirectoryFallback: WorkingDirectoryFallback? = nil,
+        output: @escaping GuestAgentClient.OutputHandler,
+        started: @escaping @Sendable (WorkingDirectoryFallback?) -> Void = { _ in }
     ) throws(MawError) {
         self.pid = pid
+        self.workingDirectoryFallback = workingDirectoryFallback
         var fds: [Int32] = [-1, -1]
         let error = maw_pipe(&fds)
         guard error == 0 else {
@@ -86,7 +93,14 @@ public final class GuestProcess: @unchecked Sendable {
             connection.descriptor.close()
             throw .guestAgentFailed(reason: "could not start the output thread")
         }
-        guard startDetachedThread({ [self] in run(connection) }) else {
+        // `started` runs on the I/O thread before it reads a frame: after both threads have
+        // started, so never for a process that fails to start, and before the first output.
+        guard
+            startDetachedThread({ [self] in
+                started(workingDirectoryFallback)
+                run(connection)
+            })
+        else {
             connection.descriptor.close()
             end(.failure(.guestAgentFailed(reason: "could not start the I/O thread")))
             throw .guestAgentFailed(reason: "could not start the I/O thread")

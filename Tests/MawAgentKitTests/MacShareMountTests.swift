@@ -124,6 +124,20 @@ import Testing
         #expect(root.owner() == .root(because: "/etc/maw.conf is larger than 4194304 bytes"))
     }
 
+    /// `(uid_t)-1` parses as a `UInt32`, but the kernel refuses it as an owner option, which
+    /// would leave the share unmounted; root's ownership is the better fallback.
+    @Test func choosesRootForAUIDOrGIDThatTheKernelRefuses() throws {
+        let root = try RootFixture()
+        try root.write("etc/maw.conf", "[user]\ndefault = ayse\n")
+        let reason = "the default user ayse has the uid or gid 4294967295, which the kernel refuses"
+        try root.write("etc/passwd", "ayse:x:4294967295:1002::/home/ayse:/bin/bash\n")
+        #expect(root.owner() == .root(because: reason))
+        try root.write("etc/passwd", "ayse:x:1001:4294967295::/home/ayse:/bin/bash\n")
+        #expect(root.owner() == .root(because: reason))
+        try root.write("etc/passwd", "ayse:x:4294967294:4294967294::/home/ayse:/bin/bash\n")
+        #expect(root.owner().mountOptions == "uid=4294967294,gid=4294967294")
+    }
+
     @Test func showsANameFromTheDistributionWithoutControlCharacters() throws {
         let root = try RootFixture()
         try root.write("etc/maw.conf", "[user]\ndefault = a\u{1B}[2Jb\n")
@@ -377,5 +391,63 @@ final class RootFixture {
     /// The mount with a fake that succeeds.
     func mount() -> (mounted: Bool, lines: [String]) {
         MacShareMount.run(root: directory, tag: MacShare.tag) { _, _, _ in 0 }
+    }
+}
+
+@Suite struct MountPointReadTests {
+    /// `readdir` returns `NULL` at the end and on an error alike; an error must not make a
+    /// mount point that holds files look empty.
+    @Test func refusesAMountPointWhoseListingFails() throws {
+        let directory = try #require(
+            FileManager.default.temporaryDirectory.appending(
+                path: "maw-mount-point-\(UUID().uuidString)", directoryHint: .isDirectory
+            ) as URL?)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let descriptor = open(directory.path(percentEncoded: false), O_RDONLY | O_DIRECTORY)
+        try #require(descriptor >= 0)
+        defer { close(descriptor) }
+
+        #expect(MountPoint.isEmpty(descriptor) == .success(true))
+        let failing = MountPoint.isEmpty(descriptor) { _ in
+            errno = EIO
+            return nil
+        }
+        #expect(failing == .failure(.cannotRead(error: EIO)))
+        if case .failure(let refusal) = failing {
+            #expect(refusal.reason == "/mnt/mac cannot be read (\(String(cString: strerror(EIO))))")
+            #expect(refusal.errorDescription == refusal.reason)
+            #expect(refusal.recoverySuggestion != nil)
+        }
+    }
+
+    @Test func describesEachRefusal() {
+        #expect(MountPoint.Refusal.symbolicLink(path: "/mnt").reason == "/mnt is a symbolic link")
+        #expect(
+            MountPoint.Refusal.notADirectory(path: "/mnt/mac").reason
+                == "/mnt/mac is not a directory")
+        #expect(MountPoint.Refusal.notEmpty.reason == "/mnt/mac is not empty")
+        #expect(InRootFile.Failure.missing.errorDescription == "does not exist")
+    }
+
+    @Test func readsADescriptorToItsEndWithinTheLimit() throws {
+        var fds: [Int32] = [-1, -1]
+        try #require(pipe(&fds) == 0)
+        defer { close(fds[0]) }
+        let bytes = [UInt8]("abcdef".utf8)
+        #expect(write(fds[1], bytes, bytes.count) == bytes.count)
+        close(fds[1])
+        #expect(readAll(fds[0], limit: 6) == .bytes(bytes))
+        #expect(readAll(-1, limit: 6) == .failed(EBADF))
+    }
+
+    @Test func stopsReadingPastTheLimit() throws {
+        var fds: [Int32] = [-1, -1]
+        try #require(pipe(&fds) == 0)
+        defer { close(fds[0]) }
+        let bytes = [UInt8]("abcdef".utf8)
+        #expect(write(fds[1], bytes, bytes.count) == bytes.count)
+        close(fds[1])
+        #expect(readAll(fds[0], limit: 5) == .tooLarge)
     }
 }

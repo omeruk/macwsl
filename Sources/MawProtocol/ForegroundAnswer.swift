@@ -24,24 +24,10 @@ public enum ForegroundAnswer: Hashable, Sendable {
             processGroup: program.processGroup, name: program.name.map(Self.displayableName))
     }
 
-    /// `name`, which comes from the guest, made safe to show: control, format, and separator
-    /// characters, which could move the cursor, change colors, or reorder text, become U+FFFD,
-    /// and at most `nameLimit` bytes of whole Unicode scalars are kept.
+    /// `name`, which comes from the guest, made safe to show (`DisplayableText`): characters
+    /// that could move the cursor, change colors, or reorder text become U+FFFD, and at most
+    /// `nameLimit` bytes of whole Unicode scalars are kept.
     public static func displayableName(_ name: String) -> String {
-        var result = String.UnicodeScalarView()
-        var size = 0
-        for scalar in name.unicodeScalars {
-            let shown: Unicode.Scalar
-            switch scalar.properties.generalCategory {
-            case .control, .format, .lineSeparator, .paragraphSeparator:
-                shown = "\u{FFFD}"
-            default:
-                shown = scalar
-            }
-            size += shown.utf8.count
-            guard size <= nameLimit else { break }
-            result.append(shown)
-        }
-        return String(result)
+        DisplayableText.make(name, replacement: "\u{FFFD}", byteLimit: nameLimit)
     }
 }

@@ -175,7 +175,7 @@ public final class AgentServer: @unchecked Sendable {
                             protocolVersion: ProtocolVersion.current,
                             kernelRelease: SystemInfo.kernelRelease(),
                             uptimeMilliseconds: SystemInfo.uptimeMilliseconds(),
-                            macShareMounted: macShareMounted()))))
+                            macShareMounted: macShareMounted() == true))))
         case .sample:
             switch GuestFigures(processDirectory: configuration.processDirectory).sample() {
             case .success(let sample):
@@ -193,23 +193,19 @@ public final class AgentServer: @unchecked Sendable {
                 connection.enqueue(.control(.error(AgentError(.shutdownFailed, "\(error)"))))
             }
         case .exec(let execRequest):
-            let child: ChildProcess
-            let shell: ShellIdentity
+            let started: StartedSession
             do {
-                let plan = try SessionPlanner.plan(execRequest, system: configuration.system)
-                shell = plan.shell
-                if plan.waitsForSystemBus {
-                    waitForSystemBus()
-                }
-                child = try ChildProcess.spawn(plan, terminal: execRequest.terminal)
+                started = try start(execRequest)
             } catch {
                 connection.enqueue(
                     .control(.error(AgentError(error.code, error.message, user: error.user))))
                 break
             }
             try ExecSession(
-                connection: connection, child: child, logger: logger, shell: shell,
-                probe: ForegroundProbe(processDirectory: configuration.processDirectory)
+                connection: connection, child: started.child, logger: logger,
+                shell: started.shell,
+                probe: ForegroundProbe(processDirectory: configuration.processDirectory),
+                workingDirectoryFallback: started.fallback
             ).run()
             return nil
         case .dialBack(let nonce):
@@ -233,6 +229,87 @@ public final class AgentServer: @unchecked Sendable {
         return nil
     }
 
+    private struct StartedSession {
+        var child: ChildProcess
+        var shell: ShellIdentity
+        var fallback: WorkingDirectoryFallback?
+    }
+
+    /// Plans and starts an exec request's process. A login shell in a working directory under
+    /// systemd starts through `runuser -l` with the agent as its shell helper, whose report
+    /// comes before `started` (`LoginShellHelper`).
+    /// A directory under `/mnt/mac` that may fall back does so before the spawn when the share
+    /// is not mounted (`SessionPlanner.fallingBackEarly`).
+    private func start(_ request: ExecRequest) throws(SpawnFailure) -> StartedSession {
+        let (request, knownFallback) = SessionPlanner.fallingBackEarly(
+            request, shareMounted: { macShareMounted() })
+        var plan = try SessionPlanner.plan(request, system: configuration.system)
+        if plan.waitsForSystemBus {
+            waitForSystemBus()
+        }
+        guard let directory = plan.helperDirectory else {
+            let child = try ChildProcess.spawn(plan, terminal: request.terminal)
+            return StartedSession(
+                child: child, shell: plan.shell,
+                fallback: child.workingDirectoryError == 0
+                    ? knownFallback
+                    : fallback(for: child.workingDirectoryError, directory: plan.workingDirectory))
+        }
+
+        var fds: [Int32] = [-1, -1]
+        let error = maw_pipe(&fds)
+        guard error == 0 else {
+            throw SpawnFailure(
+                code: .spawnFailed, message: "pipe: \(SystemError.message(for: error))")
+        }
+        let reader = OwnedDescriptor(fds[0])
+        defer { reader.close() }
+        let writer = OwnedDescriptor(fds[1])
+        plan.inheritedDescriptor = writer.rawValue
+        let child: ChildProcess
+        do {
+            child = try ChildProcess.spawn(plan, terminal: request.terminal)
+        } catch {
+            writer.close()
+            throw error
+        }
+        // Only runuser and the helper hold the writing end now: it reaches end-of-file when
+        // both have closed it, so a runuser that ends before the helper reports is noticed.
+        writer.close()
+        let (report, timedOut) = LoginShellHelper.awaitReport(
+            on: reader.rawValue, until: .now + LoginShellHelper.reportTimeout)
+        switch report {
+        case .entered:
+            return StartedSession(child: child, shell: plan.shell, fallback: nil)
+        case .fellBack(let error):
+            return StartedSession(
+                child: child, shell: plan.shell,
+                fallback: fallback(for: error, directory: directory))
+        case .failed(let error):
+            child.waitBriefly()
+            throw SpawnFailure(
+                code: .spawnFailed,
+                message: "cannot change to the working directory \(directory): "
+                    + SystemError.message(for: error))
+        case nil:
+            child.terminate()
+            let seconds = LoginShellHelper.reportTimeout.components.seconds
+            throw SpawnFailure(
+                code: .spawnFailed,
+                message: timedOut
+                    ? "the login shell did not start within \(seconds) seconds:"
+                        + " runuser -l did not run the shell helper"
+                    : "the login shell did not start: runuser -l ended before the shell helper"
+                        + " entered the working directory")
+        }
+    }
+
+    /// Why a session fell back from `directory`, from the errno value of the failed change.
+    private func fallback(for error: Int32, directory: String) -> WorkingDirectoryFallback {
+        WorkingDirectoryFallback(
+            error: error, directory: directory, shareMounted: { macShareMounted() == true })
+    }
+
     /// Opens the connection that a `dialBack` request asks for. On failure, queues a
     /// `dialBackFailed` error on `connection` and returns `nil`.
     private func dial(replyingOn connection: FrameConnection) -> FrameConnection? {
@@ -253,20 +330,20 @@ public final class AgentServer: @unchecked Sendable {
         return nil
     }
 
+    /// Whether the Mac's home directory is mounted at `/mnt/mac`, from the mount table, which
+    /// looks nothing up in the share (`MountTable`), or `nil` when the table cannot be read.
+    private func macShareMounted() -> Bool? {
+        guard
+            let bytes = readBytes(
+                "\(configuration.processDirectory)/self/mountinfo", limit: 1 << 20)
+        else { return nil }
+        return MountTable.showsMacShare(mountinfo: String(decoding: bytes, as: UTF8.self))
+    }
+
     /// Waits until the system bus's socket exists, for at most `systemBusTimeout`. Right after
     /// boot, a login shell can be requested before `dbus.socket` listens; `pam_systemd` would
     /// then skip the session's registration. Once the socket exists, `pam_systemd` waits for
     /// `systemd-logind` itself.
-    /// Whether the Mac's home directory is mounted at `/mnt/mac`, from the mount table, which
-    /// looks nothing up in the share (`MountTable`).
-    private func macShareMounted() -> Bool {
-        guard
-            let bytes = readBytes(
-                "\(configuration.processDirectory)/self/mountinfo", limit: 1 << 20)
-        else { return false }
-        return MountTable.showsMacShare(mountinfo: String(decoding: bytes, as: UTF8.self))
-    }
-
     private func waitForSystemBus() {
         let deadline = ContinuousClock.now + configuration.systemBusTimeout
         while !configuration.system.exists(SessionPlanner.systemBusSocket) {

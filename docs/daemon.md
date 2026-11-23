@@ -64,8 +64,11 @@ stopped ──openSession──▶ starting ──agent answers info──▶ ru
   `distro.json`, and a virtiofs device that shares the owner's home directory, read-write,
   under the tag `maw-mac`. Its kernel command line carries `maw.root=/dev/vda`,
   `maw.clock=<seconds>`, and `maw.share=maw-mac`, with which the initramfs mounts the share at
-  `/mnt/mac` ([decision record 0021](decisions/0021-mac-share.md)). The provisioning machine of
-  an installation, an export, or an import never gets the share.
+  `/mnt/mac` ([decision record 0021](decisions/0021-mac-share.md)), and
+  `maw.home=<home directory>`, percent-encoded, from which `mawpath` translates paths; a home
+  directory longer than 1,024 bytes once encoded is left out
+  ([decision record 0022](decisions/0022-working-directory-and-logind.md)). The provisioning
+  machine of an installation, an export, or an import never gets the share or `maw.home`.
 - **The share at the start.** The agent's `info` reply, which the daemon awaits at every start,
   reports whether `/mnt/mac` is mounted. The daemon keeps that for the machine's run and logs
   `<machine>: /mnt/mac is mounted`, or `<machine>: /mnt/mac is not mounted; its console log says
@@ -206,7 +209,8 @@ its own, so that it never shares a file with a distribution's console log: a dis
   neither into the LaunchAgent, so an installed daemon always samples every 1.5 seconds with
   `sample`.
 - **`--without-mac-share`** is a hidden option of `mawd serve` for measurements only:
-  distribution machines get neither the share of the home directory nor `maw.share`, so that
+  distribution machines get neither the share of the home directory nor `maw.share` and
+  `maw.home`, so that
   `scripts/measure-mac-share.sh` can compare a cold start with and without them. `mawd install`
   neither accepts nor writes it.
 - **Idle exit.** It exits after 5 minutes with no connected client and no running machine

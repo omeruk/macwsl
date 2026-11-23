@@ -76,15 +76,31 @@ func readBytes(_ path: String, limit: Int) -> [UInt8]? {
     let descriptor = open(path, O_RDONLY | O_CLOEXEC)
     guard descriptor >= 0 else { return nil }
     defer { close(descriptor) }
+    guard case .bytes(let bytes) = readAll(descriptor, limit: limit) else { return nil }
+    return bytes
+}
+
+/// What `readAll` read.
+enum ReadOutcome: Equatable {
+    case bytes([UInt8])
+    /// More than the limit could be read.
+    case tooLarge
+    /// `read` failed with this errno value.
+    case failed(Int32)
+}
+
+/// Reads `descriptor` to its end, retrying after `EINTR`, and stops once more than `limit`
+/// bytes have arrived.
+func readAll(_ descriptor: Int32, limit: Int) -> ReadOutcome {
     var bytes: [UInt8] = []
     var buffer = [UInt8](repeating: 0, count: 64 << 10)
     while true {
         let count = read(descriptor, &buffer, buffer.count)
         if count < 0 && errno == EINTR { continue }
-        guard count >= 0 else { return nil }
-        if count == 0 { return bytes }
+        guard count >= 0 else { return .failed(errno) }
+        if count == 0 { return .bytes(bytes) }
         bytes.append(contentsOf: buffer[..<count])
-        if bytes.count > limit { return nil }
+        if bytes.count > limit { return .tooLarge }
     }
 }
 

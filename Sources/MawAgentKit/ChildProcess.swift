@@ -38,6 +38,9 @@ final class ChildProcess {
     /// Becomes readable when the process exits, or `nil` if none could be opened.
     let exitWatch: OwnedDescriptor?
     private(set) var exitStatus: ExitStatus?
+    /// The errno value with which the plan's working directory could not be entered when the
+    /// process started in its `fallbackDirectory` instead, or 0.
+    private(set) var workingDirectoryError: Int32 = 0
 
     private init(
         pid: pid_t, terminal: OwnedDescriptor?, secondary: OwnedDescriptor? = nil,
@@ -79,7 +82,7 @@ final class ChildProcess {
         let stdinPipe = try makePipe()
         let stdoutPipe = try makePipe()
         let stderrPipe = try makePipe()
-        let pid = try start(
+        let (pid, directoryError) = try start(
             plan, path: path,
             stdin: stdinPipe.reader.rawValue, stdout: stdoutPipe.writer.rawValue,
             stderr: stderrPipe.writer.rawValue, controllingTerminal: false)
@@ -94,10 +97,12 @@ final class ChildProcess {
         // A process that closes its standard input must not kill the agent with SIGPIPE. The
         // agent ignores SIGPIPE; this covers the unit tests, which run in the test process.
         _ = maw_suppress_sigpipe(stdinPipe.writer.rawValue)
-        return ChildProcess(
+        let child = ChildProcess(
             pid: pid, terminal: nil, input: stdinPipe.writer,
             outputs: [(stdoutPipe.reader, .stdout), (stderrPipe.reader, .stderr)],
             exitWatch: openExitWatch(pid))
+        child.workingDirectoryError = directoryError
+        return child
     }
 
     private static func spawnOnTerminal(
@@ -124,7 +129,7 @@ final class ChildProcess {
                         + SystemError.message(for: errno))
             }
         }
-        let pid = try start(
+        let (pid, directoryError) = try start(
             plan, path: path,
             stdin: secondary.rawValue, stdout: secondary.rawValue, stderr: secondary.rawValue,
             controllingTerminal: true)
@@ -132,37 +137,44 @@ final class ChildProcess {
         // the primary side reports end-of-file (EIO on Linux) when the process's descendants
         // have closed theirs too.
         _ = maw_set_nonblocking(primary.rawValue)
-        return ChildProcess(
+        let child = ChildProcess(
             pid: pid, terminal: primary, secondary: secondary, input: primary,
             outputs: [(primary, .stdout)], exitWatch: openExitWatch(pid))
+        child.workingDirectoryError = directoryError
+        return child
     }
 
     private static func start(
         _ plan: SpawnPlan, path: String, stdin: Int32, stdout: Int32, stderr: Int32,
         controllingTerminal: Bool
-    ) throws(SpawnFailure) -> pid_t {
+    ) throws(SpawnFailure) -> (pid: pid_t, workingDirectoryError: Int32) {
         let arguments = CStringArray(plan.argv)
         let variables = CStringArray(
             plan.environment.sorted { $0.key < $1.key }.map { "\($0)=\($1)" })
         let groups = (plan.credentials?.groups ?? []).map { gid_t($0) }
         var pid: pid_t = 0
         var stage = MAW_SPAWN_STAGE_FORK
+        var directoryError: Int32 = 0
         let error = path.withCString { pathPointer in
             plan.workingDirectory.withCString { directoryPointer in
-                groups.withUnsafeBufferPointer { groupPointer in
-                    var options = maw_spawn_options(
-                        path: pathPointer, argv: arguments.pointer, envp: variables.pointer,
-                        working_directory: directoryPointer, stdin_fd: stdin, stdout_fd: stdout,
-                        stderr_fd: stderr, controlling_terminal: controllingTerminal ? 1 : 0,
-                        set_credentials: plan.credentials == nil ? 0 : 1,
-                        uid: uid_t(plan.credentials?.uid ?? 0),
-                        gid: gid_t(plan.credentials?.gid ?? 0),
-                        groups: groupPointer.baseAddress, group_count: groupPointer.count)
-                    return maw_spawn(&options, &pid, &stage)
+                withOptionalCString(plan.fallbackDirectory) { fallbackPointer in
+                    groups.withUnsafeBufferPointer { groupPointer in
+                        var options = maw_spawn_options(
+                            path: pathPointer, argv: arguments.pointer, envp: variables.pointer,
+                            working_directory: directoryPointer, stdin_fd: stdin, stdout_fd: stdout,
+                            stderr_fd: stderr, controlling_terminal: controllingTerminal ? 1 : 0,
+                            set_credentials: plan.credentials == nil ? 0 : 1,
+                            uid: uid_t(plan.credentials?.uid ?? 0),
+                            gid: gid_t(plan.credentials?.gid ?? 0),
+                            groups: groupPointer.baseAddress, group_count: groupPointer.count,
+                            fallback_directory: fallbackPointer,
+                            inherited_fd: plan.inheritedDescriptor ?? -1)
+                        return maw_spawn(&options, &pid, &stage, &directoryError)
+                    }
                 }
             }
         }
-        guard error != 0 else { return pid }
+        guard error != 0 else { return (pid, directoryError) }
 
         let reason = SystemError.message(for: error)
         let command = plan.argv[0]
@@ -303,6 +315,15 @@ final class ChildProcess {
         return exitStatus != nil
     }
 
+    /// Waits up to `limit` for the process to exit by itself, and terminates it after that.
+    func waitBriefly(_ limit: Duration = .seconds(2)) {
+        let deadline = ContinuousClock.now + limit
+        while !reap() && ContinuousClock.now < deadline {
+            usleep(10_000)
+        }
+        terminate()
+    }
+
     /// Kills the whole process group and waits for the process. Used when a session fails.
     func terminate() {
         guard exitStatus == nil else { return }
@@ -332,6 +353,14 @@ final class ChildProcess {
             }
         }
     }
+}
+
+/// `body` with `string` as a C string, or with `NULL` for `nil`.
+private func withOptionalCString<Result>(
+    _ string: String?, _ body: (UnsafePointer<CChar>?) -> Result
+) -> Result {
+    guard let string else { return body(nil) }
+    return string.withCString { body($0) }
 }
 
 /// A NULL-terminated array of C strings that lives as long as the instance.
