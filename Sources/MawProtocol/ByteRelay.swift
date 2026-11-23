@@ -21,9 +21,17 @@ import MawCore
 ///   with a reset, so that each peer sees the connection fail rather than end.
 /// - Each direction holds at most `bufferSize` bytes: it reads only once the previous read is
 ///   written, so a slow reader holds the writer back through the sockets' flow control.
+/// - Neither direction blocks in `read(2)` or `write(2)`. Both sockets are nonblocking, and a
+///   direction that must wait does so in `poll(2)` for at most `pollIntervalMilliseconds`,
+///   then tries again. On macOS, a thread blocked in `read(2)` on a socket that another
+///   thread writes to can miss the wakeup for the peer's end of stream, and stays blocked
+///   although the socket polls as readable; the bound turns such a miss into a delay of at
+///   most one interval.
 public final class ByteRelay: @unchecked Sendable {
     /// The bytes each direction reads and writes at a time.
     public static let defaultBufferSize = 128 << 10
+    /// The longest a direction waits in `poll(2)` before it reads or writes again.
+    static let pollIntervalMilliseconds: Int32 = 1_000
 
     private let lock = ConditionLock()
     private let first: OwnedDescriptor
@@ -47,7 +55,7 @@ public final class ByteRelay: @unchecked Sendable {
     }
 
     /// Starts relaying between `first` and `second`, which it then owns, and makes them
-    /// blocking. Returns `nil`, with both closed and without calling `finished`, if its
+    /// nonblocking. Returns `nil`, with both closed and without calling `finished`, if its
     /// threads cannot start. `finished` runs once, after both are closed, with whether the
     /// relay ended by an error or `abort()`.
     public static func start(
@@ -56,7 +64,7 @@ public final class ByteRelay: @unchecked Sendable {
         finished: @escaping @Sendable (_ aborted: Bool) -> Void
     ) -> ByteRelay? {
         for descriptor in [first, second] {
-            _ = maw_set_blocking(descriptor.rawValue)
+            _ = maw_set_nonblocking(descriptor.rawValue)
             _ = maw_suppress_sigpipe(descriptor.rawValue)
         }
         let relay = ByteRelay(first, second, bufferSize: bufferSize, finished: finished)
@@ -90,27 +98,46 @@ public final class ByteRelay: @unchecked Sendable {
         let buffer = UnsafeMutableRawPointer.allocate(byteCount: bufferSize, alignment: 16)
         defer { buffer.deallocate() }
         copying: while true {
-            let count = retryingOnInterrupt { read(source.rawValue, buffer, bufferSize) }
+            let count = read(source.rawValue, buffer, bufferSize)
             if count == 0 {
                 _ = shutdown(destination.rawValue, Int32(SHUT_WR))
                 break
             }
-            guard count > 0 else {
+            if count < 0 {
+                if Self.mustWait(errno) {
+                    Self.wait(for: source, Int32(POLLIN))
+                    continue
+                }
                 abort()
                 break
             }
             var offset = 0
             while offset < count {
                 let written = maw_send(destination.rawValue, buffer + offset, count - offset)
-                if written < 0 && errno == EINTR { continue }
-                guard written > 0 else {
+                if written > 0 {
+                    offset += written
+                } else if written < 0 && Self.mustWait(errno) {
+                    Self.wait(for: destination, Int32(POLLOUT))
+                } else {
                     abort()
                     break copying
                 }
-                offset += written
             }
         }
         directionEnded()
+    }
+
+    /// Whether a nonblocking read or write that failed with `code` is to be tried again.
+    private static func mustWait(_ code: Int32) -> Bool {
+        code == EAGAIN || code == EWOULDBLOCK || code == EINTR
+    }
+
+    /// Waits until `descriptor` reports `events`, an error, or its end, or until the interval
+    /// has passed. The caller tries again in every case, so a missed wakeup costs at most the
+    /// interval.
+    private static func wait(for descriptor: OwnedDescriptor, _ events: Int32) {
+        var request = pollfd(fd: descriptor.rawValue, events: Int16(events), revents: 0)
+        _ = poll(&request, 1, pollIntervalMilliseconds)
     }
 
     /// Counts one direction as ended; after the second, closes both sockets and reports.
