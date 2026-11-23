@@ -136,6 +136,31 @@ int maw_vsock_bind(int fd, uint32_t port);
 /// once the socket is writable.
 int maw_vsock_connect(int fd, uint32_t cid, uint32_t port);
 
+/// Clears O_NONBLOCK.
+int maw_set_blocking(int fd);
+
+/// Opens a TCP socket that listens on the loopback address of one family (127.0.0.1, or ::1
+/// with IPV6_V6ONLY) and `port`, close-on-exec and non-blocking. It never sets SO_REUSEADDR or
+/// SO_REUSEPORT. Returns 0 and sets `*fd`, or returns an errno value: EADDRINUSE when another
+/// socket holds the port, EACCES for a port below 1024 on macOS.
+int maw_tcp_listen_loopback(int ipv6, uint16_t port, int backlog, int *fd);
+
+/// Accepts a connection on a listening TCP socket, retried on EINTR, and makes it blocking,
+/// close-on-exec, and TCP_NODELAY (and SO_NOSIGPIPE on Darwin). Returns 0 and sets `*fd`, or
+/// returns an errno value, EAGAIN when no connection waits.
+int maw_tcp_accept(int listener, int *fd);
+
+/// Connects a TCP socket to the loopback address of one family and `port`, waiting at most
+/// `timeout_milliseconds`. The socket is blocking, close-on-exec, and TCP_NODELAY once
+/// connected. Returns 0 and sets `*fd`, or returns an errno value (ETIMEDOUT on the timeout).
+int maw_tcp_connect_loopback(int ipv6, uint16_t port, int timeout_milliseconds, int *fd);
+
+/// Sets SO_LINGER to zero, so that closing the socket resets the connection.
+int maw_set_reset_on_close(int fd);
+
+/// Reads an integer socket option. Returns 0 and sets `*value`, or returns an errno value.
+int maw_socket_option(int fd, int level, int name, int *value);
+
 /// Opens a close-on-exec netlink socket for NETLINK_SOCK_DIAG, which lists the guest's sockets
 /// for `localhost` forwarding. Returns the descriptor, or -1 with errno set (ENOSYS outside
 /// Linux).

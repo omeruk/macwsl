@@ -19,6 +19,9 @@
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <poll.h>
 
 #if defined(__linux__)
 #include <stdio.h>
@@ -54,6 +57,14 @@ static int set_cloexec(int fd) {
 int maw_set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL);
     if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        return errno;
+    }
+    return 0;
+}
+
+int maw_set_blocking(int fd) {
+    int flags = fcntl(fd, F_GETFL);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
         return errno;
     }
     return 0;
@@ -507,6 +518,161 @@ int maw_vsock_connect(int fd, uint32_t cid, uint32_t port) {
     (void)port;
     return ENOSYS;
 #endif
+}
+
+// MARK: Loopback TCP
+
+/// Fills `address` with the loopback address of the family and `port`; returns its length.
+static socklen_t maw_loopback_address(int ipv6, uint16_t port, struct sockaddr_storage *address) {
+    memset(address, 0, sizeof *address);
+    if (ipv6) {
+        struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)address;
+#if defined(__APPLE__)
+        in6->sin6_len = sizeof *in6;
+#endif
+        in6->sin6_family = AF_INET6;
+        in6->sin6_port = htons(port);
+        in6->sin6_addr = in6addr_loopback;
+        return sizeof *in6;
+    }
+    struct sockaddr_in *in = (struct sockaddr_in *)address;
+#if defined(__APPLE__)
+    in->sin_len = sizeof *in;
+#endif
+    in->sin_family = AF_INET;
+    in->sin_port = htons(port);
+    in->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    return sizeof *in;
+}
+
+static int maw_close_preserving_errno(int fd, int error) {
+    close(fd);
+    return error;
+}
+
+int maw_tcp_listen_loopback(int ipv6, uint16_t port, int backlog, int *fd) {
+    *fd = -1;
+    int socket_fd = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0);
+    if (socket_fd < 0) {
+        return errno;
+    }
+    // Close-on-exec and non-blocking, for the acceptor's poll. Neither SO_REUSEADDR nor
+    // SO_REUSEPORT is ever set: with either, macOS lets a bind to 127.0.0.1 succeed beside a
+    // Mac program on the wildcard address and take its loopback traffic (decision 0023).
+    if (fcntl(socket_fd, F_SETFD, FD_CLOEXEC) < 0) {
+        return maw_close_preserving_errno(socket_fd, errno);
+    }
+    int error = maw_set_nonblocking(socket_fd);
+    if (error != 0) {
+        return maw_close_preserving_errno(socket_fd, error);
+    }
+#if defined(__APPLE__)
+    int one = 1;
+    if (setsockopt(socket_fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one) < 0) {
+        return maw_close_preserving_errno(socket_fd, errno);
+    }
+#endif
+    if (ipv6) {
+        int only = 1;
+        if (setsockopt(socket_fd, IPPROTO_IPV6, IPV6_V6ONLY, &only, sizeof only) < 0) {
+            return maw_close_preserving_errno(socket_fd, errno);
+        }
+    }
+    struct sockaddr_storage address;
+    socklen_t length = maw_loopback_address(ipv6, port, &address);
+    if (bind(socket_fd, (struct sockaddr *)&address, length) < 0 || listen(socket_fd, backlog) < 0) {
+        return maw_close_preserving_errno(socket_fd, errno);
+    }
+    *fd = socket_fd;
+    return 0;
+}
+
+int maw_tcp_accept(int listener, int *fd) {
+    *fd = -1;
+    int connection;
+    do {
+        connection = accept(listener, NULL, NULL);
+    } while (connection < 0 && errno == EINTR);
+    if (connection < 0) {
+        return errno;
+    }
+    if (fcntl(connection, F_SETFD, FD_CLOEXEC) < 0) {
+        return maw_close_preserving_errno(connection, errno);
+    }
+    // Accepted sockets inherit O_NONBLOCK on macOS; the relay copies with blocking calls.
+    int error = maw_set_blocking(connection);
+    if (error != 0) {
+        return maw_close_preserving_errno(connection, error);
+    }
+    int one = 1;
+#if defined(__APPLE__)
+    setsockopt(connection, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+    setsockopt(connection, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    *fd = connection;
+    return 0;
+}
+
+int maw_tcp_connect_loopback(int ipv6, uint16_t port, int timeout_milliseconds, int *fd) {
+    *fd = -1;
+    int socket_fd = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0);
+    if (socket_fd < 0) {
+        return errno;
+    }
+    if (fcntl(socket_fd, F_SETFD, FD_CLOEXEC) < 0) {
+        return maw_close_preserving_errno(socket_fd, errno);
+    }
+    int error = maw_set_nonblocking(socket_fd);
+    if (error != 0) {
+        return maw_close_preserving_errno(socket_fd, error);
+    }
+    int one = 1;
+#if defined(__APPLE__)
+    setsockopt(socket_fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+    struct sockaddr_storage address;
+    socklen_t length = maw_loopback_address(ipv6, port, &address);
+    if (connect(socket_fd, (struct sockaddr *)&address, length) < 0) {
+        if (errno != EINPROGRESS) {
+            return maw_close_preserving_errno(socket_fd, errno);
+        }
+        struct pollfd request = {.fd = socket_fd, .events = POLLOUT, .revents = 0};
+        int ready;
+        do {
+            ready = poll(&request, 1, timeout_milliseconds);
+        } while (ready < 0 && errno == EINTR);
+        if (ready < 0) {
+            return maw_close_preserving_errno(socket_fd, errno);
+        }
+        if (ready == 0) {
+            return maw_close_preserving_errno(socket_fd, ETIMEDOUT);
+        }
+        int pending = 0;
+        socklen_t pending_length = sizeof pending;
+        if (getsockopt(socket_fd, SOL_SOCKET, SO_ERROR, &pending, &pending_length) < 0) {
+            return maw_close_preserving_errno(socket_fd, errno);
+        }
+        if (pending != 0) {
+            return maw_close_preserving_errno(socket_fd, pending);
+        }
+    }
+    error = maw_set_blocking(socket_fd);
+    if (error != 0) {
+        return maw_close_preserving_errno(socket_fd, error);
+    }
+    setsockopt(socket_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    *fd = socket_fd;
+    return 0;
+}
+
+int maw_set_reset_on_close(int fd) {
+    struct linger linger = {.l_onoff = 1, .l_linger = 0};
+    return setsockopt(fd, SOL_SOCKET, SO_LINGER, &linger, sizeof linger) == 0 ? 0 : errno;
+}
+
+int maw_socket_option(int fd, int level, int name, int *value) {
+    socklen_t length = sizeof *value;
+    return getsockopt(fd, level, name, value, &length) == 0 ? 0 : errno;
 }
 
 // MARK: Socket diagnostics
