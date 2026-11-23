@@ -32,6 +32,9 @@ public final class ByteRelay: @unchecked Sendable {
     private let finished: @Sendable (_ aborted: Bool) -> Void
     private var running = 2
     private var aborted = false
+    /// Set, under `lock`, before both descriptors are closed: `abort()` must not shut down a
+    /// number that may already belong to another socket.
+    private var closing = false
 
     private init(
         _ first: OwnedDescriptor, _ second: OwnedDescriptor, bufferSize: Int,
@@ -74,9 +77,12 @@ public final class ByteRelay: @unchecked Sendable {
 
     /// Ends both directions at once and resets both connections.
     public func abort() {
-        lock.withLock { aborted = true }
-        for descriptor in [first, second] {
-            _ = shutdown(descriptor.rawValue, Int32(SHUT_RDWR))
+        lock.withLock {
+            aborted = true
+            guard !closing else { return }
+            for descriptor in [first, second] {
+                _ = shutdown(descriptor.rawValue, Int32(SHUT_RDWR))
+            }
         }
     }
 
@@ -111,6 +117,7 @@ public final class ByteRelay: @unchecked Sendable {
     private func directionEnded() {
         let (last, wasAborted) = lock.withLock {
             running -= 1
+            closing = running == 0
             return (running == 0, aborted)
         }
         guard last else { return }
