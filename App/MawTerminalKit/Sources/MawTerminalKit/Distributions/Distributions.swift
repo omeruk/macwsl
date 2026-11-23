@@ -22,11 +22,21 @@ public struct DistributionInfo: Hashable, Sendable, Identifiable {
         public var key: String
         public var value: String
         public var role: Role
+        /// Shorter forms of `value`, longest first, for a box too narrow for it; the view
+        /// shows the first that fits on one line.
+        public var shorter: [String]
+        /// Shown when the pointer rests on the row.
+        public var help: String?
 
-        public init(_ key: String, _ value: String, role: Role = .plain) {
+        public init(
+            _ key: String, _ value: String, role: Role = .plain, shorter: [String] = [],
+            help: String? = nil
+        ) {
             self.key = key
             self.value = value
             self.role = role
+            self.shorter = shorter
+            self.help = help
         }
     }
 
@@ -409,8 +419,16 @@ public final class DaemonDistributions: DistributionProvider {
             .init("default", isDefault ? "yes" : "no", role: isDefault ? .positive : .muted),
             .init("user", figures.defaultUser),
         ]
+        let forwarding = running ? figures.forwarding : nil
+        let notForwardedHelp = forwarding.flatMap(Self.notForwardedHelp)
         if running, let address = figures.ipv4Address {
-            row.details.append(.init("ip", address, role: .number))
+            // Without a forwarded row, the ports that were not forwarded are explained here.
+            let hasRow = forwarding.map { !$0.forwarded.isEmpty } ?? false
+            row.details.append(
+                .init("ip", address, role: .number, help: hasRow ? nil : notForwardedHelp))
+        }
+        if let forwarding, let forwarded = Self.forwardedRow(forwarding, help: notForwardedHelp) {
+            row.details.append(forwarded)
         }
         // Only while the share is mounted: a stopped distribution, or one whose mount failed,
         // has no row, because an empty one would be a placeholder.
@@ -436,6 +454,48 @@ public final class DaemonDistributions: DistributionProvider {
         row.memoryHistory = history
         row.memoryLimit = figures.memoryLimitBytes
         return row
+    }
+}
+
+extension DaemonDistributions {
+    /// The `forwarded` row, `localhost:8000 → 8000`, with the ports in order on one line; its
+    /// shorter forms keep the first ports and end in `+N`. `nil` without a forwarded port.
+    static func forwardedRow(_ forwarding: PortForwarding, help: String?)
+        -> DistributionInfo.Detail?
+    {
+        let entries = forwarding.forwarded.sorted().map { "localhost:\($0) → \($0)" }
+        guard !entries.isEmpty else { return nil }
+        let shorter = (1..<entries.count).reversed().map { kept in
+            entries[..<kept].joined(separator: ", ") + " +\(entries.count - kept)"
+        }
+        return .init(
+            "forwarded", entries.joined(separator: ", "), role: .link, shorter: shorter, help: help)
+    }
+
+    /// One line for each port that was not forwarded, with the reason and what to do, in port
+    /// order; `nil` when every port was forwarded.
+    static func notForwardedHelp(_ forwarding: PortForwarding) -> String? {
+        let lines = forwarding.notForwarded.sorted { $0.port < $1.port }.map { entry in
+            let port = entry.port
+            return switch entry.reason {
+            case .inUseOnMac:
+                "Port \(port) is not forwarded: a Mac program uses it. Once it is free on the "
+                    + "Mac, restart the server in the distribution."
+            case .forwardedForAnotherDistribution:
+                "Port \(port) is not forwarded: another distribution forwards it. Once that "
+                    + "server stops, restart this one."
+            case .privilegedOnMac:
+                "Port \(port) is not forwarded: ports below 1024 cannot be used on the Mac "
+                    + "without administrator rights. Use port 1024 or above."
+            case .bindFailed:
+                "Port \(port) is not forwarded: the Mac refused it. ~/Library/Logs/maw/mawd.log "
+                    + "names the error."
+            case .limit:
+                "Port \(port) is not forwarded: a distribution forwards at most "
+                    + "\(PortForwarding.maximumPorts) ports."
+            }
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 }
 
