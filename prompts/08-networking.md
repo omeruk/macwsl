@@ -99,7 +99,9 @@ makes one of the owner's decisions impossible or unsafe, stop and report before 
 
 - **What is forwarded.** Every TCP port that a process in a running distribution listens on,
   on a wildcard or a loopback address, IPv4 or IPv6, while the distribution's machine runs.
-  A listener on another guest address (such as a Docker bridge) is not forwarded.
+  A listener on another guest address (such as a Docker bridge) is not forwarded, nor one on
+  another loopback address such as systemd-resolved's `127.0.0.53` and `127.0.0.54`, nor a
+  listener of maw's own agent, B's resolver included.
 - **Where.** The daemon listens on the Mac's `127.0.0.1` and `::1` for each forwarded port, and
   carries each accepted connection to the guest's listener. The plan chooses the path (through
   the agent over vsock, or to the NAT address) from Part 1's results, and says why; a listener
@@ -108,7 +110,8 @@ makes one of the owner's decisions impossible or unsafe, stop and report before 
 - **How fast.** A port becomes reachable on the Mac within 1 second of the guest's `listen()`,
   and stops being forwarded within 1 second of the guest's `close()` (see "Speed targets").
 - **Conflicts.** A port in use on the Mac, or forwarded for another distribution, is not
-  forwarded for this one (decision 2). A later free port is never chosen instead.
+  forwarded for this one (decision 2). A later free port is never chosen instead. The plan says
+  what happens when the port is free on one of `127.0.0.1` and `::1` but not on the other.
 - **Connections in flight** end when the machine stops, when the guest's side closes, or when
   the Mac's side closes, and each side sees the other's end of the stream. Half-close
   (`shutdown(SHUT_WR)`) is carried. A guest that refuses the connection makes the Mac's side
@@ -145,6 +148,8 @@ makes one of the owner's decisions impossible or unsafe, stop and report before 
   and NXDOMAIN for a name that does not exist. Other types get an answer that tells the guest's
   resolver that the type is not supported, never a silent drop. DNSSEC validation is out of
   scope.
+- **Search domains and single-label names.** The plan says how a name without a dot and the
+  Mac's search domains behave in the guest, and why.
 - **VPNs and split DNS.** A name that only the Mac's VPN or a scoped resolver knows resolves in
   the guest, and stops resolving when the VPN disconnects, without restarting the machine.
 - **The first query after a boot** is answered. This resolves "The first DNS query after the
@@ -192,6 +197,9 @@ is missed, report the number, where the time goes, and what would close the gap.
 - **The DNS message encoding** that both sides need is a pure type in `MawCore` or
   `MawProtocol`, which compile on Linux, with unit tests for every record type and malformed
   input.
+- A change of the guest protocol increments `ProtocolVersion` and updates `docs/protocol.md`;
+  a change of the daemon interface increments `DaemonInterface.version` and updates
+  `docs/daemon.md`.
 - **No new third-party dependency.** Approved ones only (`CLAUDE.md`).
 - The plan says which parts change the guest files, the guest protocol, and the daemon
   interface, in each pull request.
