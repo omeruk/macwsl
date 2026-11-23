@@ -148,6 +148,20 @@ Mac, with Apple's `/usr/bin/python3` and the daemon's own sockets: `net.inet.tcp
    nonce frame, and copies raw bytes. `ByteRelay` copies on both sides: the end of a stream
    becomes `shutdown(SHUT_WR)` on the other side, and an error resets both connections.
 
+   **Why the relay waits in `poll(2)`.** `ByteRelay` first copied each direction with blocking
+   `read(2)` and `write(2)`. On macOS 27 (Darwin 27.0.0), a thread blocked in `read(2)` on a
+   stream socket stayed blocked although data or the end of stream was waiting there, and the
+   socket polled as readable: the unit tests hung in 1 of about 16 to 250 repetitions, and 10
+   of 1,280 relays in a stress test never ended. The same happened without `ByteRelay`, with
+   one thread reading a socket while another wrote to it and then shut down its write side,
+   for both a Unix socket pair and loopback TCP, where the reading socket held 408,620 unread
+   bytes. On the Mac side of a forward, a connection would then have stayed open forever and
+   held its two threads and its place among the 256. Each direction now uses nonblocking
+   sockets and waits in `poll(2)` for at most one second
+   (`ByteRelay.pollIntervalMilliseconds`) before it reads or writes again, so a missed wakeup
+   delays a direction by at most one second. The cost is one wakeup per second for each
+   direction of an idle connection, on each side.
+
    **Why a second gate.** The 19800 gate's 64 waiting nonces and its admission limit of waiting
    sessions plus 4 belong to sessions: a burst of a browser's connections would fail `maw`
    sessions with `sessionDialBackBusy`, and the reverse. A second instance of the same type

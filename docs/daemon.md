@@ -126,7 +126,10 @@ listens reachable on the Mac's `127.0.0.1` and `::1`
   For each accepted connection, the forwarder registers a nonce with the machine's second
   `DialBackGate` (vsock port 19801), sends `connect`, and, when the agent's connection with that
   nonce arrives, relays the two with `ByteRelay`: two threads, 128 KiB per direction, the end
-  of a stream carried as a half-close, and an error carried as a reset. A `connectFailed`, a
+  of a stream carried as a half-close, and an error carried as a reset. Both sockets are
+  nonblocking, and a direction waits in `poll(2)` for at most one second before it tries
+  again, because a thread blocked in `read(2)` on macOS can miss its socket's wakeup
+  (`docs/decisions/0023-localhost-forwarding.md`). A `connectFailed`, a
   nonce that does not arrive within 5 seconds, or a stopped forwarder resets the Mac's
   connection. At most 256 connections per distribution are open or waiting; beyond them, the
   Mac's connection is accepted and reset at once.
