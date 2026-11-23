@@ -206,17 +206,62 @@ Mac, with Apple's `/usr/bin/python3` and the daemon's own sockets: `net.inet.tcp
    | A `connectFailed` reason | 256 bytes | A protocol violation; the reason is never logged |
    | Log lines about ports | 20 per machine per 10 seconds | Counted, and the count logged |
 
-   At the connection limit, the daemon runs about 582 threads for that distribution (512 copy
-   threads, an acceptor that polls every listening socket, the channel's reader, and at most 68
-   short-lived nonce readers), and the agent about 578 (512 copy threads, the channel, and at
-   most 64 short-lived connect threads). The measurements hold 256 connections open: if the
-   median of `maw -- true` grows by more than 50 ms, or `maw --list` takes more than 1 s, the
-   daemon uses a `kqueue` loop instead of two threads per connection.
+   At the connection limit, the daemon runs two copy threads per connection, an acceptor that
+   polls every listening socket, the channel's reader, and at most 68 short-lived nonce
+   readers; the agent runs two copy threads per connection, the channel, and at most 64
+   short-lived connect threads. With 256 forwarded connections open, the measurement below
+   counted 525 threads in the daemon (10 without) and 515 in the agent (5 without). The rule
+   set before the implementation: if holding 256 connections open made the median of
+   `maw -- true` grow by more than 50 ms, or `maw --list` take more than 1 s, the daemon would
+   use a `kqueue` loop instead of two threads per connection. Neither happened (see
+   "Measurements of the implementation"), so the threads stay.
 
 7. **The snapshot** carries, for each running distribution, the forwarded ports and the ports
    that were not forwarded with the reason (interface version 9,
    [docs/daemon.md](../daemon.md)). The distributions screen shows the `forwarded` row and the
    reasons in its help text.
+
+## Measurements of the implementation
+
+Development figures, taken on 2026-11-23 with `scripts/measure-forwarding.sh` at commit
+`ce83bc5` and the measurement changes after it, through the test daemon, on the Mac described
+above, in use (load averages 2.5 to 4.1). They are not the owner's official run. Each figure is
+the median of 5 runs, with the slowest in parentheses, unless it says otherwise.
+
+| Measurement | Result |
+|---|---|
+| From the guest's `listen()` to `localhost` accepting on the Mac | 28.5 ms (37.2 ms) |
+| Time to the first byte, median of 100 requests per run: forwarded | 1.483 ms (1.565 ms) |
+| The same to the NAT address | 0.549 ms (0.562 ms) |
+| Forwarding adds to the time to the first byte | 0.93 ms |
+| Throughput of a 1 GiB response: forwarded | 386.6 MB/s (383.9 MB/s) |
+| The same from the NAT address | 5,110.6 MB/s (4,507.4 MB/s) |
+| The agent's CPU time per minute on an idle machine: with forwarding | 100 ms (120 ms) |
+| The same with `mawd serve --without-forwarding`, as on `main` | 10 ms (10 ms) |
+| Cold start to a prompt: with forwarding | 916.1 ms (949.6 ms) |
+| The same with `mawd serve --without-forwarding` | 932.8 ms (950.7 ms) |
+| `maw -- true`, median of 20: without forwarded connections | 220.0 ms (238.3 ms) |
+| The same with 256 forwarded connections open | 220.6 ms (223.4 ms) |
+| `maw --list`: without forwarded connections | 216.3 ms (221.6 ms) |
+| The same with 256 forwarded connections open | 216.1 ms (219.4 ms) |
+| Threads with 256 forwarded connections open: daemon, agent | 525, 515 (10 and 5 without) |
+| 256 connections opened at once, still open after 2 s | 255, and the 256th place held by the test's own earlier connection |
+
+The agent's CPU time is counted in clock ticks of 10 ms, so the figures without forwarding
+are at the resolution of the measurement. Forwarding adds about 90 ms per minute, 0.15 % of
+one core; the scan alone cost 51 ms per minute in the throwaway build, and the rest is the
+agent's Swift code around it.
+
+**Where the throughput limit comes from.** The forwarded path crosses vsock once, and each side
+copies every byte through user space: in the agent from the guest's TCP socket to the vsock
+connection, in the daemon from the vsock connection to the Mac's TCP socket. A guest-opened
+vsock connection with no maw code carried 608 MB/s in
+[0017](0017-dial-back-for-sessions.md); the forwarded path reaches 64 % of that. The throwaway
+build copied in 256 KiB pieces and measured 383 to 388 MB/s; the implementation copies in
+128 KiB pieces and measured 384 to 388 MB/s, so the size of the copy buffer is not the limit,
+and no other change was made. The prompt sets no throughput target. A copy without user space,
+`splice` in the guest, was not tried: it needs a pipe between the two sockets, and the Mac's
+side, where `splice` does not exist, would still copy.
 
 ## Consequences
 
@@ -227,7 +272,8 @@ Mac, with Apple's `/usr/bin/python3` and the daemon's own sockets: `net.inet.tcp
 - A Mac program that starts after a distribution forwards its port, and sets `SO_REUSEADDR` as
   Python's `http.server` does, binds the wildcard address but does not receive the loopback
   connections until the forward ends ([docs/security.md](../security.md)).
-- The forwarded throughput is about a twentieth of the NAT path's.
+- The forwarded throughput, about 386 MB/s, is a thirteenth to a twentieth of the NAT path's
+  (5,111 to 7,735 MB/s in the two measurements).
 - The machine's idle stop counts sessions only: a forwarded connection does not keep a machine
   running (phase 12).
 - UDP is not forwarded.
