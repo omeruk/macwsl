@@ -106,11 +106,17 @@ listens reachable on the Mac's `127.0.0.1` and `::1`
   | The distribution already forwards 128 ports | Not forwarded | `limit` |
   | The port is below 1024 | Not bound | `privilegedOnMac` |
   | Another running distribution forwards it | Not bound | `forwardedForAnotherDistribution` |
-  | `127.0.0.1` or `::1` is in use on the Mac (`EADDRINUSE`) | Bound on neither | `inUseOnMac` |
+  | `127.0.0.1` or `::1` is in use on the Mac (`EADDRINUSE`, and the probe is not refused) | Bound on neither | `inUseOnMac` |
   | Another bind error | Bound on neither; `mawd.log` names the address and the errno | `bindFailed` |
   | Otherwise | Bound on `127.0.0.1` and on `::1` (`IPV6_V6ONLY`) | forwarded |
 
-  The listening sockets never set `SO_REUSEADDR` or `SO_REUSEPORT` (`maw_tcp_listen_loopback`).
+  Each address is bound without `SO_REUSEADDR` first; `SO_REUSEPORT` is never set
+  (`maw_tcp_listen_loopback`). When the bind fails with `EADDRINUSE`, the forwarder connects
+  once to the same address, for at most 500 ms, and closes the connection without sending
+  anything (`maw_tcp_probe_loopback`): only `ECONNREFUSED`, a port held by connections in
+  TIME_WAIT that an earlier forward left, leads to a second bind with `SO_REUSEADDR`
+  (decision record 0023). So a server restarted in the distribution is forwarded again at
+  once.
   A port that was not forwarded is tried again only when the guest reports it anew, after its
   listener went away, or after a restart of the machine; there is no periodic retry, which
   could take a port while a Mac program restarts on it. A port that the guest stops listening

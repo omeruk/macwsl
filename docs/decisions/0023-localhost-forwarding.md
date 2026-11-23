@@ -89,6 +89,32 @@ The NAT path never crosses vsock.
   `SO_REUSEADDR`, its bind to `0.0.0.0` or `::` succeeds, but connections to `127.0.0.1` and
   `::1` still reach the daemon.
 
+**A port that the forward held a moment ago.** Measured during the implementation, on the same
+Mac, with Apple's `/usr/bin/python3` and the daemon's own sockets: `net.inet.tcp.msl` is 15000
+(milliseconds), so a connection in TIME_WAIT lasts 30 seconds.
+
+- When the listening side closes a connection first, as the daemon's side of a forwarded
+  connection does when the guest's server closes first, the listening side's socket stays in
+  TIME_WAIT. A later bind of the same address and port without `SO_REUSEADDR` failed with
+  `EADDRINUSE` for 30.2 seconds; with `SO_REUSEADDR` it succeeded at once. When the client
+  closed first, a bind without `SO_REUSEADDR` succeeded at once.
+- A connection to the address and port in that state was refused (`ECONNREFUSED`), as with a
+  port that no socket holds.
+- A bind of `127.0.0.1` or `::1` with `SO_REUSEADDR` succeeded beside a Mac program listening
+  on `0.0.0.0` or `::` (dual-stack or not), whether or not that program had set
+  `SO_REUSEADDR`, and the connections to that loopback address reached the new socket.
+- The kernel's table of TCP sockets, through the sysctls `net.inet.tcp.pcblist`,
+  `net.inet.tcp.pcblist64`, and `net.inet.tcp.pcblist_n`, with the public structures
+  `struct xinpgen` and `struct xinpcb64` (`netinet/in_pcb.h`) and `struct xtcpcb64`
+  (`netinet/tcp_var.h`), returned a reply of 48 bytes, two `xinpgen` headers and no socket,
+  to an ad-hoc signed program without entitlements run as the owner, while `netstat -an -p
+  tcp` listed 22 listening sockets at the same time. The daemon's own reply was not measured;
+  the plan does not depend on it.
+- `libproc` (`proc_listpids` and `proc_pidfdinfo`) lists the sockets of the processes that the
+  caller may inspect: the user's own. It does not see a listener of root's, such as a system
+  service on `127.0.0.1`, or of another user, so a port that it reports free may still be a
+  Mac program's.
+
 ## Decision
 
 1. **The path is the agent over vsock.** The NAT path needs the Local Network permission for
@@ -132,13 +158,34 @@ The NAT path never crosses vsock.
    - A port that another running distribution forwards is not bound:
      `forwardedForAnotherDistribution`. The first distribution keeps it.
    - The daemon binds `127.0.0.1`, then `::1` with `IPV6_V6ONLY`, through one function
-     (`maw_tcp_listen_loopback`), which never sets `SO_REUSEADDR` or `SO_REUSEPORT`. With
-     either, the bind to `127.0.0.1` would succeed beside a Mac program on `0.0.0.0` and take
-     its loopback traffic.
-   - `EADDRINUSE` on either address leaves the port forwarded on neither: `inUseOnMac`.
-     Forwarding the free half would send a browser's `localhost` to the distribution while a
-     Mac program holds the port. A guest that listens on one family only is still forwarded on
-     both Mac addresses.
+     (`maw_tcp_listen_loopback`), first without `SO_REUSEADDR`. It never sets `SO_REUSEPORT`.
+     With either option, the bind to `127.0.0.1` would succeed beside a Mac program on
+     `0.0.0.0` and take its loopback traffic.
+   - **A port in TIME_WAIT.** When a bind fails with `EADDRINUSE`, the port is either a Mac
+     program's or held only by connections in TIME_WAIT that an earlier forward left, for
+     30 seconds; without telling the two apart, a server restarted in the distribution within
+     30 seconds would stay unforwarded under the no-retry rule below. The daemon connects once
+     to the same address (`127.0.0.1` for the IPv4 half, `::1` for the IPv6 half), waits at
+     most 500 ms, and closes the connection at once without sending anything
+     (`maw_tcp_probe_loopback`). Only `ECONNREFUSED`, nothing listening there, leads to a
+     second bind of that address with `SO_REUSEADDR`. An accepted connection, a timeout, or
+     any other error leaves the port to the Mac: `inUseOnMac`. The probe runs only after
+     `EADDRINUSE`, so at most once per address each time the guest reports the port anew.
+     The socket table was not used because macOS returns no records from it to the daemon,
+     and `libproc` was not used because it misses the listeners of root and of other users
+     (see "What the platform does"). Two costs are accepted:
+     - a Mac program that holds the port receives one connection that ends without a byte
+       when a server on that port starts in a distribution;
+     - between the refused probe and the bind, a window of microseconds, a Mac program that
+       starts to listen on the wildcard address of that family, with or without
+       `SO_REUSEADDR`, binds first, the daemon's bind with `SO_REUSEADDR` succeeds beside it,
+       and the program's loopback connections reach the distribution until the forward ends.
+       A Mac program that binds the loopback address itself in that window makes the
+       daemon's bind fail instead (`inUseOnMac`).
+   - `EADDRINUSE` on either address, after the probe, leaves the port forwarded on neither:
+     `inUseOnMac`. Forwarding the free half would send a browser's `localhost` to the
+     distribution while a Mac program holds the port. A guest that listens on one family only
+     is still forwarded on both Mac addresses.
    - Any other error is `bindFailed`, with the errno in `mawd.log`.
    - **No retry.** A port that was not forwarded is tried again only when the guest reports it
      anew, after its listener went away, or after a restart of the machine. A periodic retry
@@ -174,7 +221,7 @@ The NAT path never crosses vsock.
 ## Consequences
 
 - No question from macOS: the daemon listens on loopback addresses only and never connects to
-  the NAT network.
+  the NAT network. Its probes connect to the Mac's own loopback addresses only.
 - A server on a port below 1024, such as a web server on port 80, is not reachable as
   `localhost`; the screen says so ([docs/known-limitations.md](../known-limitations.md)).
 - A Mac program that starts after a distribution forwards its port, and sets `SO_REUSEADDR` as

@@ -526,12 +526,28 @@ Since phase 08, each TCP port on which a running distribution listens, on `0.0.0
   `EADDRINUSE`; one that binds `0.0.0.0` or `::` with `SO_REUSEADDR`, as Python's
   `http.server` does, succeeds, but connections to `127.0.0.1` and `::1` still reach the
   distribution until the forward ends. maw does not detect this case.
-- **The Mac's ports come first.** The daemon's listening sockets never set `SO_REUSEADDR` or
-  `SO_REUSEPORT` (`maw_tcp_listen_loopback`, checked by
-  `PortForwarderTests.neverSetsAddressOrPortReuse`): with either, macOS lets a bind to
-  `127.0.0.1` succeed beside a Mac program on the wildcard address and take its loopback
-  traffic. A port in use on either loopback address is forwarded on neither, and is not tried
-  again until the guest reports it anew. Ports below 1024 are never bound.
+- **The Mac's ports come first.** The daemon's listening sockets never set `SO_REUSEPORT`, and
+  set `SO_REUSEADDR` only after a refused probe (`maw_tcp_listen_loopback`, checked by
+  `LoopbackListenersTests`): with either option, macOS lets a bind to `127.0.0.1` succeed
+  beside a Mac program on the wildcard address and take its loopback traffic. Each address is
+  bound without `SO_REUSEADDR` first. When that fails with `EADDRINUSE`, the daemon connects
+  once to the same loopback address, waits at most 500 ms, and closes the connection without
+  sending anything; only "connection refused", which means that nothing listens there and the
+  port is held by connections in TIME_WAIT that an earlier forward left (30.2 seconds,
+  measured in decision record 0023), leads to a second bind with `SO_REUSEADDR`. An accepted
+  connection, a timeout, or any other error leaves the port to the Mac. A port in use on
+  either loopback address is forwarded on neither, and is not tried again until the guest
+  reports it anew. Ports below 1024 are never bound.
+  - **The probe.** A Mac program that holds a port sees one connection that ends without a
+    byte each time a server on that port starts in a distribution, from the daemon, which
+    runs as the owner.
+  - **The moment between the probe and the bind.** A Mac program that starts to listen on
+    `0.0.0.0` or `::` in the microseconds between a refused probe and the daemon's bind, with or
+    without `SO_REUSEADDR`, keeps its bind, but the daemon's bind with `SO_REUSEADDR` then
+    succeeds beside it (measured in decision record 0023), and the program's connections to
+    `127.0.0.1` or `::1` reach the distribution until the forward ends. A Mac program that
+    binds `127.0.0.1` or `::1` in that moment makes the daemon's bind fail instead, and keeps
+    the port. maw does not detect the first case.
 - **What comes from the guest, and how it is bounded.**
   - **Port numbers**, in `listeners`: at most 1,024 per message, from 1 to 65535, no
     duplicates, and only for the addresses `0.0.0.0`, `::`, `127.0.0.1`, and `::1`; anything
