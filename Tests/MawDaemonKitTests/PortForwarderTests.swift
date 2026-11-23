@@ -87,6 +87,16 @@ import os
             }
         }
 
+        /// Sends `messages` in one write, so that the forwarder reads them together.
+        func sendTogether(_ messages: [ControlMessage]) {
+            lock.withLock {
+                for message in messages {
+                    channel?.enqueue(.control(message))
+                }
+                try? channel?.flush(until: .now + PortForwarderTests.patience)
+            }
+        }
+
         func report(_ listeners: [GuestListener]) {
             send(.listeners(listeners))
         }
@@ -316,6 +326,21 @@ import os
         ])
         #expect(
             await Self.eventually { forwarder.forwarding.forwarded == [port, other].sorted() })
+        await forwarder.stop()
+    }
+
+    /// Nothing that the agent sends after a protocol violation is acted on, even when it
+    /// arrives in the same read.
+    @Test func ignoresWhatFollowsAViolation() async throws {
+        let agent = FakeAgent()
+        let forwarder = try await Self.forwarder(agent)
+        let port = try Self.freePort()
+        agent.sendTogether([
+            .forwarding, .listeners([GuestListener(port: port, address: .anyIPv4)]),
+        ])
+        #expect(await Self.eventually { agent.lock.withLock { agent.channelsOpened == 2 } })
+        #expect(forwarder.forwarding.forwarded.isEmpty)
+        #expect(!Self.isListening(port))
         await forwarder.stop()
     }
 

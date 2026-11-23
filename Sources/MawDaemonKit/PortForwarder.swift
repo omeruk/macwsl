@@ -150,7 +150,9 @@
         private func keepChannelOpen() async {
             while !isStopped && !Task.isCancelled {
                 if let ending = await runChannel() {
-                    log.notice("\(machine): the forwarding channel ended: \(ending)")
+                    // Rate-limited with the port lines: a channel that keeps ending must not
+                    // fill the log once a second.
+                    note("the forwarding channel ended: \(ending)")
                 }
                 guard !isStopped else { return }
                 try? await Task.sleep(for: environment.reopenDelay)
@@ -204,8 +206,10 @@
                 do throws(ProtocolViolation) {
                     try handle(message)
                 } catch {
+                    // Nothing that the agent sent after the violation is acted on.
                     link.close()
-                    log.notice("\(machine): closing the forwarding channel: \(error.reason)")
+                    note("closing the forwarding channel: \(error.reason)")
+                    break
                 }
             }
             if self.link === link {
