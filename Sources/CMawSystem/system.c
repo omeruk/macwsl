@@ -509,6 +509,52 @@ int maw_vsock_connect(int fd, uint32_t cid, uint32_t port) {
 #endif
 }
 
+// MARK: Socket diagnostics
+
+#if defined(__linux__)
+// linux/netlink.h is not in the Static Linux SDK's sysroot; these are its stable values.
+#ifndef AF_NETLINK
+#define AF_NETLINK 16
+#endif
+#define MAW_NETLINK_SOCK_DIAG 4
+struct maw_sockaddr_nl {
+    unsigned short nl_family;
+    unsigned short nl_pad;
+    uint32_t nl_pid;
+    uint32_t nl_groups;
+};
+#endif
+
+int maw_socket_diagnostics_open(void) {
+#if defined(__linux__)
+    return socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, MAW_NETLINK_SOCK_DIAG);
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+int maw_socket_diagnostics_send(int fd, const void *request, size_t count) {
+#if defined(__linux__)
+    struct maw_sockaddr_nl kernel;
+    memset(&kernel, 0, sizeof kernel);
+    kernel.nl_family = AF_NETLINK;
+    ssize_t sent;
+    do {
+        sent = sendto(fd, request, count, 0, (struct sockaddr *)&kernel, sizeof kernel);
+    } while (sent < 0 && errno == EINTR);
+    if (sent < 0) {
+        return errno;
+    }
+    return (size_t)sent == count ? 0 : EMSGSIZE;
+#else
+    (void)fd;
+    (void)request;
+    (void)count;
+    return ENOSYS;
+#endif
+}
+
 int maw_socket_error(int fd, int *error) {
     socklen_t length = sizeof *error;
     return getsockopt(fd, SOL_SOCKET, SO_ERROR, error, &length) == 0 ? 0 : errno;

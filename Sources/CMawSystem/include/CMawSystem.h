@@ -136,6 +136,15 @@ int maw_vsock_bind(int fd, uint32_t port);
 /// once the socket is writable.
 int maw_vsock_connect(int fd, uint32_t cid, uint32_t port);
 
+/// Opens a close-on-exec netlink socket for NETLINK_SOCK_DIAG, which lists the guest's sockets
+/// for `localhost` forwarding. Returns the descriptor, or -1 with errno set (ENOSYS outside
+/// Linux).
+int maw_socket_diagnostics_open(void);
+
+/// Sends one netlink request to the kernel on a NETLINK_SOCK_DIAG socket. Returns 0 or an
+/// errno value (ENOSYS outside Linux).
+int maw_socket_diagnostics_send(int fd, const void *request, size_t count);
+
 /// The socket's pending error (SO_ERROR), which it also clears: 0 after a successful
 /// non-blocking connect. Returns 0 and sets `*error`, or returns an errno value.
 int maw_socket_error(int fd, int *error);
