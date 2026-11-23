@@ -210,6 +210,15 @@ from `main`.
   - **Evidence:** `DebugBoot.reportBanner` in `Sources/mawd/DebugBoot.swift:458`, unchanged
     since phase 05; pull request #35, "Verification".
   - **Phase:** 12b. Awaiting the banner task before `debug-boot` exits would resolve it.
+- **`maw` stops with an exception when its standard error is closed and it writes a line
+  there.**
+  - **Seen:** `maw` writes its notices, the fallback line, and its error messages with
+    `FileHandle.standardError.write(_:)`, which raises an Objective-C exception when the write
+    fails, for example with `2>&-`. Found by the review of pull request #35; not reproduced.
+  - **Evidence:** the five calls in `Sources/maw/` (`SessionRunner.swift`, `Maw.swift`,
+    `UnregisterCommand.swift`); `writeAll(_:to:)` in `Sources/MawProtocol/System.swift`
+    returns the error instead.
+  - **Phase:** 12b. Writing every line with `writeAll` and ignoring its error would resolve it.
 - **The integration tests' waits count time asleep.**
   - **Seen:** A Mac that sleeps during an integration run fails waits such as
     `waitForPrompt` at once on waking. The final runs of phase 05 used `caffeinate -dims`.
