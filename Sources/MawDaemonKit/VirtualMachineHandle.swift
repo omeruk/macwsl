@@ -52,6 +52,9 @@
         private let settings: VMConfiguration
         private let stopContinuation: AsyncStream<String>.Continuation
         private let stopRequested = OSAllocatedUnfairLock(initialState: false)
+        /// Set by `stopForwarding()`: the machine is stopping or has stopped, by request or
+        /// not, and no forwarder may start.
+        private let forwardingEnded = OSAllocatedUnfairLock(initialState: false)
         private let boot = OSAllocatedUnfairLock(
             initialState: (
                 kernelRelease: String?.none, milliseconds: UInt64?.none, macShareMounted: false
@@ -189,7 +192,7 @@
         /// the forwarder opens its channel on a task of its own.
         private func startForwarding() async {
             guard case .distribution = machine, let forwardedPorts,
-                !stopRequested.withLock({ $0 })
+                !forwardingEnded.withLock({ $0 })
             else { return }
             let virtualMachine = self.virtualMachine
             let started = PortForwarder(
@@ -202,8 +205,9 @@
                 registry: forwardedPorts, log: log, changed: forwardingChanged)
             forwarder.withLock { $0 = started }
             await started.start()
-            // A stop that began meanwhile may have found no forwarder to end.
-            if stopRequested.withLock({ $0 }) {
+            // A stop that began meanwhile, requested or not, may have found no forwarder to
+            // end: `stopForwarding()` sets the flag before it looks for one.
+            if forwardingEnded.withLock({ $0 }) {
                 await stopForwarding()
             }
         }
@@ -211,6 +215,7 @@
         /// Ends forwarding before the machine stops, so that its ports are free on the Mac at
         /// once and every forwarded connection is reset.
         private func stopForwarding() async {
+            forwardingEnded.withLock { $0 = true }
             let running = forwarder.withLock { current in
                 defer { current = nil }
                 return current
