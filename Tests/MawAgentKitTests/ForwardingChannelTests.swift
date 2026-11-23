@@ -167,6 +167,36 @@ import Testing
         #expect(try Self.nextMessage(channel) == .listeners([]))
     }
 
+    /// Scans that keep failing withdraw the listeners reported before, and a scan that
+    /// succeeds again reports them anew.
+    @Test func withdrawsTheListenersWhenScansKeepFailing() throws {
+        let guest = Guest()
+        let listener = GuestListener(port: 8000, address: .anyIPv4)
+        guest.listeners = [listener]
+        let channel = try Self.openChannel(Self.agent(guest), guest)
+        #expect(try Self.nextMessage(channel) == .listeners([listener]))
+        let failed = ContinuousClock.now
+        guest.lock.withLock { guest.scanFails = true }
+        #expect(try Self.nextMessage(channel) == .listeners([]))
+        #expect(ContinuousClock.now - failed >= .seconds(1))
+        guest.lock.withLock { guest.scanFails = false }
+        #expect(try Self.nextMessage(channel) == .listeners([listener]))
+    }
+
+    /// The host accepts at most `AgentProtocol.maximumListeners` listeners in a message: the
+    /// lowest ports are reported.
+    @Test func reportsAtMostTheHostsLimitOfListeners() throws {
+        let guest = Guest()
+        let all = (1...(AgentProtocol.maximumListeners + 10)).map {
+            GuestListener(port: UInt16(1_000 + $0), address: .anyIPv4)
+        }
+        guest.listeners = Set(all)
+        let channel = try Self.openChannel(Self.agent(guest), guest)
+        #expect(
+            try Self.nextMessage(channel)
+                == .listeners(Array(all.prefix(AgentProtocol.maximumListeners))))
+    }
+
     @Test func relaysAConnectionWithItsHalfClose() throws {
         let guest = Guest()
         let (listener, port) = try Self.listen()

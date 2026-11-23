@@ -229,8 +229,11 @@ host                                            agent
    every 250 ms (`AgentProtocol.listenerScanInterval`), and sends `listeners` with all of them
    when the set differs from the last one sent. It keeps sockets on `0.0.0.0`, `::`,
    `127.0.0.1`, and `::1` only; `127.0.0.53`, `127.0.0.54`, other addresses, and the agent's own
-   sockets are left out. If a scan fails, the agent keeps the last set, sends an empty one if it
-   has sent none, and logs the failure once.
+   sockets are left out. Beyond 1,024 listeners (`AgentProtocol.maximumListeners`), it sends
+   the first 1,024 in port order and logs that the rest were left out. If a scan fails, the
+   agent keeps the last set, sends an empty one if it has sent none, and logs the failure once;
+   once scans have failed for 1 second, it sends an empty set, so that the host releases the
+   ports, and the next scan that succeeds reports them anew.
 3. **Connections.** For `connect`, the agent connects to `127.0.0.1` (`ipv4`) or `::1` (`ipv6`)
    on `port`, within 2 seconds, then dials the host's port 19801 as for `dialBack` (the highest
    free source port below 1024, within 2 seconds), sends a `dialBackNonce` frame with the

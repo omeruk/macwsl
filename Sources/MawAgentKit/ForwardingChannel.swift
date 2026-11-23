@@ -74,6 +74,8 @@ final class ForwardingChannel: @unchecked Sendable {
     /// Output the host has not read beyond this closes the channel: the host reads the
     /// channel at all times, and only `listeners` and `connectFailed` are written to it.
     static let maximumPendingOutput = 1 << 20
+    /// How long scans may fail before the listeners reported earlier are withdrawn.
+    static let staleListenersAfter = Duration.seconds(1)
 
     private let connection: FrameConnection
     private let environment: ForwardingEnvironment
@@ -104,24 +106,45 @@ final class ForwardingChannel: @unchecked Sendable {
     /// until they end.
     func run() throws(ConnectionError) {
         var reported: Set<GuestListener>?
-        var scanFailed = false
+        var failingSince: ContinuousClock.Instant?
+        var truncated = false
         var nextScan = ContinuousClock.now
         while true {
             if ContinuousClock.now >= nextScan {
                 nextScan = ContinuousClock.now + environment.scanInterval
                 do {
                     let listeners = try environment.scanListeners()
-                    scanFailed = false
+                    failingSince = nil
                     if listeners != reported {
                         reported = listeners
-                        connection.enqueue(.control(.listeners(listeners.sorted())))
+                        // The host accepts at most `maximumListeners`; the lowest ports go.
+                        let sorted = listeners.sorted()
+                        if sorted.count > AgentProtocol.maximumListeners, !truncated {
+                            logger.warning(
+                                """
+                                the guest listens on \(sorted.count) sockets; only the first \
+                                \(AgentProtocol.maximumListeners) are forwarded
+                                """)
+                        }
+                        truncated = sorted.count > AgentProtocol.maximumListeners
+                        connection.enqueue(
+                            .control(
+                                .listeners(Array(sorted.prefix(AgentProtocol.maximumListeners)))))
                     }
                 } catch {
-                    if !scanFailed {
+                    let now = ContinuousClock.now
+                    if failingSince == nil {
                         logger.warning("cannot list the guest's listeners: \(error)")
+                        failingSince = now
                     }
-                    scanFailed = true
-                    if reported == nil {
+                    // Ports reported before the scans began to fail are released once they
+                    // have failed for `staleListenersAfter`, so that the Mac does not keep
+                    // ports whose servers may have stopped. A scan that succeeds again
+                    // reports them anew.
+                    if reported == nil
+                        || (reported != []
+                            && now - (failingSince ?? now) >= Self.staleListenersAfter)
+                    {
                         reported = []
                         connection.enqueue(.control(.listeners([])))
                     }
