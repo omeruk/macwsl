@@ -303,6 +303,35 @@ If the share cannot be mounted, the distribution still starts, and its console l
 reason. [docs/distributions.md](docs/distributions.md#the-macs-files-mntmac) describes the
 mount.
 
+### Reaching a Linux server from the Mac as localhost
+
+A server that a distribution runs is reachable on the Mac as `localhost`, as in WSL, with no
+command and no setting:
+
+```sh
+maw -- python3 -m http.server 8000      # in Linux
+curl -s localhost:8000 | head -3         # on the Mac, or open http://localhost:8000 in Safari
+```
+
+- **What is forwarded.** Every TCP port on which a running distribution listens, on `0.0.0.0`,
+  `::`, `127.0.0.1`, or `::1`, is forwarded to the same port on the Mac's `127.0.0.1` and `::1`,
+  within a second of the server starting, and ends within a second of the server stopping or
+  when the distribution stops. A server bound to the guest's `127.0.0.1` is forwarded too.
+  Other machines on your network cannot reach it: maw listens on the Mac's loopback addresses
+  only, and any program on this Mac, including other users' programs, can connect.
+- **The Mac's ports come first.** A port that a Mac program uses, or that another distribution
+  already forwards, is not forwarded, and maw never picks another port. Once the port is free
+  on the Mac, restart the server in Linux. While a distribution forwards a port, a Mac program
+  that wants it may fail to bind it, or bind it without receiving `localhost` connections; stop
+  the Linux server, or run `maw --terminate <name>`.
+- **Ports below 1024 are not forwarded**: macOS reserves them on the loopback addresses for
+  administrators. Use port 1024 or above, such as 8080 instead of 80.
+- **UDP is not forwarded.**
+- The distributions screen shows the forwarded ports (`forwarded  localhost:8000 → 8000`), and
+  the reason for each port that was not forwarded when the pointer rests on the row.
+  [docs/decisions/0023-localhost-forwarding.md](docs/decisions/0023-localhost-forwarding.md)
+  describes the design.
+
 ### Managing distributions
 
 ```sh
@@ -509,7 +538,9 @@ default, and shows live figures:
 
 A stopped distribution shows its disk and kernel only. Below the table, a details box shows the
 selected distribution's default flag, user, and disk image, and while it runs its IPv4
-address, the Mac's home directory mounted at `/mnt/mac` (`mounts  /mnt/mac ← ~`), the time from
+address, the ports forwarded to the Mac (`forwarded  localhost:8000 → 8000`, with the reason
+for each port that was not forwarded in the row's help text), the Mac's home directory mounted
+at `/mnt/mac` (`mounts  /mnt/mac ← ~`), the time from
 its start to its agent (`boot`), and the memory its process takes on the Mac (`host memory`).
 A memory chart shows the last 60 seconds of MEMORY while it runs. A figure that is not known
 is left empty.

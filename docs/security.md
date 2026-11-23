@@ -16,8 +16,10 @@ reviews it as a whole.
   has the owner's home directory at `/mnt/mac`, with the owner's rights, as a WSL distribution
   has `C:` at `/mnt/c` (see "The share of the home directory"). Beyond the home directory, the
   guest must not reach: it has no other files of the Mac, and no network path into the Mac
-  other than NAT's. The only other connection it can open to the Mac is to the dial-back
-  listener on vsock, which gives it nothing without a session's nonce.
+  other than NAT's. The only other connections it can open to the Mac are to the dial-back
+  listeners on vsock, which give it nothing without a nonce that the daemon issued. Since
+  phase 08, the guest's TCP servers on its wildcard and loopback addresses are reachable on
+  the Mac's `127.0.0.1` and `::1` (see "`localhost` forwarding").
 - **Downloads are not trusted** until they are verified against a value that maw pins.
 
 ## Entry points
@@ -276,8 +278,9 @@ most 10 times, and then given up for that run. It needs no privilege and gains n
 While a machine runs, `mawd` listens on the machine's vsock port 19800
 (`AgentProtocol.dialBackPort`), where the agent dials each session's connection in reply to a
 `dialBack` request ([decision record 0017](decisions/0017-dial-back-for-sessions.md),
-[docs/protocol.md](protocol.md)). It is the one exception to the phase 05 rule that nothing on
-the Mac listens for the guest.
+[docs/protocol.md](protocol.md)). It and port 19801 of `localhost` forwarding (below), which
+has the same checks, are the exceptions to the phase 05 rule that nothing on the Mac listens for
+the guest.
 
 - **Who can reach it.** Only processes in that machine's guest, through its vsock device. The
   listener is a `VZVirtioSocketListener` inside `mawd`, not a socket of the Mac's network stack:
@@ -450,7 +453,8 @@ From phase 05 each distribution has a virtio network device with
 - Nothing on the Mac listens for the guest on this network, and other machines cannot connect
   to the guest: the NAT network is private to this Mac. The dial-back listener above is on
   vsock, not on this network.
-- Port forwarding and `localhost` access arrive in phase 08 and will be described here.
+- `localhost` forwarding (phase 08) reaches the guest over vsock, not over this network, and
+  the daemon never connects to the NAT address: see "`localhost` forwarding".
 
 ### Files on the Mac
 
@@ -497,6 +501,60 @@ the kernel write to the console. A marker-like line in e2fsck's output, which ca
 names from the file system, precedes the initramfs's own marker and is replaced by it; lines
 after systemd starts are not read. A guest that forged the marker could at most change the
 message of its own failed start.
+
+### `localhost` forwarding
+
+Since phase 08, each TCP port on which a running distribution listens, on `0.0.0.0`, `::`,
+`127.0.0.1`, or `::1`, is reachable on the Mac's `127.0.0.1` and `::1`
+([decision record 0023](decisions/0023-localhost-forwarding.md), docs/daemon.md).
+
+- **Who can connect.** Any program on the Mac, including other users' programs, can connect to
+  a forwarded port on the loopback addresses, as with WSL. A server in the guest that is meant
+  only for the guest's own loopback, and any guest user's server, is therefore reachable by
+  every local user of the Mac while the distribution runs. Nothing listens on the Mac's other
+  interfaces: the daemon binds only the constants `127.0.0.1` and `::1`, so other machines on
+  the owner's network cannot reach a distribution. No firewall or privacy question appears,
+  because nothing listens beyond the loopback addresses and the daemon never connects to the
+  NAT network.
+- **What a distribution can make the daemon do.** A process in a running distribution, as any
+  user, can make the daemon listen on any port from 1024 to 65535 that is free on the Mac's
+  loopback addresses, at most 128 per distribution, by listening on it in the guest. A Mac
+  program that later wants such a port is delayed until the forward ends: when the guest
+  closes its listener, or at `maw --terminate <name>`, which ends the distribution's
+  forwarding at once. Measured on 2026-11-23 (decision record 0023): a Mac program that binds
+  the port on `127.0.0.1` or `::1`, or on `0.0.0.0` or `::` without `SO_REUSEADDR`, fails with
+  `EADDRINUSE`; one that binds `0.0.0.0` or `::` with `SO_REUSEADDR`, as Python's
+  `http.server` does, succeeds, but connections to `127.0.0.1` and `::1` still reach the
+  distribution until the forward ends. maw does not detect this case.
+- **The Mac's ports come first.** The daemon's listening sockets never set `SO_REUSEADDR` or
+  `SO_REUSEPORT` (`maw_tcp_listen_loopback`, checked by
+  `PortForwarderTests.neverSetsAddressOrPortReuse`): with either, macOS lets a bind to
+  `127.0.0.1` succeed beside a Mac program on the wildcard address and take its loopback
+  traffic. A port in use on either loopback address is forwarded on neither, and is not tried
+  again until the guest reports it anew. Ports below 1024 are never bound.
+- **What comes from the guest, and how it is bounded.**
+  - **Port numbers**, in `listeners`: at most 1,024 per message, from 1 to 65535, no
+    duplicates, and only for the addresses `0.0.0.0`, `::`, `127.0.0.1`, and `::1`; anything
+    else closes the channel. They choose only which port to bind, never an address. The daemon
+    forwards at most 128 ports per distribution and logs at most 20 lines about ports per
+    machine per 10 seconds.
+  - **Connection bytes** are copied, never parsed, 128 KiB at a time in each direction; the
+    reading side waits while the writing side cannot write, so nothing is queued beyond that.
+    At most 256 connections per distribution are open or waiting.
+  - **`connectFailed` reasons**: at most 256 bytes, never logged or shown.
+  - **`connect`** goes from the daemon to the guest only, and names a port that the guest
+    reported; the agent connects to the guest's own loopback address only.
+- **Port 19801.** The agent dials each forwarded connection to the machine's vsock port 19801
+  (`AgentProtocol.forwardingPort`), which a second `DialBackGate` admits with the same checks as
+  port 19800 (see "The dial-back listener"): a source port below 1024, a 32-byte nonce that a
+  waiting forwarded connection registered, valid for 5 seconds, used once, compared in constant
+  time, and never logged. It has its own budgets, so that forwarded connections and sessions
+  cannot take each other's places. Guest root can make forwarded connections fail as it can
+  make sessions fail; a guest process without `CAP_NET_BIND_SERVICE` cannot dial the port.
+- **The channel** is a connection that the agent dialed through port 19800, as a session's is.
+  A guest process cannot open it: the daemon opens it, and only the agent receives the nonce.
+  Guest root can replace the agent, and then report any listeners: that makes the daemon listen
+  on free loopback ports within the limits above, which any guest process can do by listening.
 
 ## Known gaps
 

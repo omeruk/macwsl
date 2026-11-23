@@ -75,11 +75,60 @@ stopped ──openSession──▶ starting ──agent answers info──▶ ru
   why`; the console log has the initramfs's reason.
   The initramfs machine keeps the defaults of phase 03: the smaller of 4 and the number of host
   CPUs, and 2 GiB of memory.
-- **The dial-back listener.** When a machine reaches the running state, the daemon sets a
-  `VZVirtioSocketListener` on its vsock port 19800 (`AgentProtocol.dialBackPort`). When the
-  machine stops, it removes the listener and ends the wait of every session that has not
-  received its connection yet. The listener exists only inside the daemon's process; only the
-  machine's guest can reach it (docs/security.md).
+- **The dial-back listeners.** When a machine reaches the running state, the daemon sets a
+  `VZVirtioSocketListener` on its vsock port 19800 (`AgentProtocol.dialBackPort`) for sessions,
+  and one on port 19801 (`AgentProtocol.forwardingPort`) for forwarded connections, each with a
+  `DialBackGate` of its own. When the machine stops, it removes both and ends every wait. The
+  listeners exist only inside the daemon's process; only the machine's guest can reach them
+  (docs/security.md).
+
+### `localhost` forwarding
+
+Each running distribution's machine has a `PortForwarder`
+(`Sources/MawDaemonKit/PortForwarder.swift`), which makes the TCP ports on which the guest
+listens reachable on the Mac's `127.0.0.1` and `::1`
+([decision record 0023](decisions/0023-localhost-forwarding.md)).
+
+- **Start and end.** The machine's handle creates it once the agent has answered `info`, and
+  ends it before the machine stops, however it stops: `maw --terminate`, `maw --shutdown`, an
+  idle stop, a forced stop, or a guest that powers off. Ending it closes its listening sockets,
+  so that the ports are free on the Mac at once, releases its ports, and resets every forwarded
+  connection. The initramfs machine and the provisioning machines forward nothing.
+- **The channel.** It opens the machine's forwarding channel through the dial-back, on a task of
+  its own, off the path of every session (docs/protocol.md, "Forwarding"), and opens it again 1
+  second after it ends while the machine runs. A thread of its own
+  (`ForwardingChannelLink`) reads the channel at all times and writes what the forwarder queues.
+- **Ports.** When the guest reports a port that it did not report before, the forwarder decides
+  once:
+
+  | Situation | Outcome | Reason in the snapshot |
+  |---|---|---|
+  | The distribution already forwards 128 ports | Not forwarded | `limit` |
+  | The port is below 1024 | Not bound | `privilegedOnMac` |
+  | Another running distribution forwards it | Not bound | `forwardedForAnotherDistribution` |
+  | `127.0.0.1` or `::1` is in use on the Mac (`EADDRINUSE`) | Bound on neither | `inUseOnMac` |
+  | Another bind error | Bound on neither; `mawd.log` names the address and the errno | `bindFailed` |
+  | Otherwise | Bound on `127.0.0.1` and on `::1` (`IPV6_V6ONLY`) | forwarded |
+
+  The listening sockets never set `SO_REUSEADDR` or `SO_REUSEPORT` (`maw_tcp_listen_loopback`).
+  A port that was not forwarded is tried again only when the guest reports it anew, after its
+  listener went away, or after a restart of the machine; there is no periodic retry, which
+  could take a port while a Mac program restarts on it. A port that the guest stops listening
+  on is released at its next report, within about 250 ms. `ForwardedPortRegistry` holds the
+  ports of every distribution, so that the first to forward a port keeps it.
+- **Connections.** One thread per machine (`LoopbackAcceptor`) polls every listening socket.
+  For each accepted connection, the forwarder registers a nonce with the machine's second
+  `DialBackGate` (vsock port 19801), sends `connect`, and, when the agent's connection with that
+  nonce arrives, relays the two with `ByteRelay`: two threads, 128 KiB per direction, the end
+  of a stream carried as a half-close, and an error carried as a reset. A `connectFailed`, a
+  nonce that does not arrive within 5 seconds, or a stopped forwarder resets the Mac's
+  connection. At most 256 connections per distribution are open or waiting; beyond them, the
+  Mac's connection is accepted and reset at once.
+- **The log.** `mawd.log` records each port forwarded, not forwarded with its reason, and no
+  longer forwarded, at most 20 lines per machine per 10 seconds, and the count of the rest. It
+  never records a `connectFailed` reason, which comes from the guest.
+- **The snapshot.** `forwarding` in each running distribution's figures (see "Watching the
+  distributions"). A change publishes a snapshot at once.
 
 ### Terminating one distribution
 
@@ -208,6 +257,10 @@ its own, so that it never shares a file with a distribution's console log: a dis
   cost of a request without the guest's figures. `mawd install` accepts neither and writes
   neither into the LaunchAgent, so an installed daemon always samples every 1.5 seconds with
   `sample`.
+- **`--without-forwarding`** is a hidden option of `mawd serve` for measurements only:
+  distribution machines forward no port, so that `scripts/measure-forwarding.sh` can compare a
+  cold start, the guest agent's idle cost, and sessions with and without forwarding.
+  `mawd install` neither accepts nor writes it.
 - **`--without-mac-share`** is a hidden option of `mawd serve` for measurements only:
   distribution machines get neither the share of the home directory nor `maw.share` and
   `maw.home`, so that
@@ -256,7 +309,7 @@ Every message is an XPC dictionary (`Sources/MawXPC/InterfaceCoding.swift`):
 
 | Key | Type | Content |
 |-----|------|---------|
-| `interfaceVersion` | uint64 | `DaemonInterface.version`, currently **8**. This key never changes. |
+| `interfaceVersion` | uint64 | `DaemonInterface.version`, currently **9**. This key never changes. |
 | `body` | data | the message, JSON-encoded from the `Codable` types in `Sources/MawXPC/DaemonInterface.swift` |
 | `descriptor` | fd | only in `sessionOpened`, the guest agent connection, and in `export`, the file or standard output that `maw --export` opened |
 
@@ -300,7 +353,8 @@ it renames `cancelInstall` to `cancel` and `installCancelled` to `cancelled`, be
 cancel an export. Version 7 adds `import` and the step `inspect`; `installationInProgress` names
 the installation or import that holds the name, and `insufficientDiskSpace` the operation that
 needs the space. Version 8 adds `macShare` to each distribution's figures
-([decision record 0021](decisions/0021-mac-share.md)).
+([decision record 0021](decisions/0021-mac-share.md)). Version 9 adds `forwarding` to each
+distribution's figures ([decision record 0023](decisions/0023-localhost-forwarding.md)).
 
 **Events** (daemon to client, without a request):
 
@@ -509,13 +563,18 @@ default, and its figures, and follows them
   measurement only; clients do not show it or depend on it. `macShare`, the Mac's path that the
   daemon shares and `/mnt/mac`, is present while the distribution runs, if its guest reported
   the share mounted when it started; the Mac's path is the daemon's own, never the guest's.
+  `forwarding`, present while the distribution runs, lists the ports forwarded to the Mac's
+  loopback addresses, in order, and the ports that were not, each with its reason:
+  `inUseOnMac`, `forwardedForAnotherDistribution`, `privilegedOnMac`, `bindFailed`, or `limit`
+  (see "`localhost` forwarding").
   `sampleNumber` counts the samples of the distribution's run: one more for each sample,
   including one whose guest request failed or timed out. It starts from 1 with a new run, and
   when watching starts while no client watched; a client that starts watching while another
   watches sees the count where it stands. The terminal app draws one bar of its memory chart
   per number, from the first number it sees.
 - **When a reply comes.** The sequence number grows after each sample of a distribution, at once
-  when a machine changes state, after an installation completes, and after `setDefault`. The
+  when a machine changes state or its forwarding changes, after an installation completes, and
+  after `setDefault`. The
   numbers start again with each daemon process, so a connection's first `watchDistributions` is
   answered at once, whatever its `after`. A connection has at most one `watchDistributions`
   outstanding; a second fails with `daemonProtocolError`, and a client withdraws a watch only by

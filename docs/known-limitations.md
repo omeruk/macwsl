@@ -34,14 +34,13 @@ from `main`.
     `systemd-timesyncd` after `systemd-resolved`, which removes that wait without depending on
     this item; the decision record lists the measurements.
   - **Phase:** 08, together with DNS under VPNs.
-- **The distributions screen's details box has no `forwarded` row.**
-  - **Seen:** `Distributions.dc.html` shows `forwarded` (`localhost:8000 → 8000`) for each
-    distribution. The app leaves the row out, because no port is forwarded yet, and an empty or
-    `—` row would be a placeholder.
-  - **Evidence:** `DaemonDistributions.make(_:isDefault:history:home:)` in
-    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift`;
-    `prompts/11c-distribution-figures.md`, "Deviations from `Distributions.dc.html`", item 2.
-  - **Phase:** 08, which forwards ports and can report them in the snapshot.
+- **`localhost` forwarding was not checked with a VPN connected.**
+  - **Seen:** Part 1 of phase 08 measured forwarding without a VPN; the owner chose not to run
+    the VPN check. Forwarding uses vsock, not the NAT network, so a VPN is not expected to
+    affect it, but that is not measured.
+  - **Evidence:** [Decision record 0023](decisions/0023-localhost-forwarding.md), "What the
+    platform does".
+  - **Phase:** 08, pull request B, whose acceptance includes an owner check with a VPN.
 
 ## Phase 12: Configuration and lifecycle
 
@@ -75,6 +74,21 @@ from `main`.
   - **Evidence:** `FigureSampler.figures(_:)` reads `DistroMetadata.defaultUser`
     (`Sources/MawDaemonKit/FigureSampler.swift`).
   - **Phase:** 12, which reads `/etc/maw.conf`'s setting.
+
+- **`localhost` forwarding cannot be turned off.**
+  - **Seen:** Every running distribution forwards its listening TCP ports to the Mac's
+    loopback addresses. No setting turns it off, for all distributions or for one.
+  - **Evidence:** [Decision record 0023](decisions/0023-localhost-forwarding.md);
+    `prompts/08-networking.md`, "Out of scope".
+  - **Phase:** 12, a `.mawconfig` setting.
+- **A forwarded connection does not keep a machine running.**
+  - **Seen:** The machine's idle stop counts sessions only. A server started with `nohup` or
+    as a systemd service, whose session has ended, is forwarded only until the machine stops,
+    60 seconds after its last session, even while a Mac program is connected to it; the
+    connection then ends.
+  - **Evidence:** `MachineRegistry.scheduleIdleStopIfUnused` counts the daemon's leases;
+    `prompts/08-networking.md`, "Out of scope".
+  - **Phase:** 12, with idle shutdown.
 
 ## Phase 12b: Hardening
 
@@ -390,6 +404,34 @@ from `main`.
   - **Phase:** 13, with the app bundle.
 
 ## No phase yet
+
+- **Ports below 1024 are not forwarded.**
+  - **Seen:** A server in a distribution on port 80, 443, or any port below 1024 is not
+    reachable as `localhost` on the Mac; the distributions screen names the reason,
+    `privilegedOnMac`.
+  - **Evidence:** In Part 1 of phase 08, the daemon's `bind` of `127.0.0.1` and `::1` on ports
+    80, 443, and 1023 failed with `EACCES` (errno 13): macOS lets a program that is not root
+    bind such a port on the wildcard address only, which decision 1 of
+    `prompts/08-networking.md` excludes. [Decision record 0023](decisions/0023-localhost-forwarding.md).
+  - **Phase:** None yet; a privileged helper would add a privilege that maw does not have.
+- **UDP is not forwarded.**
+  - **Seen:** A UDP server in a distribution is not reachable from the Mac as `localhost`.
+  - **Evidence:** `prompts/08-networking.md`, "The owner's decisions", item 1.
+  - **Phase:** None yet.
+- **Forwarded connections are slower than the NAT network.**
+  - **Seen:** A forwarded 1 GiB response arrived at 383 to 388 MB/s, against 7,540 to
+    7,735 MB/s from the guest's NAT address, in Part 1 of phase 08. Enough for a development
+    server; not for bulk transfers at the NAT network's speed.
+  - **Evidence:** [Decision record 0023](decisions/0023-localhost-forwarding.md): a vsock
+    connection that the guest opens carried 608 MB/s with no maw code
+    ([0017](decisions/0017-dial-back-for-sessions.md)), and each side copies through user
+    space once.
+  - **Phase:** None yet.
+- **The terminal app's status slot for port forwarding stays empty.**
+  - **Seen:** `prompts/11a-terminal-app.md` plans a status slot for port forwarding; the app
+    leaves it empty, and the distributions screen's `forwarded` row shows the ports.
+  - **Evidence:** `prompts/08-networking.md`, "The snapshot and the screen".
+  - **Phase:** None yet.
 
 - **The distributions screen shows the share as it was when the machine started.**
   - **Seen:** The `mounts` row comes from the agent's `info` reply at the start. A share that

@@ -185,6 +185,25 @@ other side cannot see is an error, and the path need not exist.
   percent-encoded. A home directory longer than 1,024 bytes once encoded is not passed, and
   `mawpath` then reports that it is not known.
 
+## Reaching a distribution's servers: localhost forwarding
+
+While a distribution runs, every TCP port on which it listens, on `0.0.0.0`, `::`, `127.0.0.1`,
+or `::1`, is reachable on the Mac's `127.0.0.1` and `::1` under the same port
+([decision record 0023](decisions/0023-localhost-forwarding.md)).
+
+- **What the distribution sees.** A forwarded connection arrives at the server from the guest's
+  own loopback address, `127.0.0.1` or `::1`, made by the guest agent: a server bound to
+  `127.0.0.1` only is reached too. The agent connects over IPv4 when the server listens on
+  `0.0.0.0` or `127.0.0.1`, and over IPv6 otherwise. Servers on other addresses, such as
+  systemd-resolved's `127.0.0.53` or a container bridge, are not forwarded.
+- **Nothing is written to the distribution's disk.** The agent, which the initramfs supplies at
+  every boot, lists the listeners through the kernel's `sock_diag` interface; nothing is
+  installed or configured in the distribution.
+- **Not forwarded:** ports below 1024, ports in use on the Mac, ports that another distribution
+  forwards, and UDP. The distributions screen names the reason for each.
+- **The machine's idle stop** counts sessions only: a server started in a session keeps being
+  forwarded only while the machine runs, which a session keeps it doing.
+
 ## Sessions
 
 A session runs as the distribution's default user, `[user] default` in `/etc/maw.conf`, or as
