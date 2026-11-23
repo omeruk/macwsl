@@ -129,7 +129,8 @@ public struct GuestAgentClient: Sendable {
     }
 
     /// Starts a command. Returns once the agent reports it started. `started` runs with the
-    /// working directory's fallback, if any, before the first output reaches `output`.
+    /// working directory's fallback, if any, once the process has started on this side and
+    /// before the first output reaches `output`; it never runs for a process that fails.
     public func exec(
         _ request: ExecRequest, output: @escaping OutputHandler,
         started: @escaping @Sendable (WorkingDirectoryFallback?) -> Void = { _ in }
@@ -157,10 +158,9 @@ public struct GuestAgentClient: Sendable {
                     throw .unexpectedMessage("expected started, received \(other.name)")
                 }
             }
-            started(fallback)
             return try GuestProcess(
                 connection: connection, pid: pid, workingDirectoryFallback: fallback,
-                output: output)
+                output: output, started: started)
         }
     }
 
