@@ -322,37 +322,83 @@ struct ForwardingMeasurements {
             "measurement: threads without held connections: mawd \(idle.daemon), agent \(idle.agent)"
         )
         let before = try await sessions("without held connections")
+
+        // The daemon's limit of 256 forwarded connections, in batches of 32, 250 ms apart, so
+        // that each batch is relayed before the next. The connection of `waitUntilConnects`
+        // is the first: the Mac closed it, but the server never closes its side, so its relay
+        // stays open, half-closed.
         var held: [Int32] = []
         defer { for fd in held { close(fd) } }
-        for _ in 0..<256 {
-            let fd = socket(AF_INET, SOCK_STREAM, 0)
-            var address = sockaddr_in()
-            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-            address.sin_family = sa_family_t(AF_INET)
-            address.sin_port = port.bigEndian
-            address.sin_addr.s_addr = in_addr_t(0x7F00_0001).bigEndian
-            let connected = withUnsafePointer(to: &address) {
-                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-                }
+        while held.count < 255 {
+            for _ in 0..<min(32, 255 - held.count) {
+                if let fd = Self.connectToLoopback(port) { held.append(fd) }
             }
-            if connected == 0 { held.append(fd) } else { close(fd) }
+            try await Task.sleep(for: .milliseconds(250))
         }
         try await Task.sleep(for: .seconds(2))
+        let open = Self.alive(held) + 1
         let busy = try await threads()
         print(
-            "measurement: threads with \(held.count) held connections: mawd \(busy.daemon),"
-                + " agent \(busy.agent)")
-        let after = try await sessions("with \(held.count) forwarded connections held open")
+            "measurement: threads with \(open) forwarded connections open: mawd"
+                + " \(busy.daemon), agent \(busy.agent)")
+        #expect(open == 256)
+        let after = try await sessions("with \(open) forwarded connections held open")
         print(
             "measurement: holding the connections adds "
                 + "\(String(format: "%.1f", after.median - before.median)) ms to the median of"
                 + " maw -- true (rule: at most 50 ms); maw --list takes"
                 + " \(String(format: "%.1f", after.list)) ms (rule: at most 1 s)")
-        #expect(held.count == 256)
         #expect(after.median - before.median <= 50)
         #expect(after.list <= 1_000)
+        for fd in held { close(fd) }
+        held = []
+        // The server in `hold` mode never closes its side, so the relays end with it.
         await maw.stopServer(server)
+
+        // 256 connections at once, to a new server: the daemon resets those that find the
+        // gate's 64 places for waiting connections taken.
+        let burstPort = try MawIntegration.freePort()
+        let burstServer = try await maw.startServer("hold", host: "0.0.0.0", port: burstPort)
+        #expect(try await MawIntegration.waitUntilConnects(burstPort))
+        var burst: [Int32] = []
+        for _ in 0..<256 {
+            if let fd = Self.connectToLoopback(burstPort) { burst.append(fd) }
+        }
+        try await Task.sleep(for: .seconds(2))
+        print(
+            "measurement: of 256 connections opened at once, \(burst.count) connected and"
+                + " \(Self.alive(burst)) are still open after 2 s")
+        for fd in burst { close(fd) }
+        await maw.stopServer(burstServer)
+    }
+}
+
+extension ForwardingMeasurements {
+    /// A blocking connection to 127.0.0.1:<port>, or nil.
+    static func connectToLoopback(_ port: UInt16) -> Int32? {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        address.sin_addr.s_addr = in_addr_t(0x7F00_0001).bigEndian
+        let connected = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if connected == 0 { return fd }
+        close(fd)
+        return nil
+    }
+
+    /// How many of `descriptors` are open: neither ended nor reset. The server in `hold` mode
+    /// never sends, so a readable connection has ended.
+    static func alive(_ descriptors: [Int32]) -> Int {
+        descriptors.filter { fd in
+            var request = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            return poll(&request, 1, 0) == 0
+        }.count
     }
 }
 
