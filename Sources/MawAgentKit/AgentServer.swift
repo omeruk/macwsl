@@ -31,6 +31,9 @@ public struct AgentConfiguration: Sendable {
     /// Where the foreground probe reads the process files that answer `foregroundQuery`, and
     /// `sample` reads `meminfo` and `net/route`: `/proc` in the guest, a fixture in tests.
     public var processDirectory: String
+    /// The guest's side of `localhost` forwarding, or `nil` where the agent cannot forward,
+    /// as in the initramfs machine and some tests: `forwarding` is then refused.
+    public var forwarding: ForwardingEnvironment?
 
     public init(
         maximumConnections: Int = AgentProtocol.maximumConnections,
@@ -42,8 +45,10 @@ public struct AgentConfiguration: Sendable {
             try DialBackDialer().dial()
         },
         processDirectory: String = "/proc",
+        forwarding: ForwardingEnvironment? = nil,
         powerOff: @escaping @Sendable () throws(SystemError) -> Void
     ) {
+        self.forwarding = forwarding
         self.maximumConnections = maximumConnections
         self.requestTimeout = requestTimeout
         self.system = system
@@ -64,6 +69,8 @@ public final class AgentServer: @unchecked Sendable {
     private let logger = Logger(label: "dev.maw.agent")
     private let lock = ConditionLock()
     private var activeConnections = 0
+    /// Whether a forwarding channel is open. It does not count against `maximumConnections`.
+    private var forwardingChannelOpen = false
 
     public init(configuration: AgentConfiguration) {
         self.configuration = configuration
@@ -220,13 +227,61 @@ public final class AgentServer: @unchecked Sendable {
                 try connection.flush(until: .now + configuration.requestTimeout)
                 return dialedConnection
             }
+        case .forwarding:
+            // The host opens the channel on a connection that the agent dialed, so that the
+            // host's reading never stalls the machine's vsock device.
+            guard dialed else {
+                throw .unexpectedMessage(
+                    "forwarding is valid only on a connection that the agent dialed")
+            }
+            try serveForwarding(on: connection)
+            return nil
         default:
             throw .unexpectedMessage(
-                "expected a request (exec, info, sample, shutdown, or dialBack), "
+                "expected a request (exec, info, sample, shutdown, dialBack, or forwarding), "
                     + "received \(request.name)")
         }
         try connection.flush(until: .now + configuration.requestTimeout)
         return nil
+    }
+
+    /// Serves the machine's one forwarding channel until the host closes it. While it is
+    /// open, its connection leaves its slot of `maximumConnections` to sessions.
+    private func serveForwarding(on connection: FrameConnection) throws(ConnectionError) {
+        guard let environment = configuration.forwarding else {
+            connection.enqueue(
+                .control(.error(AgentError(.busy, "this agent does not forward connections"))))
+            try connection.flush(until: .now + configuration.requestTimeout)
+            return
+        }
+        let opened = lock.withLock {
+            guard !forwardingChannelOpen else { return false }
+            forwardingChannelOpen = true
+            activeConnections -= 1
+            return true
+        }
+        guard opened else {
+            connection.enqueue(
+                .control(.error(AgentError(.busy, "a forwarding channel is already open"))))
+            try connection.flush(until: .now + configuration.requestTimeout)
+            return
+        }
+        defer {
+            lock.withLock {
+                forwardingChannelOpen = false
+                activeConnections += 1
+            }
+        }
+        let channel: ForwardingChannel
+        do {
+            channel = try ForwardingChannel(
+                connection: connection, environment: environment, logger: logger)
+        } catch {
+            throw .system(error)
+        }
+        logger.info("the forwarding channel is open")
+        try channel.run()
+        logger.info("the forwarding channel closed")
     }
 
     private struct StartedSession {
