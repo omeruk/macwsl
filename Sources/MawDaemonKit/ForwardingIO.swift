@@ -206,30 +206,61 @@
                 if requests[0].revents != 0 {
                     wakePipe.drain()
                 }
+                var failed = false
                 for request in requests.dropFirst() where request.revents & Int16(POLLIN) != 0 {
-                    acceptAll(on: request.fd)
+                    failed = !acceptAll(on: request.fd) || failed
+                }
+                // A connection that cannot be accepted, for example while the daemon has no
+                // descriptor left (EMFILE), stays in the backlog and the socket stays
+                // readable: wait before polling again rather than spin.
+                if failed {
+                    usleep(Self.acceptRetryMicroseconds)
                 }
             }
         }
 
+        /// How long the thread waits after an accept failed with an error that does not go
+        /// away by itself.
+        static let acceptRetryMicroseconds: useconds_t = 50_000
+
         /// Accepts every connection waiting on `descriptor`, if it still is one of the
         /// listening sockets: a port removed meanwhile closed its sockets, and the number may
         /// have been reused. The lookup and the accept, which does not block, hold the lock, so
-        /// that `remove(_:)` cannot close the socket between them.
-        private func acceptAll(on descriptor: Int32) {
+        /// that `remove(_:)` cannot close the socket between them. Returns `false` when an
+        /// accept failed with an error other than no connection waiting or one that the peer
+        /// abandoned.
+        private func acceptAll(on descriptor: Int32) -> Bool {
+            enum Outcome {
+                case accepted(OwnedDescriptor, UInt16)
+                case again
+                case done
+                case failed
+            }
             while true {
-                let accepted: (OwnedDescriptor, UInt16)? = state.withLock { state in
+                let outcome: Outcome = state.withLock { state in
                     guard
                         let port = state.listening.first(where: { entry in
                             entry.value.descriptors.contains { $0.rawValue == descriptor }
                         })?.key
-                    else { return nil }
+                    else { return .done }
                     var connection: Int32 = -1
-                    guard maw_tcp_accept(descriptor, &connection) == 0 else { return nil }
-                    return (OwnedDescriptor(connection), port)
+                    switch maw_tcp_accept(descriptor, &connection) {
+                    case 0: return .accepted(OwnedDescriptor(connection), port)
+                    case EAGAIN, EWOULDBLOCK: return .done
+                    case ECONNABORTED: return .again
+                    default: return .failed
+                    }
                 }
-                guard let (connection, port) = accepted else { return }
-                continuation.yield((connection, port))
+                switch outcome {
+                case .accepted(let connection, let port):
+                    continuation.yield((connection, port))
+                case .again:
+                    continue
+                case .done:
+                    return true
+                case .failed:
+                    return false
+                }
             }
         }
     }
