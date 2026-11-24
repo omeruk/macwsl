@@ -168,23 +168,36 @@ struct ForwardingMeasurements {
     /// A 1 GiB response, forwarded and from the NAT address, in alternating runs.
     @Test func measuresTheThroughput() async throws {
         let port = try MawIntegration.freePort()
-        let file = "/tmp/maw-forwarding-\(port)"
+        // Not in /tmp: Ubuntu's systemd-tmpfiles-setup empties /tmp early in each boot, after
+        // the agent already accepts sessions, so a file made in a cold start's first half
+        // second would be gone (docs/known-limitations.md).
+        let file = "/var/tmp/maw-forwarding-\(port)"
         let made = try await maw.run(
             ["-d", maw.distribution, "-e", "sh", "-c", "head -c 1073741824 /dev/zero > \(file)"],
             timeout: .seconds(300))
         try #require(made.status == 0)
         let server = try await maw.startServer(host: "0.0.0.0", port: port)
         let nat = try await natAddress()
+        try #require(
+            try await MawIntegration.waitUntil("http://127.0.0.1:\(port)/", answers: true),
+            "the port was not forwarded")
         var rates: [String: [Double]] = [:]
         for _ in 1...Self.runs {
             for (name, host) in [("forwarded", "127.0.0.1"), ("NAT address", nat)] {
+                // Only a complete response counts; a failed one is an issue, not a rate of 0.
                 let result = try await MawIntegration.curl([
-                    "-o", "/dev/null", "-w", "%{speed_download}",
+                    "-o", "/dev/null", "-w", "%{http_code} %{size_download} %{speed_download}",
                     "http://\(host):\(port)/file\(file)",
                 ])
-                if let rate = Double(result.output) {
-                    rates[name, default: []].append(rate / 1e6)
+                let fields = result.output.split(separator: " ")
+                guard result.status == 0, fields.count == 3, fields[0] == "200",
+                    fields[1] == "1073741824", let rate = Double(fields[2])
+                else {
+                    Issue.record(
+                        "\(name): curl exited with \(result.status) and wrote \(result.output)")
+                    continue
                 }
+                rates[name, default: []].append(rate / 1e6)
             }
         }
         Self.report(

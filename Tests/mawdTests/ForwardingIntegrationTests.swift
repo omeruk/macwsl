@@ -175,7 +175,8 @@ struct ForwardingIntegrationTests {
     /// A 1 GiB response arrives intact through the forwarding.
     @Test func carriesAGibibyteIntact() async throws {
         let port = try MawIntegration.freePort()
-        let file = "/tmp/maw-forwarding-\(port)"
+        // Not in /tmp, which a boot empties (see ForwardingMeasurements.measuresTheThroughput).
+        let file = "/var/tmp/maw-forwarding-\(port)"
         let made = try await maw.run(
             [
                 "-d", maw.distribution, "-e", "sh", "-c",
