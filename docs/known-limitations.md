@@ -377,6 +377,19 @@ from `main`.
     `Importer.swift`; pull request #32, code review.
   - **Phase:** 12b: one helper for an operation's steps in `MawDaemonKit`.
 
+- **`LocalShellSessionTests.aStartDirectoryThatDoesNotExistIsIgnoredAsOnMain` failed once in CI.**
+  - **Seen:** In the first attempt of CI run 45353389601, at `a9305c7`, the test did not see
+    the local shell exit within its 5 seconds, at
+    `App/MawTerminalKit/Tests/MawTerminalKitTests/LocalShellSessionTests.swift:446`, and the
+    terminal app's job failed. The rerun of the job passed, as did the CI runs before it on
+    the same branch. The commit changed only documentation, and phase 08 does not change the
+    test or the local shell. The cause is not known: the shell may not have run the command
+    within the time, or its exit may not have been reported.
+  - **Evidence:** CI run 45353389601, first attempt, job "Terminal app"; pull request #36,
+    "Verification".
+  - **Phase:** 12b. Repeating the test on a loaded machine with the shell's output and the
+    session's state recorded at the deadline would show which of the two it is.
+
 ## Phase 13: Packaging and release
 
 - **macOS asks about `mawd` again after every development build.**
