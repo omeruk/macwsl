@@ -313,18 +313,31 @@ struct ForwardingMeasurements {
             let agent = Int(result.output.split(whereSeparator: \.isWhitespace).last ?? "") ?? -1
             return (daemon, agent)
         }
+        // Each time runs from just before the process starts to its own termination, as its
+        // termination handler records it. The wait for the exit, which polls every 50 ms and
+        // then sleeps 100 ms for the output, is not part of it: timed that way, a difference of
+        // about 12 ms appeared as one polling tick (decision record 0023).
+        func timed(_ arguments: [String]) async throws -> Double? {
+            let started = ContinuousClock.now
+            let process = try maw.start(arguments)
+            let result = await process.waitForExit(timeout: .seconds(60))
+            #expect(result.status == 0, "\(arguments): \(result.output)\(result.standardError)")
+            guard let exited = process.exitedAt else {
+                Issue.record("\(arguments): no termination time")
+                return nil
+            }
+            return (exited - started).fractionalMilliseconds
+        }
         func sessions(_ label: String) async throws -> (median: Double, list: Double) {
             var trues: [Double] = []
             for _ in 0..<20 {
-                let started = ContinuousClock.now
-                #expect(try await maw.run(["-d", maw.distribution, "--", "true"]).status == 0)
-                trues.append((ContinuousClock.now - started).fractionalMilliseconds)
+                if let time = try await timed(["-d", maw.distribution, "--", "true"]) {
+                    trues.append(time)
+                }
             }
             var lists: [Double] = []
             for _ in 1...Self.runs {
-                let started = ContinuousClock.now
-                #expect(try await maw.run(["--list"]).status == 0)
-                lists.append((ContinuousClock.now - started).fractionalMilliseconds)
+                if let time = try await timed(["--list"]) { lists.append(time) }
             }
             let median = Self.report("maw -- true, \(label)", trues)
             let list = Self.report("maw --list, \(label)", lists)
