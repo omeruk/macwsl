@@ -231,8 +231,9 @@ Mac, with Apple's `/usr/bin/python3` and the daemon's own sockets: `net.inet.tcp
    `maw -- true` grow by more than 50 ms, or `maw --list` take more than 1 s, the daemon would
    use a `kqueue` loop instead of two threads per connection. The owner's official run first
    showed the median of `maw -- true` growing by 57.3 ms, an artifact of how the measurement
-   timed it; the rule is applied, unchanged, to the reruns with the corrected method (see
-   "The owner's official run").
+   timed it. Applied unchanged to the official reruns with the corrected method, the rule is
+   met: over 80 runs of each side, the median grew by 8.4 ms, and `maw --list` took at most
+   66.5 ms with the connections held (see "The owner's official run"). The threads stay.
 
 7. **The snapshot** carries, for each running distribution, the forwarded ports and the ports
    that were not forwarded with the reason (interface version 9,
@@ -339,11 +340,28 @@ of it ([docs/known-limitations.md](../known-limitations.md)).
 
 The measurement's method was changed before the reruns, not after them: the measurement now
 times each `maw -- true` and `maw --list` from just before its start to its termination, with
-no polling or sleep in what is timed. The rule and its threshold are unchanged. The owner
-applies the rule to the 80 runs of each side of four consecutive runs of
-`scripts/measure-forwarding.sh measuresSessionsBeside256Connections` after one restart under
-the official conditions; if the median still grows by more than 50 ms, the daemon uses a
-`kqueue` loop. The other integration tests keep their wait.
+no polling or sleep in what is timed. The rule and its threshold are unchanged, and the other
+integration tests keep their wait.
+
+**The official reruns.** The owner ran `scripts/measure-forwarding.sh
+measuresSessionsBeside256Connections` at commit `5541cbc`, with the guest files of `b85a63e`,
+after a restart. Of four runs back to back, only the first started under a one-minute load
+average of 2 (1.67); the other three started at 3.74, 3.17, and 2.66 and were discarded. Three
+more runs each waited until the load average was under 2. The four valid runs, each with the
+medians of 20 runs of `maw -- true` without and with 256 forwarded connections held open:
+
+| Run | Load at the start | `maw -- true` without | With 256 held | Difference | `maw --list` with 256 held | Still open of 256 opened at once |
+|---|---|---|---|---|---|---|
+| 1 | 1.67 | 66.778 ms | 61.424 ms | −5.4 ms | 43.2 ms | 255 |
+| 2 | 1.80 | 87.186 ms | 94.304 ms | +7.1 ms | 64.5 ms | 255 |
+| 3 | 1.91 | 86.294 ms | 94.861 ms | +8.6 ms | 66.5 ms | 194 |
+| 4 | 1.83 | 86.023 ms | 95.270 ms | +9.2 ms | 64.8 ms | 255 |
+
+Over the 80 values of each side together, as the owner computed them, the median was
+85.38 ms without held connections and 93.76 ms with them: 8.4 ms more, within the rule's
+50 ms, and `maw --list` stayed under its 1 s. The rule is met, and the daemon keeps two threads
+per connection. Run 1's times were about 20 ms lower on both sides than those of runs 2 to 4;
+the cause of that difference was not examined.
 
 ## Consequences
 
