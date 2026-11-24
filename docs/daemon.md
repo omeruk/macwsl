@@ -96,8 +96,8 @@ listens reachable on the Mac's `127.0.0.1` and `::1`
   connection. The initramfs machine and the provisioning machines forward nothing.
 - **The channel.** It opens the machine's forwarding channel through the dial-back, on a task of
   its own, off the path of every session (docs/protocol.md, "Forwarding"), and opens it again 1
-  second after it ends while the machine runs. A thread of its own
-  (`ForwardingChannelLink`) reads the channel at all times and writes what the forwarder queues.
+  second after it ends while the machine runs. A thread of its own (`ChannelLink`, which the
+  DNS channel uses too) reads the channel at all times and writes what the forwarder queues.
 - **Ports.** When the guest reports a port that it did not report before, the forwarder decides
   once:
 
@@ -138,6 +138,39 @@ listens reachable on the Mac's `127.0.0.1` and `::1`
   never records a `connectFailed` reason, which comes from the guest.
 - **The snapshot.** `forwarding` in each running distribution's figures (see "Watching the
   distributions"). A change publishes a snapshot at once.
+
+### DNS through the Mac
+
+Each running distribution's machine has a `DNSRelay` (`Sources/MawDaemonKit/DNSRelay.swift`),
+which answers the guest's DNS queries with the Mac's system resolver
+([decision record 0024](decisions/0024-dns-through-the-mac.md)).
+
+- **Start and end.** The machine's handle creates it once the agent has answered `info`, before
+  the forwarder, and ends it before the machine stops, however it stops. The initramfs machine
+  and the provisioning machines have none.
+- **The channel.** It opens the machine's DNS channel through the dial-back, on a task of its
+  own (docs/protocol.md, "DNS"), and opens it again 1 second after it ends while the machine
+  runs. A `ChannelLink` thread reads it at all times.
+- **The DNS client.** `DNSAnswerer` answers each query through `SystemDNSResolving`, a protocol
+  that unit tests implement without the network. The daemon's `MacDNSResolver` implements it
+  with `DNSServiceQueryRecord` on one connection to mDNSResponder that every machine shares,
+  with the flags `ShareConnection`, `ReturnIntermediates`, and `Timeout`, on a dispatch queue
+  that `dns_sd.h` requires, and a deadline of 3.5 s per lookup; it reads the Mac's search
+  domains from SystemConfiguration (`State:/Network/Global/DNS`). When mDNSResponder restarts,
+  the lookups in flight fail and the next one opens a new connection.
+- **Answers.** A query is checked again (`DNSQuery`, `DNSQueryPolicy`). When the Mac has no
+  record of the requested type, the end of the CNAME chain is looked up for the existence
+  probes, A, AAAA, TXT, MX, SRV, NS, and SOA, and only when none has a record is the answer
+  NXDOMAIN. A single-label A or AAAA name is tried with the Mac's search domains first.
+- **Limits.** 128 queries in flight and 500 queries per second, in bursts of 1,000, per
+  distribution, then REFUSED; 256 lookups of the Mac's resolver per distribution, the probes
+  included; 4 seconds to an answer, then SERVFAIL; a response larger than 65,535 bytes is
+  SERVFAIL.
+- **The log.** Every 60 seconds in which the machine's queries were answered, and when it
+  stops, one line in `mawd.log` and in the machine's console log counts the answers by kind,
+  such as `Ubuntu-24.04: dns: answered 42 queries in 60 s: 30 with records, 8 NODATA,
+  3 NXDOMAIN, 1 SERVFAIL, 0 refused, not supported, or malformed`. Names are never logged.
+  Both logs record when the channel ends and why.
 
 ### Terminating one distribution
 
@@ -269,6 +302,10 @@ its own, so that it never shares a file with a distribution's console log: a dis
 - **`--without-forwarding`** is a hidden option of `mawd serve` for measurements only:
   distribution machines forward no port, so that `scripts/measure-forwarding.sh` can compare a
   cold start, the guest agent's idle cost, and sessions with and without forwarding.
+  `mawd install` neither accepts nor writes it.
+- **`--without-dns`** is a hidden option of `mawd serve` for measurements only: distribution
+  machines open no DNS channel, so that `scripts/measure-dns.sh` can compare a cold start with
+  and without DNS through the Mac; their agent then answers every query SERVFAIL.
   `mawd install` neither accepts nor writes it.
 - **`--without-mac-share`** is a hidden option of `mawd serve` for measurements only:
   distribution machines get neither the share of the home directory nor `maw.share` and

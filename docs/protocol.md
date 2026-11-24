@@ -1,7 +1,7 @@
 # Host and guest agent protocol
 
 The host (`mawd`, and the client library in `MawProtocol`) talks to the guest agent,
-`maw-agent`, over vsock. This document specifies protocol version **8**. The code is in
+`maw-agent`, over vsock. This document specifies protocol version **9**. The code is in
 `Sources/MawProtocol` (both sides) and `Sources/MawAgentKit` (the agent). Version 2 added the
 user a session runs as, its program (a command, a shell command line, or a login shell), its
 locale, and the input window, with which `signal` and `resize` overtake queued standard input
@@ -16,6 +16,8 @@ starts a login shell in a working directory through the agent as `runuser -l`'s 
 ([0022](decisions/0022-working-directory-and-logind.md)). Version 8 adds the forwarding
 channel: the `forwarding` request, `listeners`, `connect`, `connectFailed`, and the host's
 vsock port 19801 ([0023](decisions/0023-localhost-forwarding.md), [Forwarding](#forwarding)).
+Version 9 adds the DNS channel: the `dns` request and the `dnsQuery` and `dnsAnswer` frames
+([0024](decisions/0024-dns-through-the-mac.md), [DNS](#dns)).
 
 ## Transport
 
@@ -29,6 +31,9 @@ vsock port 19801 ([0023](decisions/0023-localhost-forwarding.md), [Forwarding](#
   `AgentProtocol.dialBackPort`); see [Dial-back](#dial-back).
 - For each forwarded connection, the agent connects to the host's vsock port **19801**
   (`0x4D59`, `AgentProtocol.forwardingPort`); see [Forwarding](#forwarding).
+- The guest's DNS queries reach the agent on `169.254.77.53`, port 53, over UDP and TCP inside
+  the guest, and travel to the host on the DNS channel, a connection that the agent dials; see
+  [DNS](#dns).
 - The host opens connections with `VirtualMachine.connectToAgent(timeout:)`, which retries
   every 20 ms while the agent is not listening yet, until the deadline. It uses them only for
   `info`, `sample`, `shutdown`, and `dialBack`, whose replies are small. Every exec session, in `maw`,
@@ -58,6 +63,8 @@ as soon as the five header bytes have arrived, before reading the payload.
 | `0x02` | `control` | both | a control message, JSON, UTF-8 |
 | `0x03` | `stdinConsumed` | guest to host | standard input the agent has written to the process, or discarded, since its last `stdinConsumed` frame: a byte count, 4 bytes, big-endian |
 | `0x04` | `dialBackNonce` | guest to host | the nonce of a `dialBack` request, exactly 32 bytes; the first frame on a connection the agent dials. A header that declares any other size is a protocol error as soon as it arrives. |
+| `0x05` | `dnsQuery` | guest to host | on the DNS channel: a tag, 4 bytes, big-endian, then one DNS query; 5 to 65,539 bytes in all (`AgentProtocol.maximumDNSFramePayload`). A header that declares another size is a protocol error as soon as it arrives. |
+| `0x06` | `dnsAnswer` | host to guest | on the DNS channel: the tag of a `dnsQuery`, then the response to it, in the same layout and with the same sizes |
 | `0x10` | `stdin` | host to guest | raw bytes for the process's standard input |
 | `0x11` | `stdout` | guest to host | raw bytes from standard output, or from the terminal |
 | `0x12` | `stderr` | guest to host | raw bytes from standard error (pipe mode only) |
@@ -105,6 +112,7 @@ names, missing required fields, and wrong types are protocol errors.
 | `shutdown` | none | `shutdownAcknowledged`, or `error` (`shutdownFailed`) |
 | `dialBack` | `nonce`: 64 lowercase hexadecimal digits, the 32 bytes of the nonce | `dialedBack`, or `error` (`dialBackFailed`); see [Dial-back](#dial-back) |
 | `forwarding` | none; only on a connection that the agent dialed | `listeners`, then the channel; or `error` (`busy`, `protocolViolation`); see [Forwarding](#forwarding) |
+| `dns` | none; only on a connection that the agent dialed | the channel; or `error` (`busy`, `protocolViolation`); see [DNS](#dns) |
 
 ### During an exec session (host to guest)
 
@@ -150,7 +158,7 @@ Error codes:
 | `permissionDenied` | The program cannot be executed. | `guestCommandNotStarted` (126) |
 | `spawnFailed` | Another failure to start, such as a missing working directory. | `guestCommandNotStarted` (126) |
 | `shutdownFailed` | The agent could not signal `init`. | `guestAgentFailed` |
-| `busy` | The agent is serving its maximum of 64 connections. It sends its `version` frame and this error without acting on the request. Also the reply to `forwarding` while another forwarding channel is open, or from an agent that cannot forward. | `guestAgentFailed` |
+| `busy` | The agent is serving its maximum of 64 connections. It sends its `version` frame and this error without acting on the request. Also the reply to `forwarding` while another forwarding channel is open, or from an agent that cannot forward, and to `dns` while another DNS channel is open, or from an agent that answers no DNS, as on the initramfs machine. | `guestAgentFailed` |
 | `userNotFound` | The requested user, or the default user that `/etc/maw.conf` names, is not in `/etc/passwd`. `user` names it. | `userNotFound` |
 | `sampleFailed` | The agent could not read its memory figures for `sample`: `/proc/meminfo` cannot be read, has no `MemTotal` or no `MemAvailable`, or reports more available memory than its total. The message says which. | `guestAgentFailed` |
 | `dialBackFailed` | The agent could not connect to the host for `dialBack`: no source port below 1024 was free, binding one failed, or the connection failed or did not complete within 2 seconds. The message says which. | `sessionDialBackFailed` |
@@ -247,6 +255,46 @@ host                                            agent
    connection registered, valid for 5 seconds, used once, and compared in constant time.
 5. **Any other message** on the channel, in either direction, is a protocol violation, and
    closes it.
+
+## DNS
+
+`dns` makes a connection the machine's DNS channel, which carries the guest's DNS queries to
+the host and their answers back ([decision record 0024](decisions/0024-dns-through-the-mac.md)).
+As for `forwarding`, the host sends it as the request of a connection that the agent dialed.
+
+```
+host                                            agent
+ | (dialed connection) version    version  |
+ | control dns  -------------------------> |
+ |  <----------------- dnsQuery{tag,query} |  a query from the guest's resolver
+ | dnsAnswer{tag,response} --------------> |  the response, sent to that resolver
+```
+
+1. **One channel.** The agent serves one DNS channel at a time and answers a second with
+   `error` (`busy`); an agent that answers no DNS, as on the initramfs machine, answers `busy`
+   too. The channel does not count against the agent's 64 connections. It lasts until either
+   side closes it; the host opens another 1 second after one ends.
+2. **The agent's server.** In a distribution, the agent adds `169.254.77.53/32`
+   (`AgentProtocol.dnsAddress`) to the loopback interface at its start and answers DNS there,
+   on UDP and TCP port 53, before any channel is open. A query that arrives while no channel
+   is open waits for one for up to 500 ms, at most 64 queries, and is then answered SERVFAIL.
+3. **Queries.** The agent parses each query (`DNSQuery`) and answers itself what it does not
+   pass on: FORMERR to a malformed query or one larger than 512 bytes, NOTIMP to an opcode,
+   class, or type other than A, AAAA, CNAME, MX, TXT, SRV, and PTR, REFUSED to `.local` and
+   the link-local reverse zones and beyond 128 queries in flight
+   (`AgentProtocol.maximumDNSQueriesInFlight`), and nothing to a message shorter than 12
+   bytes or a response. It sends the rest as `dnsQuery`, re-encoded with one question and the
+   EDNS payload size, under a tag of its own. A query repeated over UDP from the same source
+   with the same ID while the first is in flight is sent once.
+4. **Answers.** The host answers every `dnsQuery` with one `dnsAnswer` with the same tag; it
+   checks each query again and answers FORMERR, NOTIMP, REFUSED, or SERVFAIL where the agent
+   would. The agent sends the response to the query's source: over UDP, a response larger than
+   the query's EDNS payload size, within 512 to 4,096 bytes, or 512 bytes without EDNS, is
+   replaced by the question alone with the TC bit, so that the resolver asks again over TCP.
+   A response whose ID is not the query's is answered SERVFAIL. A query not answered within
+   5 seconds, and every query in flight when the channel ends, is answered SERVFAIL.
+5. **Any other frame** on the channel, in either direction, is a protocol violation, and closes
+   it.
 
 ## Sample
 

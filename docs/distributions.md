@@ -127,8 +127,9 @@ systemd unit in a tmpfs on `/run`, and switches to the distribution's systemd. I
 directory, `/run/systemd/system`, it writes the drop-in
 `systemd-timesyncd.service.d/maw-order.conf`, which orders `systemd-timesyncd` after
 `systemd-resolved`, so that a shutdown soon after a boot does not wait 5 s for
-`systemd-timesyncd`. Both are gone when the machine stops, and neither is written into the
-distribution's own files. The agent starts
+`systemd-timesyncd`, and the unit `maw-network-dns.service` with the drop-in
+`/run/systemd/resolved.conf.d/99-maw-dns.conf` for DNS through the Mac (see "DNS"). All of them
+are gone when the machine stops, and none is written into the distribution's own files. The agent starts
 with systemd, so that a session can begin while other units still start. Each machine gets every
 CPU of the Mac and half of its memory, and reaches the network through NAT.
 
@@ -203,6 +204,38 @@ or `::1`, is reachable on the Mac's `127.0.0.1` and `::1` under the same port
   forwards, and UDP. The distributions screen names the reason for each.
 - **The machine's idle stop** counts sessions only: a server started in a session keeps being
   forwarded only while the machine runs, which a session keeps it doing.
+
+## DNS
+
+The distribution's DNS queries are answered by the Mac's own resolver, so that names follow the
+Mac's VPNs, its scoped resolvers under `/etc/resolver/`, and its other DNS settings
+([decision record 0024](decisions/0024-dns-through-the-mac.md)).
+
+- **What the distribution sees.** systemd-resolved has one DNS server, `169.254.77.53`, which
+  the guest agent adds to the loopback interface and answers on, UDP and TCP port 53;
+  `resolvectl status` shows it as the global server, and the network interface has none.
+  `/etc/resolv.conf` stays the link to systemd-resolved's stub, `127.0.0.53`. A program or a
+  container that reads `/run/systemd/resolve/resolv.conf`, as Docker does, gets
+  `169.254.77.53`, which a container's network namespace can reach.
+- **The NAT network's server is not used.** At every boot, before systemd-networkd starts, a
+  runtime drop-in for every `.network` file, whatever it is called, turns off the DNS servers
+  and domains of DHCP and router advertisements
+  (`/run/systemd/network/<name>.network.d/99-maw-dns.conf`). The agent writes the drop-in for a
+  `.network` file added later and reloads systemd-networkd, and writes a line to the console log
+  when systemd-resolved holds any other server, as one that NetworkManager would give a link.
+- **What is answered:** A, AAAA, CNAME, MX, TXT, SRV, and PTR, with the Mac's records and TTLs;
+  NXDOMAIN for a name that does not exist, and NODATA for a name without the requested type.
+  Other types get NOTIMP, and `.local` names and link-local reverse names REFUSED. DNSSEC is not
+  validated.
+- **Single-label names.** `getent hosts buildhost` tries the Mac's search domains, in order, and
+  shows the full name it found.
+- **When the Mac does not answer**, a lookup fails with SERVFAIL, at the latest after 5 seconds,
+  and the next lookup tries again. There is no other server to fall back to.
+- **Nothing is written to the distribution's disk.** Everything above lives in `/run` and is gone
+  when the machine stops.
+- **Without systemd-resolved**, as in an imported Debian, the distribution has no DNS, as before:
+  its `/etc/resolv.conf` leads to the missing stub. `nameserver 169.254.77.53` in its own
+  `/etc/resolv.conf` uses the Mac's resolver.
 
 ## Sessions
 

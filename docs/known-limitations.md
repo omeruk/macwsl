@@ -12,28 +12,6 @@ from `main`.
 
 ## Phase 08: Networking
 
-- **The first DNS query after the DHCP lease is not answered.**
-  - **Seen:** In a distribution machine, the first DNS query that `systemd-resolved` sends to
-    the NAT's server (192.168.64.1), within about 20 ms of the DHCP lease, receives no answer.
-    The lookup completes only after `systemd-resolved` times that query out at about 5.0 s and
-    asks the IPv6 link-local server instead, so a lookup that begins in about the first 5.5
-    seconds of a boot can take about 5 s. Its effect on a user's first lookup after a cold start
-    is not measured.
-  - **Evidence:** Part 4b of phase 06a, on 2026-11-08 (M1 Pro, macOS 27): a temporary
-    integration test on test distributions, each boot's journal (`-o short-monotonic`), and in
-    some passes `SYSTEMD_LOG_LEVEL=debug` for `systemd-resolved` and `systemd-timesyncd`. The
-    lookup observed was `systemd-timesyncd`'s resolution of `ntp.ubuntu.com`, which was usually
-    still pending in about the first 5.5 seconds of a boot; in 20 boots stopped at once after
-    systemd reported `running`, all 20 had it pending at the stop. Under `.fsync`
-    synchronization, 5 of 10 instrumented boots tried to resolve before the network was up and
-    failed at once, so no lookup was pending. Why the first query is not answered is not
-    determined.
-  - **Resolved part:** Shutdowns soon after a boot waited 5 s for `systemd-timesyncd` while this
-    lookup was pending, and fell back to Virtualization.framework's stop request. [Decision
-    record 0013](decisions/0013-systemd-and-the-agent.md), item 7 (pull request #23), orders
-    `systemd-timesyncd` after `systemd-resolved`, which removes that wait without depending on
-    this item; the decision record lists the measurements.
-  - **Phase:** 08, together with DNS under VPNs.
 - **`localhost` forwarding was not checked with a VPN connected.**
   - **Seen:** Part 1 of phase 08 measured forwarding without a VPN; the owner chose not to run
     the VPN check. Forwarding uses vsock, not the NAT network, so a VPN is not expected to
@@ -81,6 +59,13 @@ from `main`.
   - **Evidence:** [Decision record 0023](decisions/0023-localhost-forwarding.md);
     `prompts/08-networking.md`, "Out of scope".
   - **Phase:** 12, a `.mawconfig` setting.
+- **DNS through the Mac cannot be turned off.**
+  - **Seen:** Every distribution's DNS queries are answered by the Mac's resolver through the
+    agent. No setting returns a distribution to the NAT network's server, for all
+    distributions or for one.
+  - **Evidence:** [Decision record 0024](decisions/0024-dns-through-the-mac.md);
+    `prompts/08-networking.md`, "The owner's decisions", item 3.
+  - **Phase:** 12, a `.mawconfig` setting.
 - **A forwarded connection does not keep a machine running.**
   - **Seen:** The machine's idle stop counts sessions only. A server started with `nohup` or
     as a systemd service, whose session has ended, is forwarded only until the machine stops,
@@ -105,6 +90,56 @@ from `main`.
     resolve it at a cost to the time to a prompt that has not been measured.
 
 ## Phase 12b: Hardening
+
+- **A link that another network manager configures can keep the NAT network's DNS server.**
+  - **Seen:** maw turns off the DHCP and router-advertised DNS servers through a drop-in for
+    every `.network` file of systemd-networkd. A link that NetworkManager or another manager
+    configures, as in an imported archive that enables one, gives systemd-resolved its own
+    server, and queries can reach it as well as the agent's. The agent writes a line to the
+    console log naming every such server (`dns: systemd-resolved also has the DNS server …`),
+    so it is never used without a trace, but it is not removed.
+  - **Evidence:** [Decision record 0024](decisions/0024-dns-through-the-mac.md), "What the
+    platform does" and item 4; the owner chose this over a kernel rule that refuses port 53 to
+    the gateway; `DNSIntegrationTests.writesAConsoleLineForAServerThatMawDoesNotConfigure`.
+  - **Phase:** 12b. Removing the link's servers through systemd-resolved's D-Bus interface
+    whenever they appear would close it, with a window after each change.
+- **A `.network` file added while the machine runs uses the NAT network's DNS server for a
+  moment.**
+  - **Seen:** The drop-ins are written before systemd-networkd starts. For a file added later,
+    the agent writes the drop-in when inotify reports it and runs `networkctl reload`; between
+    the user's `networkctl reload` or `netplan apply` and the agent's, the link has the DHCP
+    server, and a query in that window can reach it.
+  - **Evidence:** `NetworkDNSWatch` in `Sources/MawAgentKit/NetworkDNS.swift`;
+    `DNSIntegrationTests.keepsTheNetworksDNSOutWhateverItsFilesAreCalled` checks that no query
+    reaches it afterwards. The window was not measured.
+  - **Phase:** 12b.
+- **A name whose only records are of a type outside the probes is answered NXDOMAIN.**
+  - **Seen:** mDNSResponder reports a name without the requested type and a name that does not
+    exist alike. The daemon answers NXDOMAIN only when A, AAAA, TXT, MX, SRV, NS, and SOA all
+    have no record; a name whose only records are of another type, such as CAA or HTTPS, is
+    answered NXDOMAIN for the seven answered types.
+  - **Evidence:** [Decision record 0024](decisions/0024-dns-through-the-mac.md), item 2;
+    `DNSAnswererTests`.
+  - **Phase:** 12b.
+- **Negative answers are not cached in the guest.**
+  - **Seen:** The daemon's NXDOMAIN and NODATA answers carry no SOA record, so
+    systemd-resolved does not cache them; each repeated negative lookup goes to the Mac, whose
+    cache answers it.
+  - **Evidence:** `DNSResponse.encode` in `Sources/MawProtocol/DNSMessage.swift`.
+  - **Phase:** 12b. A synthesized SOA with the Mac's negative TTL would let the guest cache them.
+- **Only seven record types are answered.**
+  - **Seen:** A, AAAA, CNAME, MX, TXT, SRV, and PTR are answered; every other type, such as
+    CAA, NS, SOA, SVCB, and HTTPS, is answered NOTIMP, as the phase prompt requires.
+    `DNSServiceQueryRecord` would return any type.
+  - **Evidence:** `DNSRecordType.answered` in `Sources/MawProtocol/DNSMessage.swift`.
+  - **Phase:** 12b.
+- **The Mac's search domains apply to single-label A and AAAA names only.**
+  - **Seen:** `getent hosts buildhost` tries the Mac's search domains; a multi-label name such as
+    `build.team` is looked up as it is, and so is a single-label name of another type. The
+    search domains come from SystemConfiguration (`State:/Network/Global/DNS`); whether a file
+    under `/etc/resolver/` adds to them was not measured.
+  - **Evidence:** [Decision record 0024](decisions/0024-dns-through-the-mac.md), item 5.
+  - **Phase:** 12b.
 
 - **Two of phase 11c's speed targets are missed: each sample opens a connection of its own and
   reads the guest's figures.**
@@ -450,6 +485,18 @@ from `main`.
 
 ## No phase yet
 
+- **A program in a distribution cannot listen on TCP port 53 on a wildcard address.**
+  - **Seen:** The agent's DNS server holds `169.254.77.53:53`. A program that binds TCP
+    `0.0.0.0:53` or `[::]:53`, such as dnsmasq or bind without `bind-interfaces`, fails with
+    `EADDRINUSE`; over UDP, it binds only with `SO_REUSEADDR`, and the agent keeps the queries
+    to its address. Beside systemd-resolved's stub listener the same already happens; what is
+    new is that turning the stub off (`DNSStubListener=no`), as Pi-hole's instructions advise,
+    no longer frees the wildcard TCP port. A program can bind the specific addresses that it
+    serves instead.
+  - **Evidence:** [Decision record 0024](decisions/0024-dns-through-the-mac.md), "Port 53 in the
+    guest"; `DNSIntegrationTests.sharesPort53AndAnswersContainers`.
+  - **Phase:** None yet.
+
 - **Ports below 1024 are not forwarded.**
   - **Seen:** A server in a distribution on port 80, 443, or any port below 1024 is not
     reachable as `localhost` on the Mac; the distributions screen names the reason,
@@ -559,8 +606,10 @@ from `main`.
     resolve.
   - **Evidence:** `ProvisioningScript.text` in `Sources/MawDaemonKit/ProvisioningScript.swift`
     writes the link in both modes; pull request B of phase 06b decided not to handle it.
-  - **Phase:** None yet. The import could write a `resolv.conf` that names the NAT gateway's
-    DNS proxy instead, which needs the gateway's address at the import.
+  - **Phase:** None yet. Since phase 08, the import could write a `resolv.conf` that names the
+    agent's DNS server, `169.254.77.53`, which is the same in every distribution
+    ([decision record 0024](decisions/0024-dns-through-the-mac.md)); a user can write that line
+    already.
 - **An imported distribution whose systemd-networkd or systemd-resolved is masked has no
   network or no DNS.**
   - **Seen:** An archive in which the user masked either unit, as some WSL setups do, keeps the
