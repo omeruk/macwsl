@@ -429,6 +429,19 @@ from `main`.
     once, and the nonblocking reads on the Mac's side add a system call and a `poll(2)` for
     most pieces.
   - **Phase:** None yet.
+- **A file that a session writes in `/tmp` early in a boot is deleted.**
+  - **Seen:** Sessions do not wait for the boot, and the agent accepts them about 0.3 s into
+    it. Ubuntu's `systemd-tmpfiles-setup.service` runs a little later, at 0.37 to 0.44 s in
+    three cold starts, and empties `/tmp` under the rule `D /tmp 1777 root root 30d`. In each of
+    the three, a file that the first session wrote in `/tmp` was gone 4 s later. A command
+    run on a stopped distribution, such as `maw -- sh -c 'make > /tmp/log'`, can therefore
+    lose what it writes there. `/var/tmp` and the home directory are not affected.
+  - **Evidence:** Found during phase 08 pull request A, when the 1 GiB measurement's file
+    disappeared in 3 of 17 runs; the test daemon's log showed its session opening as the
+    machine became ready. [Decision record 0013](decisions/0013-systemd-and-the-agent.md),
+    item 3, "Sessions do not wait for the boot". The forwarding tests now write to `/var/tmp`.
+  - **Phase:** None yet. Holding sessions until `systemd-tmpfiles-setup.service` has finished
+    would resolve it at a cost to the time to a prompt that has not been measured.
 - **Binding a forwarded port can hold a distribution's forwarder for up to 500 ms.**
   - **Seen:** The forwarder binds each port that the guest reports, and probes a port in
     `TIME_WAIT`, on its own actor. The probe's connect waits up to 500 ms when a Mac program
