@@ -159,8 +159,10 @@ Mac, with Apple's `/usr/bin/python3` and the daemon's own sockets: `net.inet.tcp
    held its two threads and its place among the 256. Each direction now uses nonblocking
    sockets and waits in `poll(2)` for at most one second
    (`ByteRelay.pollIntervalMilliseconds`) before it reads or writes again, so a missed wakeup
-   delays a direction by at most one second. The cost is one wakeup per second for each
-   direction of an idle connection, on each side.
+   delays a direction by at most one second. The costs are one wakeup per second for each
+   direction of an idle connection, on each side, and part of the throughput (see
+   "Measurements of the implementation"). In five 1 GiB transfers measured on the Mac's side,
+   no wait reached the second; the longest took 18 ms.
 
    **Why a second gate.** The 19800 gate's 64 waiting nonces and its admission limit of waiting
    sessions plus 4 belong to sessions: a burst of a browser's connections would fail `maw`
@@ -237,45 +239,59 @@ Mac, with Apple's `/usr/bin/python3` and the daemon's own sockets: `net.inet.tcp
 
 ## Measurements of the implementation
 
-Development figures, taken on 2026-11-23 with `scripts/measure-forwarding.sh` at commit
-`ce83bc5` and the measurement changes after it, through the test daemon, on the Mac described
-above, in use (load averages 2.5 to 4.1). They are not the owner's official run. Each figure is
-the median of 5 runs, with the slowest in parentheses, unless it says otherwise.
+Development figures, taken on 2026-11-24 with `scripts/measure-forwarding.sh` at commit
+`b85a63e`, with the guest files of Guest run 45287694609 at the same commit, through the test
+daemon, on the Mac described above, in use (one-minute load average 4.4 at the start). They are
+not the owner's official run. Each figure is the median of 5 runs, with the slowest in
+parentheses, unless it says otherwise. The figures of 2026-11-23, at commit `ce83bc5` with the
+relay's blocking reads, follow in brackets where they differ.
 
 | Measurement | Result |
 |---|---|
-| From the guest's `listen()` to `localhost` accepting on the Mac | 28.5 ms (37.2 ms) |
-| Time to the first byte, median of 100 requests per run: forwarded | 1.483 ms (1.565 ms) |
-| The same to the NAT address | 0.549 ms (0.562 ms) |
-| Forwarding adds to the time to the first byte | 0.93 ms |
-| Throughput of a 1 GiB response: forwarded | 386.6 MB/s (383.9 MB/s) |
-| The same from the NAT address | 5,110.6 MB/s (4,507.4 MB/s) |
-| The agent's CPU time per minute on an idle machine: with forwarding | 100 ms (120 ms) |
-| The same with `mawd serve --without-forwarding`, as on `main` | 10 ms (10 ms) |
-| Cold start to a prompt: with forwarding | 916.1 ms (949.6 ms) |
-| The same with `mawd serve --without-forwarding` | 932.8 ms (950.7 ms) |
-| `maw -- true`, median of 20: without forwarded connections | 220.0 ms (238.3 ms) |
-| The same with 256 forwarded connections open | 220.6 ms (223.4 ms) |
-| `maw --list`: without forwarded connections | 216.3 ms (221.6 ms) |
-| The same with 256 forwarded connections open | 216.1 ms (219.4 ms) |
-| Threads with 256 forwarded connections open: daemon, agent | 525, 515 (10 and 5 without) |
-| 256 connections opened at once, still open after 2 s | 255, and the 256th place held by the test's own earlier connection |
+| From the guest's `listen()` to `localhost` accepting on the Mac | 10.4 ms (124.4 ms) [28.5 ms (37.2 ms)] |
+| Time to the first byte, median of 100 requests per run: forwarded | 1.148 ms (1.252 ms) [1.483 ms (1.565 ms)] |
+| The same to the NAT address | 0.460 ms (0.681 ms) [0.549 ms (0.562 ms)] |
+| Forwarding adds to the time to the first byte | 0.69 ms [0.93 ms] |
+| Throughput of a 1 GiB response: forwarded | 303.4 MB/s (288.9 MB/s) [386.6 MB/s (383.9 MB/s)] |
+| The same from the NAT address | 5,252.2 MB/s (4,312.9 MB/s) [5,110.6 MB/s (4,507.4 MB/s)] |
+| The agent's CPU time per minute on an idle machine: with forwarding | 60 ms (80 ms) [100 ms (120 ms)] |
+| The same with `mawd serve --without-forwarding`, as on `main` | 10 ms (20 ms) [10 ms (10 ms)] |
+| Cold start to a prompt: with forwarding | 1,000.8 ms (1,039.8 ms) [916.1 ms (949.6 ms)] |
+| The same with `mawd serve --without-forwarding` | 1,037.9 ms (1,623.1 ms) [932.8 ms (950.7 ms)] |
+| `maw -- true`, median of 20: without forwarded connections | 213.2 ms (224.3 ms) [220.0 ms (238.3 ms)] |
+| The same with 256 forwarded connections open | 215.0 ms (221.9 ms) [220.6 ms (223.4 ms)] |
+| `maw --list`: without forwarded connections | 164.2 ms (211.7 ms) [216.3 ms (221.6 ms)] |
+| The same with 256 forwarded connections open | 163.1 ms (165.6 ms) [216.1 ms (219.4 ms)] |
+| Threads with 256 forwarded connections open: daemon, agent | 526, 515 (9 and 5 without) [525, 515 (10 and 5 without)] |
+| 256 connections opened at once, still open after 2 s | 155 of 256 |
+
+Holding 256 connections open added 1.8 ms to the median of `maw -- true`, and `maw --list`
+took 163.1 ms, within the rule of item 6. The cold start with and without forwarding differs
+by less than the spread of either; the difference has no sign that repeats across runs.
+
+Of 256 connections opened at once, the daemon resets those that find the 64 waiting places of
+the 19801 gate taken, so the count still open varies with how fast the agent dials back: 155
+and 211 on 2026-11-24, and 154, 225, and 255 in the runs of 2026-11-23.
 
 The agent's CPU time is counted in clock ticks of 10 ms, so the figures without forwarding
-are at the resolution of the measurement. Forwarding adds about 90 ms per minute, 0.15 % of
-one core; the scan alone cost 51 ms per minute in the throwaway build, and the rest is the
-agent's Swift code around it.
+are at the resolution of the measurement. Forwarding adds about 50 ms per minute, 0.08 % of
+one core; the scan alone cost 51 ms per minute in the throwaway build.
 
 **Where the throughput limit comes from.** The forwarded path crosses vsock once, and each side
 copies every byte through user space: in the agent from the guest's TCP socket to the vsock
 connection, in the daemon from the vsock connection to the Mac's TCP socket. A guest-opened
 vsock connection with no maw code carried 608 MB/s in
-[0017](0017-dial-back-for-sessions.md); the forwarded path reaches 64 % of that. The throwaway
-build copied in 256 KiB pieces and measured 383 to 388 MB/s; the implementation copies in
-128 KiB pieces and measured 384 to 388 MB/s, so the size of the copy buffer is not the limit,
-and no other change was made. The prompt sets no throughput target. A copy without user space,
-`splice` in the guest, was not tried: it needs a pipe between the two sockets, and the Mac's
-side, where `splice` does not exist, would still copy.
+[0017](0017-dial-back-for-sessions.md). The throwaway build copied in 256 KiB pieces and
+measured 383 to 388 MB/s; the implementation with blocking reads copied in 128 KiB pieces and
+measured 384 to 388 MB/s, so the size of the copy buffer is not the limit. Since the relay
+waits in `poll(2)`, the medians of 13 runs of the throughput measurement on 2026-11-24 were
+303 to 364 MB/s, the two lowest in the runs with the whole suite. The cost is on the Mac's
+side: there each read from the vsock connection returns 8 KiB, and about 87,000 of the 131,073
+reads of a 1 GiB transfer are followed by a read that finds nothing and a `poll(2)`. A
+diagnostic build in which only the daemon's relay read with blocking calls measured a median of
+375.5 MB/s in the same conditions. The prompt sets no throughput target. A copy without user
+space, `splice` in the guest, was not tried: it needs a pipe between the two sockets, and the
+Mac's side, where `splice` does not exist, would still copy.
 
 ## Consequences
 
@@ -286,8 +302,8 @@ side, where `splice` does not exist, would still copy.
 - A Mac program that starts after a distribution forwards its port, and sets `SO_REUSEADDR` as
   Python's `http.server` does, binds the wildcard address but does not receive the loopback
   connections until the forward ends ([docs/security.md](../security.md)).
-- The forwarded throughput, about 386 MB/s, is a thirteenth to a twentieth of the NAT path's
-  (5,111 to 7,735 MB/s in the two measurements).
+- The forwarded throughput, 303 to 364 MB/s, is less than a tenth of the NAT path's (medians
+  of 4,192 to 5,946 MB/s in the same 13 runs, and 5,111 to 7,735 MB/s before).
 - The machine's idle stop counts sessions only: a forwarded connection does not keep a machine
   running (phase 12).
 - UDP is not forwarded.
