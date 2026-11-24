@@ -170,9 +170,35 @@ import XPC
         #expect(try InterfaceCoding.decode(DaemonEvent.self, from: message, as: .client) == event)
     }
 
-    /// Version 8 adds `macShare` to each distribution's figures.
-    @Test func isInterfaceVersion8() {
-        #expect(DaemonInterface.version == 8)
+    /// Version 9 adds `forwarding` to each distribution's figures.
+    @Test func isInterfaceVersion9() {
+        #expect(DaemonInterface.version == 9)
+    }
+
+    /// A running distribution's forwarding, through `InterfaceCoding`, with every reason; a
+    /// snapshot without it reads as no forwarding.
+    @Test func carriesTheForwardingOfADistribution() throws {
+        let snapshot = DistributionSnapshot(
+            sequence: 4, distributions: [Self.runningFigures],
+            defaultDistribution: Self.runningFigures.name)
+        let message = try InterfaceCoding.encode(DaemonReply.distributionSnapshot(snapshot))
+        let decoded = try InterfaceCoding.decode(DaemonReply.self, from: message, as: .client)
+        #expect(decoded == .distributionSnapshot(snapshot))
+        #expect(
+            Self.runningFigures.forwarding?.notForwarded.map(\.reason)
+                == PortForwarding.Reason.allCases)
+        #expect(
+            String(
+                decoding: try JSONEncoder().encode(PortForwarding.Reason.allCases), as: UTF8.self)
+                == #"["inUseOnMac","forwardedForAnotherDistribution","privilegedOnMac","bindFailed","limit"]"#
+        )
+        var without = Self.runningFigures
+        without.forwarding = nil
+        let text = String(decoding: try JSONEncoder().encode(without), as: UTF8.self)
+        #expect(!text.contains("forwarding"))
+        #expect(
+            try JSONDecoder().decode(DistributionFigures.self, from: Data(text.utf8)).forwarding
+                == nil)
     }
 
     /// A snapshot without `macShare` reads as a distribution without the share mounted.
@@ -227,6 +253,15 @@ import XPC
         figures.lastSampleMicroseconds = 1_250
         figures.sampleNumber = 12
         figures.macShare = SharedDirectory(macPath: "/Users/ayse", linuxPath: "/mnt/mac")
+        figures.forwarding = PortForwarding(
+            forwarded: [3000, 8000],
+            notForwarded: [
+                .init(port: 5000, reason: .inUseOnMac),
+                .init(port: 5432, reason: .forwardedForAnotherDistribution),
+                .init(port: 80, reason: .privilegedOnMac),
+                .init(port: 9000, reason: .bindFailed),
+                .init(port: 9001, reason: .limit),
+            ])
         return figures
     }
 

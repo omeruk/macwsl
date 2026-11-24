@@ -1,7 +1,7 @@
 # Host and guest agent protocol
 
 The host (`mawd`, and the client library in `MawProtocol`) talks to the guest agent,
-`maw-agent`, over vsock. This document specifies protocol version **7**. The code is in
+`maw-agent`, over vsock. This document specifies protocol version **8**. The code is in
 `Sources/MawProtocol` (both sides) and `Sources/MawAgentKit` (the agent). Version 2 added the
 user a session runs as, its program (a command, a shell command line, or a login shell), its
 locale, and the input window, with which `signal` and `resize` overtake queued standard input
@@ -13,7 +13,9 @@ error ([0020](decisions/0020-distribution-figures.md)). Version 6 adds `macShare
 `agentInfo` ([0021](decisions/0021-mac-share.md)). Version 7 adds `exec`'s `fallsBackToHome`
 and `started`'s `workingDirectoryFallback`, gives `~` in `workingDirectory` its meaning, and
 starts a login shell in a working directory through the agent as `runuser -l`'s shell helper
-([0022](decisions/0022-working-directory-and-logind.md)).
+([0022](decisions/0022-working-directory-and-logind.md)). Version 8 adds the forwarding
+channel: the `forwarding` request, `listeners`, `connect`, `connectFailed`, and the host's
+vsock port 19801 ([0023](decisions/0023-localhost-forwarding.md), [Forwarding](#forwarding)).
 
 ## Transport
 
@@ -25,6 +27,8 @@ starts a login shell in a working directory through the agent as `runuser -l`'s 
   the agent closes after replying.
 - In reply to `dialBack`, the agent connects to the host's vsock port **19800** (`0x4D58`,
   `AgentProtocol.dialBackPort`); see [Dial-back](#dial-back).
+- For each forwarded connection, the agent connects to the host's vsock port **19801**
+  (`0x4D59`, `AgentProtocol.forwardingPort`); see [Forwarding](#forwarding).
 - The host opens connections with `VirtualMachine.connectToAgent(timeout:)`, which retries
   every 20 ms while the agent is not listening yet, until the deadline. It uses them only for
   `info`, `sample`, `shutdown`, and `dialBack`, whose replies are small. Every exec session, in `maw`,
@@ -100,6 +104,7 @@ names, missing required fields, and wrong types are protocol errors.
 | `sample` | none | `sampled`, or `error` (`sampleFailed`); see [Sample](#sample) |
 | `shutdown` | none | `shutdownAcknowledged`, or `error` (`shutdownFailed`) |
 | `dialBack` | `nonce`: 64 lowercase hexadecimal digits, the 32 bytes of the nonce | `dialedBack`, or `error` (`dialBackFailed`); see [Dial-back](#dial-back) |
+| `forwarding` | none; only on a connection that the agent dialed | `listeners`, then the channel; or `error` (`busy`, `protocolViolation`); see [Forwarding](#forwarding) |
 
 ### During an exec session (host to guest)
 
@@ -109,6 +114,12 @@ names, missing required fields, and wrong types are protocol errors.
 | `signal` | `name`: signal name without `SIG`, such as `"INT"` | Sends the signal at once. Pipe mode: to the process group. Terminal mode: to the terminal's foreground process group. |
 | `resize` | `rows`, `columns`: u16 | Terminal mode: sets the window size at once, and the kernel sends SIGWINCH. Pipe mode: ignored. |
 | `foregroundQuery` | `id`: u32 | Asks which program runs in the foreground of the terminal. The agent replies at once with `foregroundProgram` and the same `id`; see [Foreground program](#foreground-program). |
+
+### On the forwarding channel (host to guest)
+
+| Message | Fields | Effect |
+|---------|--------|--------|
+| `connect` | `id`: u32, `port`: u16 from 1 to 65535, `family`: `"ipv4"` or `"ipv6"`, `nonce`: 64 lowercase hexadecimal digits | Connect to the guest's listener on `port` at `127.0.0.1` or `::1`, then dial port 19801 and send `nonce` first; or answer `connectFailed` with the same `id`. |
 
 Signals travel by name because macOS and Linux number several of them differently. The names
 are `HUP INT QUIT ILL TRAP ABRT BUS FPE KILL USR1 SEGV USR2 PIPE ALRM TERM CHLD CONT STOP
@@ -124,6 +135,8 @@ TSTP TTIN TTOU URG XCPU XFSZ VTALRM PROF WINCH IO SYS`.
 | `shutdownAcknowledged` | none | The agent has asked `init` to power off. The VM stops shortly after. |
 | `dialedBack` | none | Reply to `dialBack`: the agent has connected to the host and sends the nonce first on that connection. |
 | `sampled` | `memoryTotalBytes`: u64, `memoryAvailableBytes`: u64, optional `ipv4Address`: string | Reply to `sample`; see [Sample](#sample). |
+| `listeners` | `listeners`: at most 1,024 objects `{"address": "anyIPv4" \| "anyIPv6" \| "loopbackIPv4" \| "loopbackIPv6", "port": u16}`, ports from 1 to 65535, no two alike | On the forwarding channel: the guest's TCP listeners on `0.0.0.0`, `::`, `127.0.0.1`, and `::1`, all of them, once when the channel opens and whenever they change. |
+| `connectFailed` | `id`: u32, `reason`: string of at most 256 bytes | On the forwarding channel: `connect` with `id` failed before any dial. The host does not log the reason. |
 | `foregroundProgram` | `id`: u32, optional `processGroup`: i32, optional `name`: string | Reply to `foregroundQuery` with its `id`. `processGroup` is present exactly when a program other than the shell is in the foreground; `name` is its leader's command name, absent when the leader has exited. A `name` without `processGroup` is a protocol violation. |
 | `error` | `code`: string, `message`: string, optional `hostVersion`, `guestVersion`: u32, optional `user`: string | A request failed, or the agent is closing the connection because of a protocol error. |
 
@@ -137,7 +150,7 @@ Error codes:
 | `permissionDenied` | The program cannot be executed. | `guestCommandNotStarted` (126) |
 | `spawnFailed` | Another failure to start, such as a missing working directory. | `guestCommandNotStarted` (126) |
 | `shutdownFailed` | The agent could not signal `init`. | `guestAgentFailed` |
-| `busy` | The agent is serving its maximum of 64 connections. It sends its `version` frame and this error without acting on the request. | `guestAgentFailed` |
+| `busy` | The agent is serving its maximum of 64 connections. It sends its `version` frame and this error without acting on the request. Also the reply to `forwarding` while another forwarding channel is open, or from an agent that cannot forward. | `guestAgentFailed` |
 | `userNotFound` | The requested user, or the default user that `/etc/maw.conf` names, is not in `/etc/passwd`. `user` names it. | `userNotFound` |
 | `sampleFailed` | The agent could not read its memory figures for `sample`: `/proc/meminfo` cannot be read, has no `MemTotal` or no `MemAvailable`, or reports more available memory than its total. The message says which. | `guestAgentFailed` |
 | `dialBackFailed` | The agent could not connect to the host for `dialBack`: no source port below 1024 was free, binding one failed, or the connection failed or did not complete within 2 seconds. The message says which. | `sessionDialBackFailed` |
@@ -189,6 +202,51 @@ host                                    agent
    nonce arrives within the 5 seconds, the session fails with `sessionDialBackFailed` or
    `sessionDialBackMissing`. The host never falls back to running the session on a
    connection that it opened.
+
+## Forwarding
+
+`forwarding` makes a connection the machine's forwarding channel, which carries `localhost`
+forwarding ([decision record 0023](decisions/0023-localhost-forwarding.md)). The host sends it
+as the request of a connection that the agent dialed, so that the host's reading never stalls
+the machine's vsock device; on a connection that the host opened it is a protocol violation.
+
+```
+host                                            agent
+ | (dialed connection) version    version  |
+ | control forwarding  ------------------> |
+ |  <-------------- control listeners[...] |  at once, then whenever they change
+ | control connect{id,port,family,nonce} -> |  connect to the guest's listener;
+ |                                          |  then dial port 19801:
+ |  <---------------------- dialBackNonce   |      (new connection) nonce, then raw bytes
+ |  <------------ control connectFailed{id} |  or, when connecting failed
+```
+
+1. **One channel.** The agent serves one forwarding channel at a time and answers a second with
+   `error` (`busy`). The channel does not count against the agent's 64 connections: sessions
+   keep all of them. The channel lasts until either side closes it. The host reads it at all
+   times; the agent closes it if more than 1 MiB of its output waits.
+2. **Listeners.** The agent lists the guest's listening TCP sockets with netlink `sock_diag`
+   every 250 ms (`AgentProtocol.listenerScanInterval`), and sends `listeners` with all of them
+   when the set differs from the last one sent. It keeps sockets on `0.0.0.0`, `::`,
+   `127.0.0.1`, and `::1` only; `127.0.0.53`, `127.0.0.54`, other addresses, and the agent's own
+   sockets are left out. Beyond 1,024 listeners (`AgentProtocol.maximumListeners`), it sends
+   the first 1,024 in port order and logs that the rest were left out. If a scan fails, the
+   agent keeps the last set, sends an empty one if it has sent none, and logs the failure once;
+   once scans have failed for 1 second, it sends an empty set, so that the host releases the
+   ports, and the next scan that succeeds reports them anew.
+3. **Connections.** For `connect`, the agent connects to `127.0.0.1` (`ipv4`) or `::1` (`ipv6`)
+   on `port`, within 2 seconds, then dials the host's port 19801 as for `dialBack` (the highest
+   free source port below 1024, within 2 seconds), sends a `dialBackNonce` frame with the
+   request's nonce, and copies raw bytes between the two connections from then on: no frames
+   follow the nonce. The end of one side's stream is carried as `shutdown(SHUT_WR)` on the
+   other; an error resets both. If either step fails, the agent closes what it opened and sends
+   `connectFailed` with the request's `id`. It holds at most 256 forwarded connections
+   (`AgentProtocol.maximumForwardedConnections`); a `connect` beyond them fails at once.
+4. **The host's port 19801** has a gate of its own, with the same checks as port 19800
+   ([Dial-back](#dial-back), item 4): a source port below 1024, a nonce that a waiting
+   connection registered, valid for 5 seconds, used once, and compared in constant time.
+5. **Any other message** on the channel, in either direction, is a protocol violation, and
+   closes it.
 
 ## Sample
 
@@ -415,6 +473,8 @@ turns it into SIGINT when it reads it, after the input queued before it.
   group, and reaps the process. Other connections are unaffected.
 - The agent's unit tests send 10,000 random frames over about 950 connections and check that
   each connection is closed and that the agent still serves new ones.
+- A forwarded connection carries no frames after its nonce: a malformed byte stream there is
+  the application's, and neither side reads it.
 
 ## Readiness
 

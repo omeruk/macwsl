@@ -31,10 +31,18 @@ import Testing
         #expect((try Mawd.parseAsRoot(["serve"]) as? Serve)?.withoutMacShare == false)
     }
 
+    @Test func acceptsLeavingOutForwarding() throws {
+        #expect(failure("serve", "--without-forwarding") == nil)
+        let command = try Mawd.parseAsRoot(["serve", "--without-forwarding"])
+        #expect((command as? Serve)?.withoutForwarding == true)
+        #expect((try Mawd.parseAsRoot(["serve"]) as? Serve)?.withoutForwarding == false)
+    }
+
     /// `mawd install` accepts neither option, so neither can reach the LaunchAgent.
     @Test func installRejectsTheMeasurementOptions() {
         #expect(failure("install", "--sample-interval-ms", "100") != nil)
         #expect(failure("install", "--sample-with-info") != nil)
         #expect(failure("install", "--without-mac-share") != nil)
+        #expect(failure("install", "--without-forwarding") != nil)
     }
 }

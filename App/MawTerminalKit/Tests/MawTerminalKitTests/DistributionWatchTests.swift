@@ -415,6 +415,75 @@ func figures(
                 .details.contains { $0.key == "mounts" })
     }
 
+    /// `forwarded` comes after `ip`, as in `Distributions.dc.html`, only while the distribution
+    /// runs with a forwarded port: in port order on one line, with shorter forms that end in
+    /// `+N`, and the ports that were not forwarded in its help text.
+    @Test func theForwardedRow() throws {
+        var running = figures(sample: 1)
+        running.ipv4Address = "192.168.64.3"
+        running.forwarding = PortForwarding(forwarded: [8000])
+        func detail(_ figures: DistributionFigures, _ key: String) -> DistributionInfo.Detail? {
+            DaemonDistributions.make(figures, isDefault: false, history: [nil], home: "/Users/a")
+                .details.first { $0.key == key }
+        }
+        #expect(
+            DaemonDistributions.make(running, isDefault: false, history: [nil]).details.map(\.key)
+                == ["default", "user", "ip", "forwarded", "disk image"])
+        #expect(
+            detail(running, "forwarded")
+                == .init("forwarded", "localhost:8000 → 8000", role: .link))
+
+        // Several ports, in port order, whatever the daemon's order.
+        running.forwarding = PortForwarding(forwarded: [8000, 3000, 5173])
+        let row = try #require(detail(running, "forwarded"))
+        #expect(row.value == "localhost:3000 → 3000, localhost:5173 → 5173, localhost:8000 → 8000")
+        #expect(
+            row.shorter == [
+                "localhost:3000 → 3000, localhost:5173 → 5173 +1",
+                "localhost:3000 → 3000 +2",
+            ])
+        #expect(row.help == nil)
+
+        // The ports that were not forwarded are explained in the row's help text, in order.
+        running.forwarding = PortForwarding(
+            forwarded: [8000],
+            notForwarded: [
+                .init(port: 9000, reason: .bindFailed), .init(port: 80, reason: .privilegedOnMac),
+                .init(port: 5000, reason: .inUseOnMac),
+                .init(port: 5432, reason: .forwardedForAnotherDistribution),
+                .init(port: 9001, reason: .limit),
+            ])
+        let help = try #require(detail(running, "forwarded")?.help).split(separator: "\n")
+        #expect(help.count == 5)
+        #expect(help[0].hasPrefix("Port 80 is not forwarded: ports below 1024"))
+        #expect(
+            help[1]
+                == "Port 5000 is not forwarded: a Mac program uses it. Once it is free on the Mac, restart the server in the distribution."
+        )
+        #expect(help[2].hasPrefix("Port 5432 is not forwarded: another distribution forwards it."))
+        #expect(help[3].hasPrefix("Port 9000 is not forwarded: the Mac refused it."))
+        #expect(help[4] == "Port 9001 is not forwarded: a distribution forwards at most 128 ports.")
+        #expect(detail(running, "ip")?.help == nil)
+
+        // No forwarded port: no row, and the reasons go to the ip row.
+        running.forwarding = PortForwarding(notForwarded: [.init(port: 5000, reason: .inUseOnMac)])
+        #expect(detail(running, "forwarded") == nil)
+        #expect(detail(running, "ip")?.help?.hasPrefix("Port 5000 is not forwarded") == true)
+        #expect(detail(running, "user")?.help == nil)
+        // Nor an ip row yet: the reasons go to the user row.
+        var early = running
+        early.ipv4Address = nil
+        #expect(detail(early, "ip") == nil)
+        #expect(detail(early, "user")?.help?.hasPrefix("Port 5000 is not forwarded") == true)
+        running.forwarding = nil
+        #expect(detail(running, "forwarded") == nil)
+
+        // Stopped, with stale forwarding in the figures: no row.
+        var stopped = figures(state: .stopped, sample: 1)
+        stopped.forwarding = PortForwarding(forwarded: [8000])
+        #expect(detail(stopped, "forwarded") == nil)
+    }
+
     /// A figure that the daemon did not report is left out, never a placeholder.
     @Test func unknownFiguresAreLeftOut() {
         var running = figures(sample: 1)

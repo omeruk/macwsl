@@ -34,14 +34,13 @@ from `main`.
     `systemd-timesyncd` after `systemd-resolved`, which removes that wait without depending on
     this item; the decision record lists the measurements.
   - **Phase:** 08, together with DNS under VPNs.
-- **The distributions screen's details box has no `forwarded` row.**
-  - **Seen:** `Distributions.dc.html` shows `forwarded` (`localhost:8000 → 8000`) for each
-    distribution. The app leaves the row out, because no port is forwarded yet, and an empty or
-    `—` row would be a placeholder.
-  - **Evidence:** `DaemonDistributions.make(_:isDefault:history:home:)` in
-    `App/MawTerminalKit/Sources/MawTerminalKit/Distributions/Distributions.swift`;
-    `prompts/11c-distribution-figures.md`, "Deviations from `Distributions.dc.html`", item 2.
-  - **Phase:** 08, which forwards ports and can report them in the snapshot.
+- **`localhost` forwarding was not checked with a VPN connected.**
+  - **Seen:** Part 1 of phase 08 measured forwarding without a VPN; the owner chose not to run
+    the VPN check. Forwarding uses vsock, not the NAT network, so a VPN is not expected to
+    affect it, but that is not measured.
+  - **Evidence:** [Decision record 0023](decisions/0023-localhost-forwarding.md), "What the
+    platform does".
+  - **Phase:** 08, pull request B, whose acceptance includes an owner check with a VPN.
 
 ## Phase 12: Configuration and lifecycle
 
@@ -75,6 +74,35 @@ from `main`.
   - **Evidence:** `FigureSampler.figures(_:)` reads `DistroMetadata.defaultUser`
     (`Sources/MawDaemonKit/FigureSampler.swift`).
   - **Phase:** 12, which reads `/etc/maw.conf`'s setting.
+
+- **`localhost` forwarding cannot be turned off.**
+  - **Seen:** Every running distribution forwards its listening TCP ports to the Mac's
+    loopback addresses. No setting turns it off, for all distributions or for one.
+  - **Evidence:** [Decision record 0023](decisions/0023-localhost-forwarding.md);
+    `prompts/08-networking.md`, "Out of scope".
+  - **Phase:** 12, a `.mawconfig` setting.
+- **A forwarded connection does not keep a machine running.**
+  - **Seen:** The machine's idle stop counts sessions only. A server started with `nohup` or
+    as a systemd service, whose session has ended, is forwarded only until the machine stops,
+    60 seconds after its last session, even while a Mac program is connected to it; the
+    connection then ends.
+  - **Evidence:** `MachineRegistry.scheduleIdleStopIfUnused` counts the daemon's leases;
+    `prompts/08-networking.md`, "Out of scope".
+  - **Phase:** 12, with idle shutdown.
+
+- **A file that a session writes in `/tmp` early in a boot is deleted.**
+  - **Seen:** Sessions do not wait for the boot, and the agent accepts them about 0.3 s into
+    it. Ubuntu's `systemd-tmpfiles-setup.service` runs a little later, at 0.37 to 0.44 s in
+    three cold starts, and empties `/tmp` under the rule `D /tmp 1777 root root 30d`. In each of
+    the three, a file that the first session wrote in `/tmp` was gone 4 s later. A command
+    run on a stopped distribution, such as `maw -- sh -c 'make > /tmp/log'`, can therefore
+    lose what it writes there. `/var/tmp` and the home directory are not affected.
+  - **Evidence:** Found during phase 08 pull request A, when the 1 GiB measurement's file
+    disappeared in 3 of 17 runs; the test daemon's log showed its session opening as the
+    machine became ready. [Decision record 0013](decisions/0013-systemd-and-the-agent.md),
+    item 3, "Sessions do not wait for the boot". The forwarding tests now write to `/var/tmp`.
+  - **Phase:** 12. Holding sessions until `systemd-tmpfiles-setup.service` has finished would
+    resolve it at a cost to the time to a prompt that has not been measured.
 
 ## Phase 12b: Hardening
 
@@ -349,6 +377,37 @@ from `main`.
     `Importer.swift`; pull request #32, code review.
   - **Phase:** 12b: one helper for an operation's steps in `MawDaemonKit`.
 
+- **`LocalShellSessionTests.aStartDirectoryThatDoesNotExistIsIgnoredAsOnMain` failed once in CI.**
+  - **Seen:** In the first attempt of CI run 45353389601, at `a9305c7`, the test did not see
+    the local shell exit within its 5 seconds, at
+    `App/MawTerminalKit/Tests/MawTerminalKitTests/LocalShellSessionTests.swift:446`, and the
+    terminal app's job failed. The rerun of the job passed, as did the CI runs before it on
+    the same branch. The commit changed only documentation, and phase 08 does not change the
+    test or the local shell. The cause is not known: the shell may not have run the command
+    within the time, or its exit may not have been reported.
+  - **Evidence:** CI run 45353389601, first attempt, job "Terminal app"; pull request #36,
+    "Verification".
+  - **Phase:** 12b. Repeating the test on a loaded machine with the shell's output and the
+    session's state recorded at the deadline would show which of the two it is.
+
+- **A session takes about 8 to 12 ms longer while 256 forwarded connections are held open, and
+  most of that cost is not located.**
+  - **Seen:** Timed from its start to its termination, `maw -- true` took a median of 50.6,
+    51.0, and 52.7 ms in three development runs without forwarded connections, and 64.1,
+    64.8, and 64.4 ms with 256 held open. About 7.5 ms of the difference lies inside the
+    session as the daemon's log shows it, from its opening to its closing (medians of 11.5 ms
+    against 19.0 ms), and about 4 ms outside it. The agent's `fork(2)` explains about 0.3 ms:
+    the agent has 1,136 mappings and 515 threads with the connections held, against 20 and 5,
+    and in the guest a `fork(2)` and wait took 0.66 ms with 1,537 mappings against 0.38 ms
+    with 37. The rest is not located. In the owner's official reruns, the median over 80 runs
+    of each side was 85.38 ms without the connections and 93.76 ms with them, 8.4 ms more,
+    against about 12 ms in the development runs. The owner's rule allows 50 ms.
+  - **Evidence:** [Decision record 0023](decisions/0023-localhost-forwarding.md), "The
+    owner's official run"; `measuresSessionsBeside256Connections` in
+    `Tests/mawdTests/ForwardingMeasurements.swift`.
+  - **Phase:** 12b. Timing a session's steps in the daemon and the agent, with and without
+    the held connections, would locate it.
+
 ## Phase 13: Packaging and release
 
 - **macOS asks about `mawd` again after every development build.**
@@ -390,6 +449,50 @@ from `main`.
   - **Phase:** 13, with the app bundle.
 
 ## No phase yet
+
+- **Ports below 1024 are not forwarded.**
+  - **Seen:** A server in a distribution on port 80, 443, or any port below 1024 is not
+    reachable as `localhost` on the Mac; the distributions screen names the reason,
+    `privilegedOnMac`.
+  - **Evidence:** In Part 1 of phase 08, the daemon's `bind` of `127.0.0.1` and `::1` on ports
+    80, 443, and 1023 failed with `EACCES` (errno 13): macOS lets a program that is not root
+    bind such a port on the wildcard address only, which decision 1 of
+    `prompts/08-networking.md` excludes. [Decision record 0023](decisions/0023-localhost-forwarding.md).
+  - **Phase:** None yet; a privileged helper would add a privilege that maw does not have.
+- **UDP is not forwarded.**
+  - **Seen:** A UDP server in a distribution is not reachable from the Mac as `localhost`.
+  - **Evidence:** `prompts/08-networking.md`, "The owner's decisions", item 1.
+  - **Phase:** None yet.
+- **Forwarded connections are slower than the NAT network.**
+  - **Seen:** A forwarded 1 GiB response arrived at 383 to 388 MB/s, against 7,540 to
+    7,735 MB/s from the guest's NAT address, in Part 1 of phase 08. Since the relay waits in
+    `poll(2)`, the medians of 13 development runs were 303 to 364 MB/s, and the owner's
+    official run measured 368 MB/s. Enough for a development server; not for bulk transfers
+    at the NAT network's speed.
+  - **Evidence:** [Decision record 0023](decisions/0023-localhost-forwarding.md): a vsock
+    connection that the guest opens carried 608 MB/s with no maw code
+    ([0017](decisions/0017-dial-back-for-sessions.md)), each side copies through user space
+    once, and the nonblocking reads on the Mac's side add a system call and a `poll(2)` for
+    most pieces.
+  - **Phase:** None yet.
+- **Binding a forwarded port can hold a distribution's forwarder for up to 500 ms.**
+  - **Seen:** The forwarder binds each port that the guest reports, and probes a port in
+    `TIME_WAIT`, on its own actor. The probe's connect waits up to 500 ms when a Mac program
+    holds the port and its accept queue is full, so that the connection is neither accepted nor
+    refused. Meanwhile that distribution's forwarder handles no other report and no new
+    connection. Every other bind and probe returns at once.
+  - **Evidence:** The code review of phase 08 pull request A; `LoopbackListeners.bind` in
+    `Sources/MawDaemonKit/LoopbackPorts.swift` and its call in
+    `Sources/MawDaemonKit/PortForwarder.swift`. The wait is bounded by
+    `LoopbackListeners.probeTimeoutMilliseconds`, and the probe runs at most once each time
+    the guest reports a port anew.
+  - **Phase:** None yet. Binding off the actor would need the forwarder to order a port's
+    bind against later reports of the same port, which this pull request does not do.
+- **The terminal app's status slot for port forwarding stays empty.**
+  - **Seen:** `prompts/11a-terminal-app.md` plans a status slot for port forwarding; the app
+    leaves it empty, and the distributions screen's `forwarded` row shows the ports.
+  - **Evidence:** `prompts/08-networking.md`, "The snapshot and the screen".
+  - **Phase:** None yet.
 
 - **The distributions screen shows the share as it was when the machine started.**
   - **Seen:** The `mounts` row comes from the agent's `info` reply at the start. A share that

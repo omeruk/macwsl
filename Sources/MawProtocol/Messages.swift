@@ -24,6 +24,12 @@ public enum ControlMessage: Equatable, Sendable {
     case dialBack(DialBackNonce)
     /// Asks for `sampled`: the guest's memory figures and its IPv4 address.
     case sample
+    /// Host to guest, as the request of a connection that the agent dialed: makes it the
+    /// machine's forwarding channel (docs/protocol.md, "Forwarding").
+    case forwarding
+    /// Host to guest, on the forwarding channel: connect to the guest's listener on `port` over
+    /// `family`'s loopback address, then dial `AgentProtocol.forwardingPort` with `nonce`.
+    case connect(ForwardingConnect)
 
     // During an exec session, host to guest.
 
@@ -60,6 +66,11 @@ public enum ControlMessage: Equatable, Sendable {
     case foregroundProgram(id: UInt32, program: ForegroundProcess?)
     /// The reply to `sample`.
     case sampled(GuestSample)
+    /// Guest to host, on the forwarding channel: the guest's listeners on a wildcard or a
+    /// loopback address, all of them, whenever they change and once when the channel opens.
+    case listeners([GuestListener])
+    /// Guest to host, on the forwarding channel: `connect` with `id` failed, before any dial.
+    case connectFailed(id: UInt32, reason: String)
     /// A request failed, or the connection is being closed because of a protocol error.
     case error(AgentError)
 
@@ -82,6 +93,10 @@ public enum ControlMessage: Equatable, Sendable {
         case .dialedBack: "dialedBack"
         case .foregroundProgram: "foregroundProgram"
         case .sampled: "sampled"
+        case .forwarding: "forwarding"
+        case .connect: "connect"
+        case .listeners: "listeners"
+        case .connectFailed: "connectFailed"
         case .error: "error"
         }
     }
@@ -354,6 +369,34 @@ public struct GuestSample: Equatable, Sendable {
     }
 }
 
+/// The host's request, on the forwarding channel, for one forwarded connection
+/// (docs/protocol.md, "Forwarding").
+public struct ForwardingConnect: Equatable, Sendable {
+    /// Which of the guest's loopback addresses the agent connects to: 127.0.0.1 or ::1.
+    public enum Family: String, Codable, Equatable, Sendable {
+        case ipv4
+        case ipv6
+    }
+
+    /// The longest `connectFailed` reason either side accepts, in UTF-8 bytes.
+    public static let maximumReasonSize = 256
+
+    /// Chosen by the host; `connectFailed` names it.
+    public var id: UInt32
+    public var port: UInt16
+    public var family: Family
+    /// The first frame of the connection that the agent dials to
+    /// `AgentProtocol.forwardingPort`.
+    public var nonce: DialBackNonce
+
+    public init(id: UInt32, port: UInt16, family: Family, nonce: DialBackNonce) {
+        self.id = id
+        self.port = port
+        self.family = family
+        self.nonce = nonce
+    }
+}
+
 /// An error the agent reports.
 public struct AgentError: Codable, Equatable, Sendable, CustomStringConvertible {
     public enum Code: String, Codable, Equatable, Sendable {
@@ -537,13 +580,30 @@ extension ControlMessage: Codable {
         var ipv4Address: String?
     }
 
+    private struct ConnectFields: Codable {
+        var id: UInt32
+        var port: UInt16
+        var family: ForwardingConnect.Family
+        var nonce: String
+    }
+
+    private struct ListenersFields: Codable {
+        var listeners: [GuestListener]
+    }
+
+    private struct ConnectFailedFields: Codable {
+        var id: UInt32
+        var reason: String
+    }
+
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: Key.self)
         let key = Key(name)
         switch self {
         case .exec(let request):
             try container.encode(request, forKey: key)
-        case .info, .shutdown, .sample, .stdinEOF, .shutdownAcknowledged, .dialedBack:
+        case .info, .shutdown, .sample, .stdinEOF, .shutdownAcknowledged, .dialedBack,
+            .forwarding:
             try container.encode(Empty(), forKey: key)
         case .dialBack(let nonce):
             try container.encode(DialBackFields(nonce: nonce.hexadecimal), forKey: key)
@@ -574,6 +634,15 @@ extension ControlMessage: Codable {
                     memoryAvailableBytes: sample.memoryAvailableBytes,
                     ipv4Address: sample.ipv4Address),
                 forKey: key)
+        case .connect(let request):
+            try container.encode(
+                ConnectFields(
+                    id: request.id, port: request.port, family: request.family,
+                    nonce: request.nonce.hexadecimal), forKey: key)
+        case .listeners(let listeners):
+            try container.encode(ListenersFields(listeners: listeners), forKey: key)
+        case .connectFailed(let id, let reason):
+            try container.encode(ConnectFailedFields(id: id, reason: reason), forKey: key)
         case .error(let error):
             try container.encode(error, forKey: key)
         }
@@ -661,6 +730,46 @@ extension ControlMessage: Codable {
         case "shutdownAcknowledged":
             _ = try container.decode(Empty.self, forKey: key)
             self = .shutdownAcknowledged
+        case "forwarding":
+            _ = try container.decode(Empty.self, forKey: key)
+            self = .forwarding
+        case "connect":
+            let fields = try container.decode(ConnectFields.self, forKey: key)
+            guard fields.port != 0, let nonce = DialBackNonce(hexadecimal: fields.nonce) else {
+                throw DecodingError.dataCorrupted(
+                    .init(
+                        codingPath: decoder.codingPath + [key],
+                        debugDescription: "connect needs a port from 1 to 65535 and a nonce of "
+                            + "\(AgentProtocol.dialBackNonceSize * 2) lowercase hexadecimal digits"
+                    ))
+            }
+            self = .connect(
+                ForwardingConnect(
+                    id: fields.id, port: fields.port, family: fields.family, nonce: nonce))
+        case "listeners":
+            let listeners = try container.decode(ListenersFields.self, forKey: key).listeners
+            guard listeners.count <= AgentProtocol.maximumListeners,
+                listeners.allSatisfy({ $0.port != 0 }),
+                Set(listeners).count == listeners.count
+            else {
+                throw DecodingError.dataCorrupted(
+                    .init(
+                        codingPath: decoder.codingPath + [key],
+                        debugDescription: "listeners must be at most "
+                            + "\(AgentProtocol.maximumListeners) distinct listeners on ports from "
+                            + "1 to 65535"))
+            }
+            self = .listeners(listeners)
+        case "connectFailed":
+            let fields = try container.decode(ConnectFailedFields.self, forKey: key)
+            guard fields.reason.utf8.count <= ForwardingConnect.maximumReasonSize else {
+                throw DecodingError.dataCorrupted(
+                    .init(
+                        codingPath: decoder.codingPath + [key],
+                        debugDescription: "connectFailed has a reason longer than "
+                            + "\(ForwardingConnect.maximumReasonSize) bytes"))
+            }
+            self = .connectFailed(id: fields.id, reason: fields.reason)
         case "error":
             self = .error(try container.decode(AgentError.self, forKey: key))
         default:

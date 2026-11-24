@@ -188,12 +188,28 @@ struct DistributionDetailsBox: View {
                     HStack(spacing: 0) {
                         Text(detail.key).chromeStyle(chrome.textSecondary)
                             .frame(width: MawFonts.chromeCharacterWidth * 12, alignment: .leading)
-                        Text(detail.value).chromeStyle(color(detail.role))
-                            .truncationMode(.middle)
+                        value(detail)
                     }
                     .frame(height: MawFonts.chromeLineHeight)
                     .accessibilityElement(children: .combine)
+                    .help(detail.help ?? "")
                 }
+            }
+        }
+    }
+
+    /// The value on one line: the first of its forms that fits, or the shortest, cut in the
+    /// middle.
+    @ViewBuilder private func value(_ detail: DistributionInfo.Detail) -> some View {
+        if detail.shorter.isEmpty {
+            Text(detail.value).chromeStyle(color(detail.role)).truncationMode(.middle)
+        } else {
+            ViewThatFits(in: .horizontal) {
+                ForEach([detail.value] + detail.shorter, id: \.self) { form in
+                    Text(form).chromeStyle(color(detail.role)).fixedSize()
+                }
+                Text(detail.shorter.last ?? detail.value).chromeStyle(color(detail.role))
+                    .truncationMode(.middle)
             }
         }
     }

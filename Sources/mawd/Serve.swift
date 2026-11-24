@@ -39,6 +39,12 @@ struct Serve: AsyncParsableCommand {
     @Flag(name: .customLong("without-mac-share"), help: .hidden)
     var withoutMacShare = false
 
+    /// For the measurements only: distribution machines forward no port, so that a cold start,
+    /// the guest agent's idle cost, and sessions can be compared with and without forwarding.
+    /// `mawd install` neither accepts nor writes it (docs/daemon.md).
+    @Flag(name: .customLong("without-forwarding"), help: .hidden)
+    var withoutForwarding = false
+
     func validate() throws {
         if let sampleInterval, sampleInterval < 100 {
             throw ValidationError("--sample-interval-ms must be at least 100.")
@@ -94,7 +100,9 @@ struct Serve: AsyncParsableCommand {
                 kernelDirectory: paths.kernelDirectory, logDirectory: settings.logDirectoryURL,
                 store: store, log: log, canRunVirtualMachines: canRunVirtualMachines,
                 samplesWithInfo: sampleWithInfo,
-                macHome: withoutMacShare ? nil : FileManager.default.homeDirectoryForCurrentUser),
+                macHome: withoutMacShare ? nil : FileManager.default.homeDirectoryForCurrentUser,
+                forwardedPorts: withoutForwarding ? nil : ForwardedPortRegistry(),
+                forwardingChanged: { changesContinuation.yield() }),
             activityChanged: { activityContinuation.yield($0) },
             stateChanged: { changesContinuation.yield() }, operations: operations)
         let sampler = FigureSampler(

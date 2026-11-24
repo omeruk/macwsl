@@ -8,7 +8,7 @@
     /// (see `InterfaceCoding`). The client's first request on every connection is `hello`.
     public enum DaemonInterface {
         /// Incremented on every change to the messages below, their fields, or their meaning.
-        public static let version: UInt32 = 8
+        public static let version: UInt32 = 9
 
         /// The LaunchAgent label, which is also the name of the daemon's Mach service.
         public static let defaultLabel = "dev.maw.mawd"
@@ -501,6 +501,9 @@
         /// The Mac's home directory mounted in the distribution: present only while it runs and
         /// its guest reported the share mounted when it started (interface version 8).
         public var macShare: SharedDirectory?
+        /// The distribution's `localhost` forwarding: present only while it runs (interface
+        /// version 9).
+        public var forwarding: PortForwarding?
 
         public init(
             name: DistroName, state: DistributionState, defaultUser: String, diskImagePath: String
@@ -509,6 +512,48 @@
             self.state = state
             self.defaultUser = defaultUser
             self.diskImagePath = diskImagePath
+        }
+    }
+
+    /// A running distribution's `localhost` forwarding (docs/decisions/0023): the guest's ports
+    /// that reach the Mac's 127.0.0.1 and ::1, and those that do not, with the reason.
+    public struct PortForwarding: Codable, Equatable, Sendable {
+        /// Why a port on which the guest listens is not forwarded.
+        public enum Reason: String, Codable, Equatable, Sendable, CaseIterable {
+            /// A Mac program holds the port on 127.0.0.1, on ::1, or on both.
+            case inUseOnMac
+            /// Another running distribution forwards the port.
+            case forwardedForAnotherDistribution
+            /// The port is below 1024, which a program that is not root may not use on the
+            /// Mac's loopback addresses.
+            case privilegedOnMac
+            /// The Mac refused the port for another reason; `mawd.log` names the error.
+            case bindFailed
+            /// The distribution already forwards `PortForwarding.maximumPorts` ports.
+            case limit
+        }
+
+        public struct NotForwarded: Codable, Equatable, Sendable {
+            public var port: UInt16
+            public var reason: Reason
+
+            public init(port: UInt16, reason: Reason) {
+                self.port = port
+                self.reason = reason
+            }
+        }
+
+        /// The ports a distribution forwards at most.
+        public static let maximumPorts = 128
+
+        /// In port order.
+        public var forwarded: [UInt16]
+        /// In port order.
+        public var notForwarded: [NotForwarded]
+
+        public init(forwarded: [UInt16] = [], notForwarded: [NotForwarded] = []) {
+            self.forwarded = forwarded
+            self.notForwarded = notForwarded
         }
     }
 

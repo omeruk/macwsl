@@ -52,6 +52,23 @@ import Testing
         .foregroundProgram(id: 8, program: ForegroundProcess(processGroup: 812, name: nil)),
         .foregroundProgram(
             id: 9, program: ForegroundProcess(processGroup: 1, name: "a (b) c\u{1B}")),
+        .forwarding,
+        .connect(
+            ForwardingConnect(
+                id: 7, port: 8000, family: .ipv4,
+                nonce: DialBackNonce(bytes: Array(repeating: 0x5A, count: 32))!)),
+        .connect(
+            ForwardingConnect(
+                id: UInt32.max, port: 65535, family: .ipv6,
+                nonce: DialBackNonce(bytes: Array(repeating: 0, count: 32))!)),
+        .listeners([]),
+        .listeners([
+            GuestListener(port: 1, address: .anyIPv4),
+            GuestListener(port: 8000, address: .anyIPv6),
+            GuestListener(port: 8000, address: .loopbackIPv4),
+            GuestListener(port: 65535, address: .loopbackIPv6),
+        ]),
+        .connectFailed(id: 3, reason: "connect: Connection refused"),
         .error(AgentError(.dialBackFailed, "no source port below 1024 is free")),
         .error(AgentError(.sampleFailed, "/proc/meminfo has no MemAvailable")),
         .error(AgentError(.versionMismatch, "mismatch", hostVersion: 1, guestVersion: 2)),
@@ -71,7 +88,8 @@ import Testing
             names == [
                 "exec", "info", "shutdown", "stdinEOF", "signal", "resize", "started", "exited",
                 "agentInfo", "shutdownAcknowledged", "error", "dialBack", "dialedBack",
-                "foregroundQuery", "foregroundProgram", "sample", "sampled",
+                "foregroundQuery", "foregroundProgram", "sample", "sampled", "forwarding",
+                "connect", "listeners", "connectFailed",
             ])
     }
 
@@ -104,6 +122,17 @@ import Testing
                 == #"{"dialBack":{"nonce":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"}}"#
         )
         #expect(json(.dialedBack) == #"{"dialedBack":{}}"#)
+        #expect(json(.forwarding) == #"{"forwarding":{}}"#)
+        #expect(
+            json(.connect(ForwardingConnect(id: 7, port: 8000, family: .ipv6, nonce: nonce)))
+                == #"{"connect":{"family":"ipv6","id":7,"nonce":"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f","port":8000}}"#
+        )
+        #expect(
+            json(.listeners([GuestListener(port: 8000, address: .loopbackIPv4)]))
+                == #"{"listeners":{"listeners":[{"address":"loopbackIPv4","port":8000}]}}"#)
+        #expect(
+            json(.connectFailed(id: 7, reason: "refused"))
+                == #"{"connectFailed":{"id":7,"reason":"refused"}}"#)
         #expect(json(.sample) == #"{"sample":{}}"#)
         #expect(
             json(
@@ -143,6 +172,37 @@ import Testing
                 == #"{"exec":{"environment":{},"program":{"shellCommand":"ls -l"}}}"#)
     }
 
+    @Test func refusesMalformedForwardingMessages() {
+        let nonce = String(repeating: "ab", count: 32)
+        for text in [
+            // Port 0, a short nonce, an unknown family.
+            #"{"connect":{"family":"ipv4","id":1,"nonce":"\#(nonce)","port":0}}"#,
+            #"{"connect":{"family":"ipv4","id":1,"nonce":"abcd","port":80}}"#,
+            #"{"connect":{"family":"unix","id":1,"nonce":"\#(nonce)","port":80}}"#,
+            #"{"connect":{"family":"ipv4","id":1,"nonce":"\#(nonce)","port":65536}}"#,
+            // Port 0, a duplicate, an unknown address.
+            #"{"listeners":{"listeners":[{"address":"anyIPv4","port":0}]}}"#,
+            #"{"listeners":{"listeners":[{"address":"anyIPv4","port":1},{"address":"anyIPv4","port":1}]}}"#,
+            #"{"listeners":{"listeners":[{"address":"bridge","port":1}]}}"#,
+            #"{"connectFailed":{"id":1,"reason":"\#(String(repeating: "x", count: 257))"}}"#,
+        ] {
+            #expect(throws: FrameError.self) { try ControlMessage(json: Array(text.utf8)) }
+        }
+    }
+
+    @Test func boundsTheListenersOfOneMessage() throws {
+        let most = (1...UInt16(AgentProtocol.maximumListeners)).map {
+            GuestListener(port: $0, address: .anyIPv4)
+        }
+        #expect(
+            try ControlMessage(json: ControlMessage.listeners(most).encodedJSON())
+                == .listeners(most))
+        let tooMany = most + [GuestListener(port: 2000, address: .anyIPv6)]
+        #expect(throws: FrameError.self) {
+            try ControlMessage(json: ControlMessage.listeners(tooMany).encodedJSON())
+        }
+    }
+
     @Test func fillsInExecDefaults() throws {
         let message = try ControlMessage(
             json: Array(#"{"exec":{"program":{"argv":["true"]}}}"#.utf8))
@@ -154,8 +214,8 @@ import Testing
     /// Version 5 adds `sample`, `sampled`, and `sampleFailed`; version 6 adds `agentInfo`'s
     /// `macShareMounted`; version 7 adds `exec`'s `fallsBackToHome` and `started`'s
     /// `workingDirectoryFallback`.
-    @Test func speaksVersion7() {
-        #expect(ProtocolVersion.current == 7)
+    @Test func speaksVersion8() {
+        #expect(ProtocolVersion.current == 8)
     }
 
     @Test func writesTheFallbackOnlyWhenItIsAllowed() throws {
