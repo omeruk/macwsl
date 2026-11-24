@@ -390,8 +390,8 @@ from `main`.
   - **Phase:** 12b. Repeating the test on a loaded machine with the shell's output and the
     session's state recorded at the deadline would show which of the two it is.
 
-- **A session takes about 12 ms longer while 256 forwarded connections are held open, and most
-  of that cost is not located.**
+- **A session takes about 8 to 12 ms longer while 256 forwarded connections are held open, and
+  most of that cost is not located.**
   - **Seen:** Timed from its start to its termination, `maw -- true` took a median of 50.6,
     51.0, and 52.7 ms in three development runs without forwarded connections, and 64.1,
     64.8, and 64.4 ms with 256 held open. About 7.5 ms of the difference lies inside the
@@ -399,7 +399,9 @@ from `main`.
     against 19.0 ms), and about 4 ms outside it. The agent's `fork(2)` explains about 0.3 ms:
     the agent has 1,136 mappings and 515 threads with the connections held, against 20 and 5,
     and in the guest a `fork(2)` and wait took 0.66 ms with 1,537 mappings against 0.38 ms
-    with 37. The rest is not located. The owner's rule allows 50 ms.
+    with 37. The rest is not located. In the owner's official reruns, the median over 80 runs
+    of each side was 85.38 ms without the connections and 93.76 ms with them, 8.4 ms more,
+    against about 12 ms in the development runs. The owner's rule allows 50 ms.
   - **Evidence:** [Decision record 0023](decisions/0023-localhost-forwarding.md), "The
     owner's official run"; `measuresSessionsBeside256Connections` in
     `Tests/mawdTests/ForwardingMeasurements.swift`.
