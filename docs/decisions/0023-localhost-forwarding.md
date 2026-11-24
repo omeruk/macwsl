@@ -289,9 +289,10 @@ waits in `poll(2)`, the medians of 13 runs of the throughput measurement on 2026
 side: there each read from the vsock connection returns 8 KiB, and about 87,000 of the 131,073
 reads of a 1 GiB transfer are followed by a read that finds nothing and a `poll(2)`. A
 diagnostic build in which only the daemon's relay read with blocking calls measured a median of
-375.5 MB/s in the same conditions. The prompt sets no throughput target. A copy without user
-space, `splice` in the guest, was not tried: it needs a pipe between the two sockets, and the
-Mac's side, where `splice` does not exist, would still copy.
+375.5 MB/s in the same conditions. The prompt sets no throughput target, and the owner
+accepted this cost of the waits in `poll(2)`. A copy without user space, `splice` in the guest,
+was not tried: it needs a pipe between the two sockets, and the Mac's side, where `splice` does
+not exist, would still copy.
 
 ## Consequences
 
