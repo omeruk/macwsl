@@ -127,6 +127,9 @@ public enum AgentCommand: Equatable, Sendable {
     case serve
     case selfTest
     case mountMacShare(root: String, tag: String)
+    /// `network-dns`: writes the drop-ins that turn off DHCP and router-advertised DNS for
+    /// every `.network` file (`NetworkDNS`), from the boot's unit before systemd-networkd.
+    case networkDNS
     /// `login-shell <operands>`, as `runuser -l`'s shell helper (`LoginShellHelper`).
     case loginShell([String])
     /// The binary was started as `mawpath`, by a link of that name.
@@ -153,6 +156,8 @@ public enum AgentCommand: Equatable, Sendable {
             self =
                 operands.count == 2
                 ? .mountMacShare(root: operands.first!, tag: operands.last!) : .usage(status: 64)
+        case "network-dns":
+            self = arguments.count == 1 ? .networkDNS : .usage(status: 64)
         case LoginShellHelper.subcommand:
             self = .loginShell(Array(arguments.dropFirst()))
         default:

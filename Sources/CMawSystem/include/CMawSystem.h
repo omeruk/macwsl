@@ -12,6 +12,7 @@
 #define CMAWSYSTEM_H
 
 #include <stdint.h>
+#include <sys/socket.h>
 #include <sys/types.h>
 
 #ifdef __cplusplus
@@ -190,6 +191,39 @@ int maw_openat(int directory, const char *path, int flags, int *fd);
 /// mount is made on `/proc/self/fd/<directory>`, which names that directory itself, so that no
 /// symbolic link in its path is followed. Linux only; ENOSYS elsewhere.
 int maw_mount_virtiofs(const char *tag, int directory, const char *options);
+
+/// Adds the IPv4 address `address` (4 bytes, network order) with prefix length 32 to the
+/// loopback interface, through rtnetlink. An address that is there already counts as added.
+/// Returns 0 or an errno value. Linux only; ENOSYS elsewhere.
+int maw_add_loopback_address(const uint8_t address[4]);
+
+/// Opens a close-on-exec, non-blocking UDP socket, or a TCP socket if `stream` is nonzero,
+/// with SO_REUSEADDR, bound to the IPv4 address `address` (4 bytes, network order) and `port`,
+/// and listening with `backlog` if it is a TCP socket. Returns 0 and sets `*fd`, or returns an
+/// errno value.
+int maw_inet4_bind(int stream, const uint8_t address[4], uint16_t port, int backlog, int *fd);
+
+/// Receives one datagram of at most `size` bytes and the sender's address. Returns the
+/// datagram's full length, which exceeds `size` when it was cut off, or -1 with errno set.
+ssize_t maw_datagram_receive(int fd, void *buffer, size_t size,
+                             struct sockaddr_storage *peer, socklen_t *peer_length);
+
+/// Sends one datagram to `peer`. Returns the bytes sent, or -1 with errno set.
+ssize_t maw_datagram_send(int fd, const void *buffer, size_t size,
+                          const struct sockaddr_storage *peer, socklen_t peer_length);
+
+/// Opens a close-on-exec, non-blocking inotify instance. Returns the descriptor, or -1 with
+/// errno set. Linux only; ENOSYS elsewhere.
+int maw_inotify_open(void);
+
+/// Watches `path` for files created, written, moved in, moved out, or deleted. Returns 0 or
+/// an errno value. Linux only; ENOSYS elsewhere.
+int maw_inotify_watch(int fd, const char *path);
+
+/// Runs `argv[0]`, an absolute path, with `argv`, an empty environment, and its standard
+/// streams on /dev/null, and waits for it. Returns 0 and sets `*status` to its wait status,
+/// or returns an errno value.
+int maw_run_quietly(char *const argv[], int *status);
 
 #ifdef __cplusplus
 }
