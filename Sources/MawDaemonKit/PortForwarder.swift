@@ -67,7 +67,7 @@
         private let published = OSAllocatedUnfairLock(initialState: PortForwarding())
 
         private var isStopped = false
-        private var link: ForwardingChannelLink?
+        private var link: ChannelLink?
         private var acceptor: LoopbackAcceptor?
         private var channelTask: Task<Void, Never>?
         private var acceptTask: Task<Void, Never>?
@@ -186,10 +186,10 @@
                 return isStopped ? nil : "it could not be opened: \(error)"
             }
             let (endings, endingContinuation) = AsyncStream.makeStream(
-                of: ForwardingChannelLink.Ending.self)
-            let link: ForwardingChannelLink
+                of: ChannelLink.Ending.self)
+            let link: ChannelLink
             do {
-                link = try ForwardingChannelLink(connection: connection) { ending in
+                link = try ChannelLink(connection: connection) { ending in
                     endingContinuation.yield(ending)
                     endingContinuation.finish()
                 }
@@ -202,8 +202,14 @@
                 return nil
             }
             self.link = link
-            for await message in link.messages {
+            for await frame in link.frames {
                 do throws(ProtocolViolation) {
+                    let message: ControlMessage
+                    do throws(FrameError) {
+                        message = try frame.controlMessage()
+                    } catch {
+                        throw ProtocolViolation(reason: error.description)
+                    }
                     try handle(message)
                 } catch {
                     // Nothing that the agent sent after the violation is acted on.
@@ -219,7 +225,7 @@
             for pending in waiting.values {
                 environment.gate.cancel(pending)
             }
-            var ending = ForwardingChannelLink.Ending.closed
+            var ending = ChannelLink.Ending.closed
             for await value in endings {
                 ending = value
             }
@@ -377,8 +383,10 @@
             waiting[id] = pending
             openConnections += 1
             link.send(
-                .connect(
-                    ForwardingConnect(id: id, port: port, family: family, nonce: pending.nonce)))
+                .control(
+                    .connect(
+                        ForwardingConnect(
+                            id: id, port: port, family: family, nonce: pending.nonce))))
             let gate = environment.gate
             Task { [weak self] in
                 let guest = await gate.connection(for: pending)

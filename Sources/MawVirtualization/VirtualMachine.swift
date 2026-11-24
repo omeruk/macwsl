@@ -80,6 +80,11 @@
         /// Lines of guest console output. Bounded; see `Console` for the back-pressure policy.
         public nonisolated var consoleLines: AsyncStream<String> { console.lines }
         public nonisolated var consoleLogURL: URL { console.logURL }
+
+        /// Appends a line from the daemon to the machine's console log, marked `[mawd]`.
+        public nonisolated func noteInConsole(_ message: String) {
+            console.note(message)
+        }
         /// Admits the connections that the agent dials for sessions, on
         /// `AgentProtocol.dialBackPort`.
         public nonisolated let dialBackGate: DialBackGate

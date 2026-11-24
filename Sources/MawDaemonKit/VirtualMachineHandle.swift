@@ -68,13 +68,19 @@
         private let forwardedPorts: ForwardedPortRegistry?
         private let forwardingChanged: @Sendable () -> Void
         private let forwarder = OSAllocatedUnfairLock<PortForwarder?>(initialState: nil)
+        /// The Mac's resolver for the distribution's DNS; `nil` turns DNS through the Mac off,
+        /// as for the initramfs machine, in tests, and with `mawd serve --without-dns`.
+        private let dnsResolver: (any SystemDNSResolving)?
+        private let relay = OSAllocatedUnfairLock<DNSRelay?>(initialState: nil)
 
         public init(
             machine: MachineID, configuration: VMConfiguration, log: DaemonLog = DaemonLog(),
             samplesWithInfo: Bool = false, forwardedPorts: ForwardedPortRegistry? = nil,
-            forwardingChanged: @escaping @Sendable () -> Void = {}
+            forwardingChanged: @escaping @Sendable () -> Void = {},
+            dnsResolver: (any SystemDNSResolving)? = nil
         ) throws(MawError) {
             self.machine = machine
+            self.dnsResolver = dnsResolver
             self.log = log
             self.samplesWithInfo = samplesWithInfo
             self.forwardedPorts = forwardedPorts
@@ -92,7 +98,8 @@
             kernelDirectory: URL, logDirectory: URL, store: DistributionStore, log: DaemonLog,
             canRunVirtualMachines: Bool, samplesWithInfo: Bool = false,
             macHome: URL?, forwardedPorts: ForwardedPortRegistry? = nil,
-            forwardingChanged: @escaping @Sendable () -> Void = {}
+            forwardingChanged: @escaping @Sendable () -> Void = {},
+            dnsResolver: (any SystemDNSResolving)? = nil
         ) -> MachineFactory {
             { (machine: MachineID) throws(MawError) -> any MachineHandle in
                 guard canRunVirtualMachines else {
@@ -115,7 +122,8 @@
                 return try VirtualMachineHandle(
                     machine: machine, configuration: configuration, log: log,
                     samplesWithInfo: samplesWithInfo, forwardedPorts: forwardedPorts,
-                    forwardingChanged: forwardingChanged)
+                    forwardingChanged: forwardingChanged,
+                    dnsResolver: machine == .initramfs ? nil : dnsResolver)
             }
         }
 
@@ -185,7 +193,38 @@
                         : "\(machine): \(MacShare.linuxPath) is not mounted; its console log says why"
                 )
             }
+            await startDNS()
             await startForwarding()
+        }
+
+        /// Starts the distribution's DNS through the Mac before forwarding, so that the channel
+        /// is open for the boot's first query. The relay opens its channel on a task of its own.
+        private func startDNS() async {
+            guard case .distribution = machine, let dnsResolver,
+                !forwardingEnded.withLock({ $0 })
+            else { return }
+            let virtualMachine = self.virtualMachine
+            let started = DNSRelay(
+                machine: machine,
+                environment: DNSRelay.Environment(
+                    openChannel: { () throws(MawError) -> OwnedDescriptor in
+                        try await virtualMachine.openSessionConnection(
+                            connectTimeout: Self.connectTimeout)
+                    }, resolver: dnsResolver),
+                log: log, console: { virtualMachine.noteInConsole($0) })
+            relay.withLock { $0 = started }
+            await started.start()
+            if forwardingEnded.withLock({ $0 }) {
+                await stopDNS()
+            }
+        }
+
+        private func stopDNS() async {
+            let running = relay.withLock { current in
+                defer { current = nil }
+                return current
+            }
+            await running?.stop()
         }
 
         /// Starts the distribution's `localhost` forwarding, off the path of every session:
@@ -241,6 +280,7 @@
         public func stop() async -> String {
             stopRequested.withLock { $0 = true }
             await stopForwarding()
+            await stopDNS()
             let description: String
             do {
                 switch try await virtualMachine.stop(timeout: Self.stopTimeout) {
@@ -263,6 +303,7 @@
         public func forceStop(reason: String) async {
             stopRequested.withLock { $0 = true }
             await stopForwarding()
+            await stopDNS()
             await virtualMachine.forceStop(reason: reason)
             stopContinuation.finish()
         }
@@ -283,6 +324,7 @@
                     break
                 }
                 await stopForwarding()
+                await stopDNS()
                 if let reason, !stopRequested.withLock({ $0 }) {
                     stopContinuation.yield(reason)
                 }
