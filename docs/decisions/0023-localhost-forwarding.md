@@ -229,8 +229,10 @@ Mac, with Apple's `/usr/bin/python3` and the daemon's own sockets: `net.inet.tcp
    counted 525 threads in the daemon (10 without) and 515 in the agent (5 without). The rule
    set before the implementation: if holding 256 connections open made the median of
    `maw -- true` grow by more than 50 ms, or `maw --list` take more than 1 s, the daemon would
-   use a `kqueue` loop instead of two threads per connection. Neither happened (see
-   "Measurements of the implementation"), so the threads stay.
+   use a `kqueue` loop instead of two threads per connection. The owner's official run first
+   showed the median of `maw -- true` growing by 57.3 ms, an artifact of how the measurement
+   timed it; the rule is applied, unchanged, to the reruns with the corrected method (see
+   "The owner's official run").
 
 7. **The snapshot** carries, for each running distribution, the forwarded ports and the ports
    that were not forwarded with the reason (interface version 9,
@@ -258,15 +260,15 @@ relay's blocking reads, follow in brackets where they differ.
 | The same with `mawd serve --without-forwarding`, as on `main` | 10 ms (20 ms) [10 ms (10 ms)] |
 | Cold start to a prompt: with forwarding | 1,000.8 ms (1,039.8 ms) [916.1 ms (949.6 ms)] |
 | The same with `mawd serve --without-forwarding` | 1,037.9 ms (1,623.1 ms) [932.8 ms (950.7 ms)] |
-| `maw -- true`, median of 20: without forwarded connections | 213.2 ms (224.3 ms) [220.0 ms (238.3 ms)] |
+| `maw -- true`, median of 20, timed by the first method (see "The owner's official run"): without forwarded connections | 213.2 ms (224.3 ms) [220.0 ms (238.3 ms)] |
 | The same with 256 forwarded connections open | 215.0 ms (221.9 ms) [220.6 ms (223.4 ms)] |
-| `maw --list`: without forwarded connections | 164.2 ms (211.7 ms) [216.3 ms (221.6 ms)] |
+| `maw --list`, timed by the first method: without forwarded connections | 164.2 ms (211.7 ms) [216.3 ms (221.6 ms)] |
 | The same with 256 forwarded connections open | 163.1 ms (165.6 ms) [216.1 ms (219.4 ms)] |
 | Threads with 256 forwarded connections open: daemon, agent | 526, 515 (9 and 5 without) [525, 515 (10 and 5 without)] |
 | 256 connections opened at once, still open after 2 s | 155 of 256 |
 
-Holding 256 connections open added 1.8 ms to the median of `maw -- true`, and `maw --list`
-took 163.1 ms, within the rule of item 6. The cold start with and without forwarding differs
+Timed by the first method, holding 256 connections open added 1.8 ms to the median of
+`maw -- true` in this run, and `maw --list` took 163.1 ms. The cold start with and without forwarding differs
 by less than the spread of either; the difference has no sign that repeats across runs.
 
 Of 256 connections opened at once, the daemon resets those that find the 64 waiting places of
@@ -294,6 +296,55 @@ accepted this cost of the waits in `poll(2)`. A copy without user space, `splice
 was not tried: it needs a pipe between the two sockets, and the Mac's side, where `splice` does
 not exist, would still copy.
 
+## The owner's official run
+
+Taken by the owner at commit `a9305c7`, with the guest files of Guest run 45287694609
+(`b85a63e`), 8 minutes after a restart, with `caffeinate -dims scripts/measure-forwarding.sh`
+under the conditions in the script; the one-minute load average was 1.49 (the 5- and
+15-minute ones, 18.16 and 16.29, still counted the restart). Nothing was left behind. These
+five figures are the official ones.
+
+| Measurement | Target | Result |
+|---|---|---|
+| From the guest's `listen()` to `localhost` accepting on the Mac | under 1 s | 16.7 ms (147.5 ms): met |
+| Time to the first byte, median of 100 requests per run: forwarded, against the NAT address | adds under 5 ms | 1.677 ms (1.883 ms) against 0.575 ms (0.587 ms), so 1.10 ms: met |
+| Throughput of a 1 GiB response: forwarded, against the NAT address | report | 368.1 MB/s (363.8 MB/s) against 5,120.6 MB/s (4,603.9 MB/s) |
+| The agent's CPU time per minute on an idle machine: with forwarding, against `mawd serve --without-forwarding` | report | 60 ms (80 ms) against 10 ms (10 ms), so 50 ms |
+| Cold start to a prompt: with forwarding, against `mawd serve --without-forwarding` | adds under 20 ms | 879.7 ms (919.7 ms) against 871.1 ms (949.4 ms), so 9 ms: met |
+
+The same run counted 524 threads in the daemon and 515 in the agent with 256 forwarded
+connections open (11 and 5 without), and 239 of 256 connections opened at once still open
+after 2 s.
+
+**The sessions beside 256 connections, timed by the first method.** In the same run, the
+median of 20 runs of `maw -- true` was 170.1 ms (232.9 ms) without held connections and
+227.4 ms (234.4 ms) with them: 57.3 ms more, against the rule's 50 ms. `maw --list` took
+170.1 ms, within its 1 s. The times of `maw -- true` fell into two clusters, about 166 to
+175 ms and about 218 to 234 ms: 11 of 20 runs without connections were in the faster one, and
+1 of 20 with them.
+
+The clusters came from the measurement. It ran each command through the integration tests'
+wait for an exit, which looks every 50 ms whether the process has exited and then sleeps
+100 ms to collect the last output, and it timed the whole wait. Every time it reported was
+therefore 100 ms plus one or two polling ticks of about 55 to 60 ms. Timed instead from just
+before the process started to its termination, as its termination handler records it, three
+development runs through the test daemon gave one cluster each: medians of 50.6, 51.0, and
+52.7 ms without held connections, against 64.1, 64.8, and 64.4 ms with them, while the first
+method's figures in the same runs still grew by 54.8 and 55.5 ms. `maw` itself takes about
+as long as one polling tick, so most runs without the connections ended before the first
+tick and most runs with them after it, and a difference of about 12 ms appeared as a whole
+tick. The part of that difference that the daemon's log shows, from a session's opening to
+its closing, was 11.5 ms against 19.0 ms; the agent's `fork(2)` accounts for about 0.3 ms
+of it ([docs/known-limitations.md](../known-limitations.md)).
+
+The measurement's method was changed before the reruns, not after them: the measurement now
+times each `maw -- true` and `maw --list` from just before its start to its termination, with
+no polling or sleep in what is timed. The rule and its threshold are unchanged. The owner
+applies the rule to the 80 runs of each side of four consecutive runs of
+`scripts/measure-forwarding.sh measuresSessionsBeside256Connections` after one restart under
+the official conditions; if the median still grows by more than 50 ms, the daemon uses a
+`kqueue` loop. The other integration tests keep their wait.
+
 ## Consequences
 
 - No question from macOS: the daemon listens on loopback addresses only and never connects to
@@ -303,8 +354,9 @@ not exist, would still copy.
 - A Mac program that starts after a distribution forwards its port, and sets `SO_REUSEADDR` as
   Python's `http.server` does, binds the wildcard address but does not receive the loopback
   connections until the forward ends ([docs/security.md](../security.md)).
-- The forwarded throughput, 303 to 364 MB/s, is less than a tenth of the NAT path's (medians
-  of 4,192 to 5,946 MB/s in the same 13 runs, and 5,111 to 7,735 MB/s before).
+- The forwarded throughput, 368 MB/s in the owner's official run and 303 to 364 MB/s in 13
+  development runs, is less than a tenth of the NAT path's (5,121 MB/s in the official run,
+  medians of 4,192 to 5,946 MB/s in the same 13 runs, and 5,111 to 7,735 MB/s before).
 - The machine's idle stop counts sessions only: a forwarded connection does not keep a machine
   running (phase 12).
 - UDP is not forwarded.

@@ -448,8 +448,9 @@ from `main`.
 - **Forwarded connections are slower than the NAT network.**
   - **Seen:** A forwarded 1 GiB response arrived at 383 to 388 MB/s, against 7,540 to
     7,735 MB/s from the guest's NAT address, in Part 1 of phase 08. Since the relay waits in
-    `poll(2)`, the medians of 13 development runs were 303 to 364 MB/s. Enough for a
-    development server; not for bulk transfers at the NAT network's speed.
+    `poll(2)`, the medians of 13 development runs were 303 to 364 MB/s, and the owner's
+    official run measured 368 MB/s. Enough for a development server; not for bulk transfers
+    at the NAT network's speed.
   - **Evidence:** [Decision record 0023](decisions/0023-localhost-forwarding.md): a vsock
     connection that the guest opens carried 608 MB/s with no maw code
     ([0017](decisions/0017-dial-back-for-sessions.md)), each side copies through user space
