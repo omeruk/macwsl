@@ -15,6 +15,13 @@ public enum FrameType: UInt8, Sendable, CaseIterable {
     /// type of its own, with a fixed size that the decoder checks from the header, so that the
     /// host can read it before anything else and leave the rest of the connection unread.
     case dialBackNonce = 0x04
+    /// On the DNS channel, guest to host: a DNS query from the guest's resolver
+    /// (docs/protocol.md, "DNS"). The payload is a 4-byte big-endian tag that the agent
+    /// chose, then the query: at most `AgentProtocol.maximumDNSFramePayload` bytes in all.
+    case dnsQuery = 0x05
+    /// On the DNS channel, host to guest: the response to the `dnsQuery` with the same tag, in
+    /// the same layout.
+    case dnsAnswer = 0x06
     /// Raw bytes for the process's standard input (host to guest).
     case stdin = 0x10
     /// Raw bytes from the process's standard output, or from its terminal (guest to host).
@@ -117,6 +124,28 @@ public struct Frame: Equatable, Sendable {
         return nonce
     }
 
+    // MARK: DNS frames
+
+    public static func dns(_ type: FrameType, tag: UInt32, message: [UInt8]) -> Frame {
+        Frame(
+            type: type,
+            payload: [
+                UInt8(truncatingIfNeeded: tag >> 24), UInt8(truncatingIfNeeded: tag >> 16),
+                UInt8(truncatingIfNeeded: tag >> 8), UInt8(truncatingIfNeeded: tag),
+            ] + message)
+    }
+
+    /// The tag and the message of a `dnsQuery` or `dnsAnswer` frame.
+    public func dnsMessage() throws(FrameError) -> (tag: UInt32, message: [UInt8]) {
+        guard type == .dnsQuery || type == .dnsAnswer else {
+            throw .unexpectedType(type.rawValue, expected: "dnsQuery or dnsAnswer")
+        }
+        guard (5...AgentProtocol.maximumDNSFramePayload).contains(payload.count) else {
+            throw .malformedDNSMessage(size: payload.count)
+        }
+        return (payload[..<4].reduce(0) { $0 << 8 | UInt32($1) }, Array(payload[4...]))
+    }
+
     // MARK: Control frames
 
     public static func control(_ message: ControlMessage) -> Frame {
@@ -146,6 +175,9 @@ public enum FrameError: Error, Equatable, Sendable, CustomStringConvertible {
     case malformedStdinConsumed(size: Int)
     /// A `dialBackNonce` frame whose payload is not `AgentProtocol.dialBackNonceSize` bytes.
     case malformedDialBackNonce(size: Int)
+    /// A `dnsQuery` or `dnsAnswer` frame without a message, or with more than
+    /// `AgentProtocol.maximumDNSFramePayload` bytes.
+    case malformedDNSMessage(size: Int)
     /// A control frame whose payload is not a valid `ControlMessage`.
     case malformedControl(String)
     /// A frame of a known type that is not valid at this point of the conversation.
@@ -166,6 +198,8 @@ public enum FrameError: Error, Equatable, Sendable, CustomStringConvertible {
             "a stdinConsumed frame has \(size) bytes instead of 4"
         case .malformedDialBackNonce(let size):
             "a dialBackNonce frame has \(size) bytes instead of \(AgentProtocol.dialBackNonceSize)"
+        case .malformedDNSMessage(let size):
+            "a DNS frame has \(size) bytes, not 5 to \(AgentProtocol.maximumDNSFramePayload)"
         case .malformedControl(let reason):
             "a control message could not be decoded: \(reason)"
         case .unexpectedType(let type, let expected):
@@ -217,6 +251,13 @@ public struct FrameDecoder: Sendable {
         // A nonce frame has one size; any other is rejected before its payload arrives.
         guard type != .dialBackNonce || length == AgentProtocol.dialBackNonceSize else {
             throw .malformedDialBackNonce(size: Int(length))
+        }
+        // A DNS frame carries a tag and one message, which TCP's length field bounds.
+        guard
+            type != .dnsQuery && type != .dnsAnswer
+                || (5...AgentProtocol.maximumDNSFramePayload).contains(Int(length))
+        else {
+            throw .malformedDNSMessage(size: Int(length))
         }
         let end = start + Frame.headerSize + Int(length)
         guard buffer.count >= end else { return nil }

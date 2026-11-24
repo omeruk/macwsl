@@ -30,6 +30,10 @@ public enum ControlMessage: Equatable, Sendable {
     /// Host to guest, on the forwarding channel: connect to the guest's listener on `port` over
     /// `family`'s loopback address, then dial `AgentProtocol.forwardingPort` with `nonce`.
     case connect(ForwardingConnect)
+    /// Host to guest, as the request of a connection that the agent dialed: makes it the
+    /// machine's DNS channel, which carries `dnsQuery` and `dnsAnswer` frames
+    /// (docs/protocol.md, "DNS").
+    case dns
 
     // During an exec session, host to guest.
 
@@ -94,6 +98,7 @@ public enum ControlMessage: Equatable, Sendable {
         case .foregroundProgram: "foregroundProgram"
         case .sampled: "sampled"
         case .forwarding: "forwarding"
+        case .dns: "dns"
         case .connect: "connect"
         case .listeners: "listeners"
         case .connectFailed: "connectFailed"
@@ -603,7 +608,7 @@ extension ControlMessage: Codable {
         case .exec(let request):
             try container.encode(request, forKey: key)
         case .info, .shutdown, .sample, .stdinEOF, .shutdownAcknowledged, .dialedBack,
-            .forwarding:
+            .forwarding, .dns:
             try container.encode(Empty(), forKey: key)
         case .dialBack(let nonce):
             try container.encode(DialBackFields(nonce: nonce.hexadecimal), forKey: key)
@@ -733,6 +738,9 @@ extension ControlMessage: Codable {
         case "forwarding":
             _ = try container.decode(Empty.self, forKey: key)
             self = .forwarding
+        case "dns":
+            _ = try container.decode(Empty.self, forKey: key)
+            self = .dns
         case "connect":
             let fields = try container.decode(ConnectFields.self, forKey: key)
             guard fields.port != 0, let nonce = DialBackNonce(hexadecimal: fields.nonce) else {

@@ -271,7 +271,7 @@ final class ExecSession {
                     throw .frame(error)
                 }
                 try handle(message)
-            case .version, .stdinConsumed, .stdout, .stderr, .dialBackNonce:
+            case .version, .stdinConsumed, .stdout, .stderr, .dialBackNonce, .dnsQuery, .dnsAnswer:
                 throw .frame(.unexpectedType(frame.type.rawValue, expected: "stdin or control"))
             }
         }
