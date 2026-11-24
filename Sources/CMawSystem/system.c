@@ -786,7 +786,7 @@ int maw_mount_virtiofs(const char *tag, int directory, const char *options) {
 #define MAW_NLM_F_EXCL 0x200
 #define MAW_IFA_ADDRESS 1
 #define MAW_IFA_LOCAL 2
-#define MAW_RT_SCOPE_HOST 254
+#define MAW_RT_SCOPE_UNIVERSE 0
 #define MAW_LOOPBACK_INDEX 1
 
 struct maw_nlmsghdr {
@@ -826,7 +826,9 @@ int maw_add_loopback_address(const uint8_t address[4]) {
     request.header.nlmsg_seq = 1;
     request.message.ifa_family = AF_INET;
     request.message.ifa_prefixlen = 32;
-    request.message.ifa_scope = MAW_RT_SCOPE_HOST;
+    // The scope of `ip addr add`'s default, as measured: a container's network namespace
+    // reaches an address of this scope on `lo` (docs/decisions/0024-dns-through-the-mac.md).
+    request.message.ifa_scope = MAW_RT_SCOPE_UNIVERSE;
     request.message.ifa_index = MAW_LOOPBACK_INDEX;
     request.local.rta_len = sizeof request.local + 4;
     request.local.rta_type = MAW_IFA_LOCAL;

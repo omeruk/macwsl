@@ -33,6 +33,9 @@ public enum NetworkDNS {
     /// The list of servers that systemd-resolved writes whenever it changes.
     public static let resolvedServers = "/run/systemd/resolve/resolv.conf"
     public static let networkctl = ["/usr/bin/networkctl", "/bin/networkctl"]
+    /// systemd-networkd writes this file once it runs. Before it does, the boot's unit writes
+    /// the drop-ins, and the agent leaves them to it.
+    public static let networkdState = "/run/systemd/netif/state"
 
     public static let dropIn = """
         # Written by maw at every boot: DNS through the Mac's resolver, never the DHCP or
@@ -143,7 +146,8 @@ extension NetworkDNS.Files {
             if mkdir(directory, 0o755) != 0 && errno != EEXIST {
                 return errno
             }
-            let temporary = "\(directory)/.\(name).tmp"
+            // The boot's unit and the agent may write at once; each writes its own file.
+            let temporary = "\(directory)/.\(name).\(getpid()).tmp"
             let descriptor = open(
                 temporary, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0o644)
             guard descriptor >= 0 else { return errno }
@@ -211,6 +215,19 @@ public final class NetworkDNSWatch: @unchecked Sendable {
     }
 
     private func check() {
+        if files.read(NetworkDNS.networkdState) != nil {
+            writeDropIns()
+        }
+        guard let text = files.read(NetworkDNS.resolvedServers) else { return }
+        let servers = NetworkDNS.otherServers(inResolvConf: text)
+        if servers != reportedServers {
+            reportedServers = servers
+            logger.warning("\(NetworkDNS.serversLine(servers))")
+        }
+    }
+
+    /// Writes the drop-ins that are missing, and reloads systemd-networkd if it wrote any.
+    private func writeDropIns() {
         let (written, failures) = NetworkDNS.writeDropIns(files: files)
         for failure in failures {
             logger.warning("dns: cannot write the drop-in for \(failure)")
@@ -222,12 +239,6 @@ public final class NetworkDNSWatch: @unchecked Sendable {
                 \(written.joined(separator: ", ")); reloading systemd-networkd
                 """)
             reloadNetwork()
-        }
-        guard let text = files.read(NetworkDNS.resolvedServers) else { return }
-        let servers = NetworkDNS.otherServers(inResolvConf: text)
-        if servers != reportedServers {
-            reportedServers = servers
-            logger.warning("\(NetworkDNS.serversLine(servers))")
         }
     }
 
