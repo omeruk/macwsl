@@ -75,7 +75,7 @@ INET=y
 IPV6=y
 UNIX=y
 PACKET=y
-# The agent's DNS address is on a dummy link (docs/decisions/0024-dns-through-the-mac.md).
+# The guest agent holds its DNS address on a dummy link (docs/decisions/0024).
 DUMMY=y
 
 # Containers.
