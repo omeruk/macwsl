@@ -153,11 +153,11 @@ which answers the guest's DNS queries with the Mac's system resolver
   runs. A `ChannelLink` thread reads it at all times.
 - **The DNS client.** `DNSAnswerer` answers each query through `SystemDNSResolving`, a protocol
   that unit tests implement without the network. The daemon's `MacDNSResolver` implements it
-  with `DNSServiceQueryRecord` on one connection to mDNSResponder that every machine shares,
-  with the flags `ShareConnection`, `ReturnIntermediates`, and `Timeout`, on a dispatch queue
-  that `dns_sd.h` requires, and a deadline of 3.5 s per lookup; it reads the Mac's search
-  domains from SystemConfiguration (`State:/Network/Global/DNS`). When mDNSResponder restarts,
-  the lookups in flight fail and the next one opens a new connection.
+  with `DNSServiceQueryRecord`, a connection to mDNSResponder per lookup, with the flags
+  `ReturnIntermediates` and `Timeout`, on a dispatch queue that `dns_sd.h` requires, and a
+  deadline of 3.5 s per lookup; it reads the Mac's search domains from SystemConfiguration
+  (`State:/Network/Global/DNS`). When mDNSResponder restarts, the lookups in flight fail and
+  the next ones connect again.
 - **Answers.** A query is checked again (`DNSQuery`, `DNSQueryPolicy`). When the Mac has no
   record of the requested type, the end of the CNAME chain is looked up for the existence
   probes, A, AAAA, TXT, MX, SRV, NS, and SOA, and only when none has a record is the answer

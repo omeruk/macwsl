@@ -7,8 +7,9 @@
 
     /// The Mac's system resolver through `DNSServiceQueryRecord` (`dns_sd.h`), which asks
     /// mDNSResponder and so applies the Mac's scoped resolvers, VPNs, and DNS settings, with
-    /// its cache (docs/decisions/0024-dns-through-the-mac.md). One shared connection to
-    /// mDNSResponder serves every lookup of the daemon.
+    /// its cache (docs/decisions/0024-dns-through-the-mac.md). Each lookup has a connection of
+    /// its own: on one shared connection, about one in fifty sets of concurrent lookups got no
+    /// reply until every one of them reached its deadline.
     ///
     /// `dns_sd.h` delivers its callbacks on a dispatch queue (`DNSServiceSetDispatchQueue`);
     /// every use of a `DNSServiceRef` happens on that queue, and the lookups reach `async` code
@@ -19,12 +20,10 @@
         /// so that a probe that the daemon waits for ends first.
         public static let lookupTimeout = DispatchTimeInterval.milliseconds(3_500)
         static let flags = DNSServiceFlags(
-            kDNSServiceFlagsShareConnection | kDNSServiceFlagsReturnIntermediates
-                | kDNSServiceFlagsTimeout)
+            kDNSServiceFlagsReturnIntermediates | kDNSServiceFlagsTimeout)
 
         private let queue = DispatchQueue(label: "dev.maw.mawd.dns")
         // On `queue` only.
-        private var connection: DNSServiceRef?
         private var queries: [ObjectIdentifier: Query] = [:]
         private let store = SCDynamicStoreCreate(nil, "mawd" as CFString, nil, nil)
 
@@ -65,26 +64,15 @@
             }
             query.continuation = continuation
             query.resolver = self
-            if connection == nil {
-                var created: DNSServiceRef?
-                guard Int(DNSServiceCreateConnection(&created)) == kDNSServiceErr_NoError,
-                    let created
-                else {
-                    finish(query, .failed)
-                    return
-                }
-                DNSServiceSetDispatchQueue(created, queue)
-                connection = created
-            }
-            var reference = connection
+            var reference: DNSServiceRef?
             let context = Unmanaged.passUnretained(query).toOpaque()
             let error = Int(
                 queryRecord(&reference, Self.flags, name.presentation, query.type, context))
             guard error == kDNSServiceErr_NoError, let reference else {
-                if error == kDNSServiceErr_ServiceNotRunning { reset() }
                 finish(query, .failed)
                 return
             }
+            DNSServiceSetDispatchQueue(reference, queue)
             query.reference = reference
             queries[ObjectIdentifier(query)] = query
             queue.asyncAfter(deadline: .now() + Self.lookupTimeout) { [self, weak query] in
@@ -115,11 +103,9 @@
                 finish(query, .noSuchRecord)
             case kDNSServiceErr_NoSuchName:
                 finish(query, .noSuchName)
-            case kDNSServiceErr_ServiceNotRunning:
-                // mDNSResponder restarted: the shared connection and every lookup on it are
-                // gone. The next lookup opens a new one.
-                reset()
             default:
+                // kDNSServiceErr_ServiceNotRunning among them: mDNSResponder restarted, and the
+                // next lookup connects again.
                 finish(query, .failed)
             }
         }
@@ -134,19 +120,6 @@
             }
             query.continuation?.resume(returning: DNSLookup(outcome, records: query.records))
             query.continuation = nil
-        }
-
-        private func reset() {
-            let failed = queries.values
-            for query in failed {
-                // Deallocating the shared connection deallocates these references too.
-                query.reference = nil
-                finish(query, .failed)
-            }
-            if let connection {
-                DNSServiceRefDeallocate(connection)
-            }
-            connection = nil
         }
 
         /// One lookup's state; on the queue only.

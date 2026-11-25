@@ -68,8 +68,8 @@ to port 53 that left it, during the same eight lookups of several kinds in each 
 
 ## Decision
 
-1. **The API is `DNSServiceQueryRecord`,** on one shared connection to mDNSResponder per daemon
-   (`kDNSServiceFlagsShareConnection`), with `kDNSServiceFlagsReturnIntermediates`, so that the
+1. **The API is `DNSServiceQueryRecord`,** on a connection to mDNSResponder per lookup, with
+   `kDNSServiceFlagsReturnIntermediates`, so that the
    CNAMEs on the way arrive, and `kDNSServiceFlagsTimeout` (`MacDNSResolver`). It is the Mac's
    system resolver: it applies scoped resolvers, VPN and NetworkExtension DNS settings, and the
    Mac's cache, and it returns any record type with its TTL and its data on the wire.
@@ -77,6 +77,13 @@ to port 53 that left it, during the same eight lookups of several kinds in each 
    read the primary resolver's configuration and miss VPN and NetworkExtension DNS;
    Network.framework has no API for records. Lookups only query: nothing registers,
    reconfirms, or flushes a record. Each has a deadline of 3.5 s.
+
+   The plan shared one connection (`kDNSServiceFlagsShareConnection`). On the owner's Mac, in
+   a test of 300 sets of the six concurrent existence probes for `github.com`, all answered
+   from the cache, 6 to 10 sets got no reply on the shared connection until every lookup in
+   them reached the 3.5 s deadline, and a warm `resolvectl query` in the guest then took
+   3.6 s. Deferring the deallocation of a finished lookup out of the callback did not change
+   it. With a connection per lookup, three runs of the same test had no lookup over 100 ms.
 
 2. **NXDOMAIN needs evidence.** When the Mac reports no record of the requested type, the
    daemon looks up the end of the CNAME chain for A, AAAA, TXT, MX, SRV, NS, and SOA, without
