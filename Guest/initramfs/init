@@ -153,6 +153,19 @@ UNIT
     }; then
         echo "maw-initramfs: could not point systemd-resolved at the agent's DNS server" >&2
     fi
+    # A session can start before systemd-resolved does. Until then glibc finds nss-resolve
+    # unavailable and reads /etc/resolv.conf, which links to one of these files; without them
+    # it asks 127.0.0.1 and fails. These send it to the agent's server, and systemd-resolved
+    # replaces both when it starts.
+    resolve=/sysroot/run/systemd/resolve
+    if ! {
+        mkdir -p "$resolve" &&
+            printf '%s\n' '# Written by maw until systemd-resolved starts.' \
+                'nameserver 169.254.77.53' > "$resolve/stub-resolv.conf" &&
+            cp "$resolve/stub-resolv.conf" "$resolve/resolv.conf"
+    }; then
+        echo "maw-initramfs: could not write the resolver files for the first lookups" >&2
+    fi
 
     # The Mac's home directory at /mnt/mac, only on a machine that the daemon gave the share.
     # The agent resolves the default user inside /sysroot, checks /mnt and /mnt/mac without
