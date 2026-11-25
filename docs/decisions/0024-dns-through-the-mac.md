@@ -227,7 +227,58 @@ to port 53 that left it, during the same eight lookups of several kinds in each 
 
 ## Measurements of the implementation
 
-To be added from the development runs of `scripts/measure-dns.sh`.
+Development runs of `scripts/measure-dns.sh` on 25 November 2026, on the owner's Mac (Apple
+M1 Pro, macOS 27.0.1), commit `592157a`, guest files `a258a70`, through the test daemon. The
+one-minute load average was 5.35, above the rule for the official run, which the owner makes.
+Median and slowest of 5 runs:
+
+| Measurement | Median | Slowest | Target |
+|---|---|---|---|
+| A warm lookup in the guest, `resolvectl query --cache=no github.com`, median of 20 | 4.75 ms | 6.15 ms | under 10 ms: met |
+| A warm `getent hosts github.com`, systemd-resolved's cache, process start included, median of 20 | 8.86 ms | 11.27 ms | |
+| The first lookup after a cold start, `getent hosts github.com`, in the guest | 8.13 ms | 17.18 ms | under 1 s: met |
+| That session from the Mac, cold start included | 651.7 ms | 714.3 ms | |
+| AAAA for a name with an A record only, through the agent, cold / warm | 287.1 / 4.00 ms | 589.8 / 5.32 ms | |
+| AAAA for `github.com`, warm | 5.45 ms | 6.81 ms | |
+| A name that does not exist, through the agent, cold / warm | 105.3 / 5.23 ms | 147.5 / 16.27 ms | |
+
+The first lookup after a cold start is answered without the hold: the DNS channel is open
+before it arrives. The negative lookups through the agent's server are the ones that the
+existence probe lengthens; a cold AAAA for a name with an A record only waits for the probes'
+upstream lookups.
+
+**Cold start to a prompt**, with DNS through the Mac and with `mawd serve --without-dns`,
+alternating, adds to the median (target: under 20 ms): +19 ms, +10 ms, and +29 ms in three
+runs of the whole script at loads of 5 to 7, and +57 ms in a run of this measurement alone at
+a load of 1.89 (medians 925.3 and 867.8 ms). A trace of three further pairs from the daemon's
+log found no step that DNS lengthens: the agent was ready after 462, 455, and 718 ms with it
+and 436, 464, and 446 ms without, a variation that the daemon's DNS, which starts only after
+the agent is ready, cannot cause; from the session's start to the prompt took 388, 360, and
+510 ms with it and 345, 434, and 374 ms without. The development runs therefore neither meet
+nor miss the target clearly. The candidate for a cost is the DNS channel's dial-back, which
+the daemon requests when the agent is ready, just before the first session's own; opening it
+after the first session's connection would remove it, at the price of the 500 ms hold for the
+boot's first queries. The owner's official run decides.
+
+**Part 1's lookups, measured again** through `MacDNSResolver` in the test process (warm,
+median of 5):
+
+| Lookup | Outcome | Median |
+|---|---|---|
+| A `github.com` | 1 A record | 0.63 ms |
+| AAAA `google.com` | 1 AAAA record | 0.44 ms |
+| CNAME `www.github.com` | 1 CNAME record | 0.42 ms |
+| MX `gmail.com` | 5 MX records | 0.52 ms |
+| TXT `google.com` | 17 TXT records | 1.81 ms |
+| SRV `_imaps._tcp.gmail.com` | 1 SRV record | 1.19 ms |
+| PTR `1.1.1.1.in-addr.arpa` | 1 PTR record | 1.18 ms |
+| AAAA `github.com` | `kDNSServiceErr_NoSuchRecord` | 0.40 ms |
+| A for a name that does not exist | `kDNSServiceErr_NoSuchRecord` | 0.71 ms |
+| A for a new name, cold | found | 191.5 ms |
+| A for a name that does not exist, cold | `kDNSServiceErr_NoSuchRecord` | 36.9 ms |
+
+They confirm Part 1: every type is answered with its records, and the API returns the same
+error for a name that does not exist and for a name without the type.
 
 ## Consequences
 
