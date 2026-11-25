@@ -517,11 +517,12 @@ struct ImportIntegrationTests {
     /// gateway answers: a ping, or else its neighbour entry after the attempt.
     static let networkScript = #"""
         test -f /etc/systemd/network/50-maw.network && echo "fallback configuration present"
+        # The default route, not any global address: the agent's DNS address on lo is one.
         for i in $(seq 150); do
-            ip -4 -o addr show scope global | grep -q inet && break
+            ip route show default | grep -q . && break
             sleep 0.1
         done
-        ip -4 -o addr show scope global | sed 's/^/address /'
+        ip -4 -o addr show scope global | grep -v ' lo ' | sed 's/^/address /'
         gateway=$(ip route show default | awk '{ print $3; exit }')
         echo "gateway $gateway"
         if [ -n "$gateway" ] && ping -c 1 -W 2 "$gateway" > /dev/null 2>&1; then
