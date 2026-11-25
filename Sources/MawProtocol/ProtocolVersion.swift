@@ -39,9 +39,12 @@ public enum AgentProtocol {
     public static let listenerScanInterval = Duration.milliseconds(250)
     /// The guest address on which the agent answers DNS queries, on port 53 over UDP and TCP
     /// (docs/decisions/0024-dns-through-the-mac.md). A link-local address that the agent adds
-    /// to the loopback interface: containers in the guest can reach it, unlike 127.0.0.0/8.
+    /// to the dummy link `dnsLink`: containers in the guest can reach it, unlike 127.0.0.0/8,
+    /// and systemd-resolved uses its servers while that link is up, before DHCP has finished.
     public static let dnsAddress: [UInt8] = [169, 254, 77, 53]
     public static let dnsAddressText = "169.254.77.53"
+    /// The guest's dummy link that holds `dnsAddress`.
+    public static let dnsLink = "maw-dns"
     public static let dnsPort: UInt16 = 53
     /// The largest payload of a `dnsQuery` or `dnsAnswer` frame: a 4-byte tag and a message of
     /// at most 65,535 bytes.

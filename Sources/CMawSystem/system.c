@@ -778,11 +778,13 @@ int maw_mount_virtiofs(const char *tag, int directory, const char *options) {
 // MARK: DNS in the guest
 
 #if defined(__linux__)
+#include <net/if.h>
 #include <spawn.h>
 #include <sys/inotify.h>
 
 // linux/rtnetlink.h is not in the sysroot either; these are its stable values and layouts.
 #define MAW_NETLINK_ROUTE 0
+#define MAW_RTM_NEWLINK 16
 #define MAW_RTM_NEWADDR 20
 #define MAW_NLMSG_ERROR 2
 #define MAW_NLM_F_REQUEST 0x1
@@ -792,7 +794,10 @@ int maw_mount_virtiofs(const char *tag, int directory, const char *options) {
 #define MAW_IFA_ADDRESS 1
 #define MAW_IFA_LOCAL 2
 #define MAW_RT_SCOPE_UNIVERSE 0
-#define MAW_LOOPBACK_INDEX 1
+#define MAW_IFLA_IFNAME 3
+#define MAW_IFLA_LINKINFO 18
+#define MAW_IFLA_INFO_KIND 1
+#define MAW_IFF_UP 0x1
 
 struct maw_nlmsghdr {
     uint32_t nlmsg_len;
@@ -808,40 +813,22 @@ struct maw_ifaddrmsg {
     uint8_t ifa_scope;
     uint32_t ifa_index;
 };
+struct maw_ifinfomsg {
+    uint8_t ifi_family;
+    uint8_t ifi_pad;
+    uint16_t ifi_type;
+    int32_t ifi_index;
+    uint32_t ifi_flags;
+    uint32_t ifi_change;
+};
 struct maw_rtattr {
     uint16_t rta_len;
     uint16_t rta_type;
 };
-#endif
 
-int maw_add_loopback_address(const uint8_t address[4]) {
-#if defined(__linux__)
-    struct {
-        struct maw_nlmsghdr header;
-        struct maw_ifaddrmsg message;
-        struct maw_rtattr local;
-        uint8_t local_address[4];
-        struct maw_rtattr address;
-        uint8_t address_address[4];
-    } request;
-    memset(&request, 0, sizeof request);
-    request.header.nlmsg_len = sizeof request;
-    request.header.nlmsg_type = MAW_RTM_NEWADDR;
-    request.header.nlmsg_flags = MAW_NLM_F_REQUEST | MAW_NLM_F_ACK | MAW_NLM_F_CREATE | MAW_NLM_F_EXCL;
-    request.header.nlmsg_seq = 1;
-    request.message.ifa_family = AF_INET;
-    request.message.ifa_prefixlen = 32;
-    // The scope of `ip addr add`'s default, as measured: a container's network namespace
-    // reaches an address of this scope on `lo` (docs/decisions/0024-dns-through-the-mac.md).
-    request.message.ifa_scope = MAW_RT_SCOPE_UNIVERSE;
-    request.message.ifa_index = MAW_LOOPBACK_INDEX;
-    request.local.rta_len = sizeof request.local + 4;
-    request.local.rta_type = MAW_IFA_LOCAL;
-    memcpy(request.local_address, address, 4);
-    request.address.rta_len = sizeof request.address + 4;
-    request.address.rta_type = MAW_IFA_ADDRESS;
-    memcpy(request.address_address, address, 4);
-
+/// Sends one rtnetlink request and reads its acknowledgement. Returns 0, also for EEXIST, or
+/// an errno value.
+static int maw_netlink_request(const void *request, size_t length) {
     int fd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, MAW_NETLINK_ROUTE);
     if (fd < 0) {
         return errno;
@@ -851,7 +838,7 @@ int maw_add_loopback_address(const uint8_t address[4]) {
     kernel.nl_family = AF_NETLINK;
     ssize_t sent;
     do {
-        sent = sendto(fd, &request, sizeof request, 0, (struct sockaddr *)&kernel, sizeof kernel);
+        sent = sendto(fd, request, length, 0, (struct sockaddr *)&kernel, sizeof kernel);
     } while (sent < 0 && errno == EINTR);
     if (sent < 0) {
         return maw_close_preserving_errno(fd, errno);
@@ -876,7 +863,77 @@ int maw_add_loopback_address(const uint8_t address[4]) {
     int32_t error;
     memcpy(&error, reply.bytes + sizeof(struct maw_nlmsghdr), sizeof error);
     return error == 0 || error == -EEXIST ? 0 : -error;
+}
+#endif
+
+int maw_add_dummy_link_address(const char *name, const uint8_t address[4]) {
+#if defined(__linux__)
+    size_t name_length = strlen(name);
+    if (name_length == 0 || name_length > 15) {
+        return EINVAL;
+    }
+    // The link: created if it is missing, and up. A dummy link has carrier once it is up.
+    struct {
+        struct maw_nlmsghdr header;
+        struct maw_ifinfomsg message;
+        struct maw_rtattr name;
+        char name_bytes[16];
+        struct maw_rtattr info;
+        struct maw_rtattr kind;
+        char kind_bytes[8];
+    } create;
+    memset(&create, 0, sizeof create);
+    create.header.nlmsg_len = sizeof create;
+    create.header.nlmsg_type = MAW_RTM_NEWLINK;
+    create.header.nlmsg_flags = MAW_NLM_F_REQUEST | MAW_NLM_F_ACK | MAW_NLM_F_CREATE;
+    create.header.nlmsg_seq = 1;
+    create.message.ifi_flags = MAW_IFF_UP;
+    create.message.ifi_change = MAW_IFF_UP;
+    create.name.rta_len = sizeof create.name + sizeof create.name_bytes;
+    create.name.rta_type = MAW_IFLA_IFNAME;
+    memcpy(create.name_bytes, name, name_length);
+    create.info.rta_len = sizeof create.info + sizeof create.kind + sizeof create.kind_bytes;
+    create.info.rta_type = MAW_IFLA_LINKINFO;
+    create.kind.rta_len = sizeof create.kind + sizeof "dummy";
+    create.kind.rta_type = MAW_IFLA_INFO_KIND;
+    memcpy(create.kind_bytes, "dummy", sizeof "dummy");
+    int error = maw_netlink_request(&create, sizeof create);
+    if (error != 0) {
+        return error;
+    }
+    unsigned index = if_nametoindex(name);
+    if (index == 0) {
+        return errno != 0 ? errno : ENODEV;
+    }
+
+    struct {
+        struct maw_nlmsghdr header;
+        struct maw_ifaddrmsg message;
+        struct maw_rtattr local;
+        uint8_t local_address[4];
+        struct maw_rtattr address;
+        uint8_t address_address[4];
+    } add;
+    memset(&add, 0, sizeof add);
+    add.header.nlmsg_len = sizeof add;
+    add.header.nlmsg_type = MAW_RTM_NEWADDR;
+    add.header.nlmsg_flags = MAW_NLM_F_REQUEST | MAW_NLM_F_ACK | MAW_NLM_F_CREATE | MAW_NLM_F_EXCL;
+    add.header.nlmsg_seq = 2;
+    add.message.ifa_family = AF_INET;
+    add.message.ifa_prefixlen = 32;
+    // Global scope, `ip addr add`'s default: a container's network namespace reaches it, and
+    // systemd-resolved counts the link as routable (docs/decisions/0024-dns-through-the-mac.md).
+    add.message.ifa_scope = MAW_RT_SCOPE_UNIVERSE;
+    add.message.ifa_index = index;
+    add.local.rta_len = sizeof add.local + 4;
+    add.local.rta_type = MAW_IFA_LOCAL;
+    memcpy(add.local_address, address, 4);
+    add.address.rta_len = sizeof add.address + 4;
+    add.address.rta_type = MAW_IFA_ADDRESS;
+    memcpy(add.address_address, address, 4);
+    return maw_netlink_request(&add, sizeof add);
 #else
+    (void)name;
     (void)address;
     return ENOSYS;
 #endif

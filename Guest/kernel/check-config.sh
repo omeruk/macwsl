@@ -75,6 +75,8 @@ INET=y
 IPV6=y
 UNIX=y
 PACKET=y
+# The agent's DNS address is on a dummy link (docs/decisions/0024-dns-through-the-mac.md).
+DUMMY=y
 
 # Containers.
 NAMESPACES=y

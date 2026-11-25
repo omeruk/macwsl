@@ -50,14 +50,16 @@ public struct DNSEnvironment: Sendable {
         self.tcpIdleTimeout = tcpIdleTimeout
     }
 
-    /// The guest's: `AgentProtocol.dnsAddress` on the loopback interface.
+    /// The guest's: `AgentProtocol.dnsAddress` on the dummy link `AgentProtocol.dnsLink`.
     public static func guest() -> DNSEnvironment {
         DNSEnvironment(prepareAddress: { () throws(SystemError) in
             let code = AgentProtocol.dnsAddress.withUnsafeBufferPointer {
-                maw_add_loopback_address($0.baseAddress!)
+                maw_add_dummy_link_address(AgentProtocol.dnsLink, $0.baseAddress!)
             }
             guard code == 0 else {
-                throw SystemError("adding \(AgentProtocol.dnsAddressText) to lo", code: code)
+                throw SystemError(
+                    "adding \(AgentProtocol.dnsAddressText) on the link \(AgentProtocol.dnsLink)",
+                    code: code)
             }
         })
     }

@@ -192,10 +192,11 @@ int maw_openat(int directory, const char *path, int flags, int *fd);
 /// symbolic link in its path is followed. Linux only; ENOSYS elsewhere.
 int maw_mount_virtiofs(const char *tag, int directory, const char *options);
 
-/// Adds the IPv4 address `address` (4 bytes, network order) with prefix length 32 to the
-/// loopback interface, through rtnetlink. An address that is there already counts as added.
-/// Returns 0 or an errno value. Linux only; ENOSYS elsewhere.
-int maw_add_loopback_address(const uint8_t address[4]);
+/// Creates the dummy link `name` (at most 15 bytes) unless it exists, sets it up, and adds the
+/// IPv4 address `address` (4 bytes, network order) with prefix length 32 and global scope to
+/// it, through rtnetlink. A link or an address that is there already counts as added. Returns
+/// 0 or an errno value. Linux only; ENOSYS elsewhere.
+int maw_add_dummy_link_address(const char *name, const uint8_t address[4]);
 
 /// Opens a close-on-exec, non-blocking UDP socket, or a TCP socket if `stream` is nonzero,
 /// with SO_REUSEADDR, bound to the IPv4 address `address` (4 bytes, network order) and `port`,
