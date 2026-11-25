@@ -12,7 +12,7 @@ extension MawIntegration {
         async throws -> DebugBootProcess.Result
     {
         try await run(
-            ["-d", distribution ?? self.distribution, "-u", "root", "--", "sh", "-c", script],
+            ["-d", distribution ?? self.distribution, "-u", "root", "-e", "sh", "-c", script],
             timeout: timeout)
     }
 

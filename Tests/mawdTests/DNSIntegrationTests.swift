@@ -13,11 +13,15 @@ struct DNSIntegrationTests {
         maw = try MawIntegration()
     }
 
-    /// systemd-resolved has the agent's server and nothing else, and the drop-in for maw's own
-    /// network file is in place.
+    /// systemd-resolved has the agent's server and nothing else, it replaced the stub file
+    /// that the initramfs writes for the lookups before it starts, and the drop-in for maw's
+    /// own network file is in place.
     @Test func pointsSystemdResolvedAtTheAgentOnly() async throws {
+        let stub = "/run/systemd/resolve/stub-resolv.conf"
         let result = try await maw.asRoot(
             """
+            for i in $(seq 100); do grep -q '^nameserver 127.0.0.53' \(stub) && break; sleep 0.1; done
+            echo "stub: $(grep '^nameserver' \(stub) | tr '\\n' ' ')"
             resolvectl status --no-pager
             echo "resolv.conf: $(grep '^nameserver' /run/systemd/resolve/resolv.conf | tr '\\n' ' ')"
             test -f /run/systemd/network/10-netplan-maw.network.d/99-maw-dns.conf && echo drop-in
@@ -25,7 +29,8 @@ struct DNSIntegrationTests {
         let lines = result.lines.map { $0.trimmingCharacters(in: .whitespaces) }
         #expect(lines.contains("DNS Servers: \(MawIntegration.dnsServer)"), "\(result.output)")
         #expect(lines.filter { $0.hasPrefix("DNS Servers:") }.count == 1, "\(result.output)")
-        #expect(lines.contains("resolv.conf: nameserver \(MawIntegration.dnsServer) "))
+        #expect(lines.contains("resolv.conf: nameserver \(MawIntegration.dnsServer)"))
+        #expect(lines.contains("stub: nameserver 127.0.0.53"), "\(result.output)")
         #expect(lines.contains("drop-in"))
     }
 
@@ -76,11 +81,11 @@ struct DNSIntegrationTests {
         #expect(try await maw.packetsToPort53() == [])
     }
 
-    /// A distribution whose network files have names of their own: maw's netplan file removed
-    /// and a file named `25-own.network` in its place. At the boot, the drop-in covers it; while
-    /// the machine runs, a new `15-later.network` gets its drop-in after `networkctl reload`,
-    /// and no query reaches the NAT's server or the IPv6 router afterwards, also after a
-    /// renewal of the DHCP lease.
+    /// A distribution whose network files have names of their own: maw's netplan file removed,
+    /// a file named `25-own.network` in its place, and systemd-networkd enabled, which netplan
+    /// did before. At the boot, the drop-in covers it; while the machine runs, a new
+    /// `15-later.network` gets its drop-in after `networkctl reload`, and no query reaches
+    /// the NAT's server or the IPv6 router afterwards, also after a renewal of the DHCP lease.
     @Test func keepsTheNetworksDNSOutWhateverItsFilesAreCalled() async throws {
         try await maw.withDistribution("dnsnet") { name in
             let network =
@@ -88,6 +93,7 @@ struct DNSIntegrationTests {
             let prepared = try await maw.asRoot(
                 """
                 rm -f /etc/netplan/50-maw.yaml
+                systemctl enable systemd-networkd.service
                 printf '\(network)' > /etc/systemd/network/25-own.network
                 """, in: name)
             #expect(prepared.status == 0, "\(prepared.output)\(prepared.standardError)")
@@ -139,32 +145,36 @@ struct DNSIntegrationTests {
 
     /// A server that maw does not configure, given to the link by hand as another network
     /// manager would, makes the agent write a line to the console log, and another when it
-    /// goes.
+    /// goes. The session waits for each line in the agent's journal, so that the machine does
+    /// not stop for want of a session meanwhile, which would drop the server.
     @Test func writesAConsoleLineForAServerThatMawDoesNotConfigure() async throws {
-        let added = try await maw.asRoot(
+        func waitFor(_ text: String) -> String {
+            """
+            for i in $(seq 150); do
+                journalctl -b -u maw-agent --no-pager | grep -q "\(text)" && break; sleep 0.1
+            done
+            """
+        }
+        let added = "systemd-resolved also has the DNS server 192.168.64.1"
+        let removed = "systemd-resolved has only the agent's DNS server again"
+        let result = try await maw.asRoot(
             """
             \(MawIntegration.defaultInterface)
-            resolvectl dns "$IF" 192.168.64.1
+            for i in $(seq 100); do systemctl -q is-active systemd-resolved && break; sleep 0.1; done
+            resolvectl dns "$IF" 192.168.64.1 || echo "resolvectl dns failed"
+            \(waitFor(added))
+            resolvectl revert "$IF" || echo "resolvectl revert failed"
+            \(waitFor(removed))
+            journalctl -b -u maw-agent --no-pager | grep 'dns: systemd-resolved'
             """)
-        #expect(added.status == 0, "\(added.output)\(added.standardError)")
-        #expect(
-            await maw.eventually(within: .seconds(15)) {
-                maw.consoleLogLines(of: maw.distribution).contains {
-                    $0.contains("systemd-resolved also has the DNS server 192.168.64.1")
-                }
-            })
-        let reverted = try await maw.asRoot(
-            """
-            \(MawIntegration.defaultInterface)
-            resolvectl revert "$IF"
-            """)
-        #expect(reverted.status == 0, "\(reverted.output)\(reverted.standardError)")
-        #expect(
-            await maw.eventually(within: .seconds(15)) {
-                maw.consoleLogLines(of: maw.distribution).contains {
-                    $0.contains("systemd-resolved has only the agent's DNS server again")
-                }
-            })
+        #expect(!result.output.contains("failed"), "\(result.output)\(result.standardError)")
+        for line in [added, removed] {
+            #expect(result.output.contains(line), "\(result.output)")
+            #expect(
+                await maw.eventually(within: .seconds(5)) {
+                    maw.consoleLogLines(of: maw.distribution).contains { $0.contains(line) }
+                }, "\(line)\n\(result.output)")
+        }
     }
 
     /// A program's UDP socket on the wildcard address and port 53 binds with SO_REUSEADDR and
@@ -234,6 +244,26 @@ struct DNSIntegrationTests {
         #expect(line.hasPrefix("status=0 "), "\(line)")
         let microseconds = try #require(Int(line.split(separator: "=").last ?? ""))
         #expect(microseconds < 1_000_000, "\(line)")
+    }
+
+    /// The resolver file that the initramfs writes for the lookups before systemd-resolved
+    /// starts: with systemd-resolved masked, as in a distribution without it, nothing replaces
+    /// the file, and glibc reaches the agent's server through it.
+    @Test func answersThroughTheBootsResolverFileWithoutSystemdResolved() async throws {
+        try await maw.withDistribution("noresolved") { name in
+            let masked = try await maw.asRoot("systemctl mask systemd-resolved", in: name)
+            #expect(masked.status == 0, "\(masked.output)\(masked.standardError)")
+            _ = try await maw.run(["--terminate", name])
+            let result = try await maw.asRoot(
+                """
+                echo "resolved: $(systemctl is-active systemd-resolved)"
+                grep '^nameserver' /etc/resolv.conf
+                getent hosts github.com > /dev/null && echo found
+                """, in: name)
+            #expect(result.lines.contains("resolved: inactive"), "\(result.output)")
+            #expect(result.lines.contains("nameserver \(MawIntegration.dnsServer)"))
+            #expect(result.lines.contains("found"), "\(result.output)\(result.standardError)")
+        }
     }
 
     /// A name that only a scoped resolver on the Mac knows, if the owner has added
