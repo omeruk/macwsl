@@ -248,6 +248,29 @@ struct DNSIntegrationTests {
         #expect(microseconds < 1_000_000, "\(line)")
     }
 
+    /// Lookups are answered while the network device has no address, as between
+    /// systemd-resolved's start and DHCP's address at every boot: systemd-resolved sends a query
+    /// to a global server only while a link other than `lo` is up with a global address, and the
+    /// agent's dummy link is one. Without it, the lookup failed with "Network is down".
+    @Test func answersWhileTheNetworkDeviceHasNoAddress() async throws {
+        let result = try await maw.asRoot(
+            """
+            \(MawIntegration.defaultInterface)
+            ip -4 addr flush dev "$IF"; ip -6 addr flush dev "$IF" scope global
+            ip -o addr show dev "$IF" scope global | grep -q . && echo "still addressed"
+            echo "link: $(cat /sys/class/net/maw-dns/operstate)" \
+                "$(ip -4 -o addr show dev maw-dns | awk '{print $4}')"
+            resolvectl query --cache=no github.com 2>&1 | head -n 1
+            getent hosts github.com > /dev/null && echo found
+            """)
+        // The next session boots again, with the device's address from DHCP.
+        _ = try await maw.run(["--terminate", maw.distribution])
+        #expect(!result.lines.contains("still addressed"), "\(result.output)")
+        #expect(result.lines.contains("link: unknown 169.254.77.53/32"), "\(result.output)")
+        #expect(!result.output.contains("Network is down"), "\(result.output)")
+        #expect(result.lines.contains("found"), "\(result.output)\(result.standardError)")
+    }
+
     /// The resolver file that the initramfs writes for the lookups before systemd-resolved
     /// starts: with systemd-resolved masked, as in a distribution without it, nothing replaces
     /// the file, and glibc reaches the agent's server through it.

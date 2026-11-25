@@ -446,7 +446,8 @@ struct ImportIntegrationTests {
         let result = try await maw.session(
             [
                 "--",
-                "for i in $(seq 100); do a=$(ip -4 -o addr show scope global | awk '{print $4}');"
+                "for i in $(seq 100); do a=$(ip -4 -o addr show scope global | grep -v ' maw-dns '"
+                    + " | awk '{print $4}');"
                     + " [ -n \"$a\" ] && { echo \"$a\"; exit 0; }; sleep 0.1; done; exit 1",
             ], in: name)
         try #require(result.status == 0, "\(result.output)\(result.standardError)")
@@ -517,12 +518,12 @@ struct ImportIntegrationTests {
     /// gateway answers: a ping, or else its neighbour entry after the attempt.
     static let networkScript = #"""
         test -f /etc/systemd/network/50-maw.network && echo "fallback configuration present"
-        # The default route, not any global address: the agent's DNS address on lo is one.
+        # The default route, not any global address: the agent's DNS address on maw-dns is one.
         for i in $(seq 150); do
             ip route show default | grep -q . && break
             sleep 0.1
         done
-        ip -4 -o addr show scope global | grep -v ' lo ' | sed 's/^/address /'
+        ip -4 -o addr show scope global | grep -v ' maw-dns ' | sed 's/^/address /'
         gateway=$(ip route show default | awk '{ print $3; exit }')
         echo "gateway $gateway"
         if [ -n "$gateway" ] && ping -c 1 -W 2 "$gateway" > /dev/null 2>&1; then

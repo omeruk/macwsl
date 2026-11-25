@@ -64,7 +64,8 @@ struct ForwardingMeasurements {
     func natAddress() async throws -> String {
         let result = try await maw.run([
             "-d", maw.distribution, "-e", "sh", "-c",
-            "ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1",
+            "ip -4 -o addr show scope global | grep -v ' maw-dns ' | awk '{print $4}'"
+                + " | cut -d/ -f1 | head -1",
         ])
         let address = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
         try #require(!address.isEmpty, "no NAT address: \(result.output)\(result.standardError)")
