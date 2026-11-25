@@ -37,10 +37,13 @@ struct DNSMeasurements {
 
     static func unique() -> String { "m\(UInt32.random(in: 0...UInt32.max))" }
 
-    /// A time as resolvectl prints it, such as `1.2ms` or `845us`, in milliseconds.
+    /// A time as resolvectl prints it, such as `1.2ms`, `3.6s`, or `845µs`, in milliseconds.
     static func milliseconds(_ text: Substring) -> Double? {
         if text.hasSuffix("ms") { return Double(text.dropLast(2)) }
-        if text.hasSuffix("us") { return Double(text.dropLast(2)).map { $0 / 1_000 } }
+        // Microseconds: `us`, or with the micro sign or the Greek letter mu in a UTF-8 locale.
+        if ["us", "\u{00B5}s", "\u{03BC}s"].contains(where: { text.hasSuffix($0) }) {
+            return Double(text.dropLast(2)).map { $0 / 1_000 }
+        }
         if text.hasSuffix("s") { return Double(text.dropLast(1)).map { $0 * 1_000 } }
         return nil
     }
@@ -58,7 +61,9 @@ struct DNSMeasurements {
                 """
                 getent hosts github.com > /dev/null; resolvectl query github.com > /dev/null
                 for i in $(seq 20); do
-                    resolvectl query --cache=no github.com | sed -n 's/.* in \\([0-9.]*[mu]*s\\)\\.$/resolvectl \\1/p'
+                    out=$(resolvectl query --cache=no github.com 2>&1)
+                    t=$(echo "$out" | sed -n 's/.* in \\([0-9.]*[^ ]*s\\)\\.$/\\1/p')
+                    if [ -n "$t" ]; then echo "resolvectl $t"; else echo "unparsed: $out"; fi
                     a=$(date +%s%N); getent hosts github.com > /dev/null; b=$(date +%s%N)
                     echo "getent $(( (b - a) / 1000 ))"
                 done
