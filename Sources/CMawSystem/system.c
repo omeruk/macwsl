@@ -598,7 +598,12 @@ int maw_tcp_accept(int listener, int *fd) {
     *fd = -1;
     int connection;
     do {
+#if defined(__linux__)
+        // Atomically: the agent starts session processes from other threads meanwhile.
+        connection = accept4(listener, NULL, NULL, SOCK_CLOEXEC);
+#else
         connection = accept(listener, NULL, NULL);
+#endif
     } while (connection < 0 && errno == EINTR);
     if (connection < 0) {
         return errno;
@@ -879,7 +884,12 @@ int maw_add_loopback_address(const uint8_t address[4]) {
 
 int maw_inet4_bind(int stream, const uint8_t address[4], uint16_t port, int backlog, int *fd) {
     *fd = -1;
-    int socket_fd = socket(AF_INET, stream ? SOCK_STREAM : SOCK_DGRAM, 0);
+    int type = stream ? SOCK_STREAM : SOCK_DGRAM;
+#if defined(__linux__)
+    // Atomically: the agent starts session processes from other threads meanwhile.
+    type |= SOCK_CLOEXEC;
+#endif
+    int socket_fd = socket(AF_INET, type, 0);
     if (socket_fd < 0) {
         return errno;
     }

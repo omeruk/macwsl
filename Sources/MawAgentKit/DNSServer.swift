@@ -219,7 +219,13 @@ public final class DNSServer: @unchecked Sendable {
                 if client.output.count > 0 {
                     events |= Int16(POLLOUT)
                 }
-                requests.append(pollfd(fd: client.descriptor.rawValue, events: events, revents: 0))
+                // poll reports POLLHUP and POLLERR without being asked, so a reset connection
+                // that waits only for its answers would wake the loop at once, again and again;
+                // poll skips a negative descriptor.
+                requests.append(
+                    pollfd(
+                        fd: events == 0 ? -1 : client.descriptor.rawValue, events: events,
+                        revents: 0))
             }
             _ = try? pollDescriptors(&requests, timeout: pollTimeout(until: nextDeadline()))
 
