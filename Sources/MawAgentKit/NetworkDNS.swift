@@ -94,7 +94,8 @@ public enum NetworkDNS {
     public struct Files: Sendable {
         public var entries: @Sendable (_ directory: String) -> [String]
         public var read: @Sendable (_ path: String) -> String?
-        /// Creates the directory if needed and writes the file in its place atomically.
+        /// Creates the directory and its parents if needed and writes the file in its place
+        /// atomically.
         public var write: @Sendable (_ directory: String, _ name: String, _ text: String) -> Int32
 
         public init(
@@ -143,8 +144,13 @@ extension NetworkDNS.Files {
         read: { path in readBytes(path, limit: 64 << 10).map { String(decoding: $0, as: UTF8.self) }
         },
         write: { directory, name, text in
-            if mkdir(directory, 0o755) != 0 && errno != EEXIST {
-                return errno
+            // Without netplan, nothing creates /run/systemd/network before the boot's unit.
+            var path = ""
+            for component in directory.split(separator: "/") {
+                path += "/\(component)"
+                if mkdir(path, 0o755) != 0 && errno != EEXIST {
+                    return errno
+                }
             }
             // The boot's unit and the agent may write at once; each writes its own file.
             let temporary = "\(directory)/.\(name).\(getpid()).tmp"

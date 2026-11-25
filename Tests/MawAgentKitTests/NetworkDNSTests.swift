@@ -1,3 +1,4 @@
+import Foundation
 import MawProtocol
 import Testing
 
@@ -52,6 +53,19 @@ import Testing
         #expect(NetworkDNS.writeDropIns(files: fake.files).written.isEmpty)
         fake.directories["/etc/systemd/network"]?.append("15-later.network")
         #expect(NetworkDNS.writeDropIns(files: fake.files).written == ["15-later.network"])
+    }
+
+    /// Without netplan, /run/systemd/network does not exist when the boot's unit runs.
+    @Test func writesTheDropInWhereItsParentDirectoriesAreMissing() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "maw-network-dns-\(UInt32.random(in: 0...UInt32.max))").path
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let directory = "\(root)/run/systemd/network/25-own.network.d"
+        #expect(NetworkDNS.Files.live.write(directory, "99-maw-dns.conf", "text") == 0)
+        #expect(NetworkDNS.Files.live.read("\(directory)/99-maw-dns.conf") == "text")
+        #expect(NetworkDNS.Files.live.write(directory, "99-maw-dns.conf", "again") == 0)
+        #expect(
+            try FileManager.default.contentsOfDirectory(atPath: directory) == ["99-maw-dns.conf"])
     }
 
     @Test func rewritesADropInThatWasChangedAndReportsFailures() {
