@@ -128,7 +128,9 @@ directory, `/run/systemd/system`, it writes the drop-in
 `systemd-timesyncd.service.d/maw-order.conf`, which orders `systemd-timesyncd` after
 `systemd-resolved`, so that a shutdown soon after a boot does not wait 5 s for
 `systemd-timesyncd`, and the unit `maw-network-dns.service` with the drop-in
-`/run/systemd/resolved.conf.d/99-maw-dns.conf` for DNS through the Mac (see "DNS"). All of them
+`/run/systemd/resolved.conf.d/99-maw-dns.conf` for DNS through the Mac, with
+`stub-resolv.conf` and `resolv.conf` in `/run/systemd/resolve` for the lookups before
+systemd-resolved starts (see "DNS"). All of them
 are gone when the machine stops, and none is written into the distribution's own files. The agent starts
 with systemd, so that a session can begin while other units still start. Each machine gets every
 CPU of the Mac and half of its memory, and reaches the network through NAT.
@@ -217,6 +219,9 @@ Mac's VPNs, its scoped resolvers under `/etc/resolver/`, and its other DNS setti
   `/etc/resolv.conf` stays the link to systemd-resolved's stub, `127.0.0.53`. A program or a
   container that reads `/run/systemd/resolve/resolv.conf`, as Docker does, gets
   `169.254.77.53`, which a container's network namespace can reach.
+- **Before systemd-resolved starts.** A session can begin before systemd-resolved runs. Until
+  then, glibc reads the stub file that the initramfs wrote, which names `169.254.77.53`, and
+  asks the agent's server directly; systemd-resolved replaces the file when it starts.
 - **The NAT network's server is not used.** At every boot, before systemd-networkd starts, a
   runtime drop-in for every `.network` file, whatever it is called, turns off the DNS servers
   and domains of DHCP and router advertisements
@@ -233,9 +238,10 @@ Mac's VPNs, its scoped resolvers under `/etc/resolver/`, and its other DNS setti
   and the next lookup tries again. There is no other server to fall back to.
 - **Nothing is written to the distribution's disk.** Everything above lives in `/run` and is gone
   when the machine stops.
-- **Without systemd-resolved**, as in an imported Debian, the distribution has no DNS, as before:
-  its `/etc/resolv.conf` leads to the missing stub. `nameserver 169.254.77.53` in its own
-  `/etc/resolv.conf` uses the Mac's resolver.
+- **Without systemd-resolved**, as in an imported Debian, `/etc/resolv.conf` leads to the stub
+  file that the initramfs writes and nothing replaces, so lookups go to the agent's server
+  directly, without a cache. A distribution that replaced the link with a file of its own uses
+  the servers in that file.
 
 ## Sessions
 

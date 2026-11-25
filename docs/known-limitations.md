@@ -97,7 +97,10 @@ from `main`.
     configures, as in an imported archive that enables one, gives systemd-resolved its own
     server, and queries can reach it as well as the agent's. The agent writes a line to the
     console log naming every such server (`dns: systemd-resolved also has the DNS server …`),
-    so it is never used without a trace, but it is not removed.
+    so it is never used without a trace, but it is not removed. The line names the servers in
+    systemd-resolved's `resolv.conf`, which lists a link's servers only while the link is a
+    default route; a server of a link that is not one, but has routing domains, receives the
+    queries for those domains without a line.
   - **Evidence:** [Decision record 0024](decisions/0024-dns-through-the-mac.md), "What the
     platform does" and item 4; the owner chose this over a kernel rule that refuses port 53 to
     the gateway; `DNSIntegrationTests.writesAConsoleLineForAServerThatMawDoesNotConfigure`.

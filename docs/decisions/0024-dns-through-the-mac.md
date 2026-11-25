@@ -126,10 +126,10 @@ to port 53 that left it, during the same eight lookups of several kinds in each 
      console log naming it, and another when it is gone, so that no other server is ever used
      without a trace. Such a link is outside the drop-ins
      ([docs/known-limitations.md](../known-limitations.md)).
-   - A distribution without systemd-resolved has no DNS, as before this pull request: maw links
-     its `/etc/resolv.conf` to systemd-resolved's stub at installation and import, so it never
-     reaches `192.168.64.1` unless its user writes that server there. Writing
-     `nameserver 169.254.77.53` there instead uses the Mac's resolver.
+   - A distribution without systemd-resolved: maw links its `/etc/resolv.conf` to
+     systemd-resolved's stub at installation and import, and the stub file that the initramfs
+     writes (decision 7) is never replaced, so glibc asks `169.254.77.53` directly. It never
+     reaches `192.168.64.1` unless its user writes that server into a file of its own.
 
 5. **Search domains and single-label names.** The guest's resolver has no search domains: the
    link's DHCP domain is turned off with its server. glibc sends a single-label name, such as
@@ -154,12 +154,28 @@ to port 53 that left it, during the same eight lookups of several kinds in each 
    | Fewer than 12 bytes, or a response | Nothing |
    | `.local`, `254.169.in-addr.arpa`, `8.e.f.ip6.arpa` to `b.e.f.ip6.arpa` | REFUSED: the Mac would ask multicast DNS, which needs the Local Network permission |
 
-   DNSSEC is not validated: a response never sets AD and never carries an RRSIG.
+   DNSSEC is not validated: a response never sets AD and never carries an RRSIG. A name that
+   the daemon builds, from a search domain or the end of a CNAME chain, gets the same check
+   against the multicast zones before it reaches the Mac's resolver.
+
+   systemd-resolved retries a transaction that gets NOTIMP once at the lower feature level UDP,
+   without EDNS, and then returns NOTIMP; its debug log in the integration run showed the next
+   transactions at UDP+EDNS0 again, so the server is not downgraded for later queries. Each
+   query of an unsupported type costs that one retry.
 
 7. **The first query of a boot.** The path no longer depends on DHCP or on the NAT network:
    it crosses `lo` and vsock. The daemon opens the DNS channel as soon as the agent answers
    `info`, before the forwarding channel. A query that arrives before the channel is open waits
    for it for up to 500 ms, at most 64 queries, and is then answered SERVFAIL.
+
+   A session can also begin before systemd-resolved has started: the daemon reports the machine
+   running when the agent answers, and the console log of the integration run shows the agent
+   ready before systemd starts systemd-resolved. glibc then finds nss-resolve unavailable and
+   reads `/etc/resolv.conf`, whose target, `/run/systemd/resolve/stub-resolv.conf`, did not
+   exist yet, so it asked `127.0.0.1` and failed within 2 ms. The initramfs therefore writes
+   `stub-resolv.conf` and `resolv.conf` there with `nameserver 169.254.77.53`, and
+   systemd-resolved replaces both when it starts. The alternative, holding the machine's
+   readiness until systemd-resolved runs, would delay every cold start.
 
 8. **Failure.** A query passed to the host and not answered within 5 seconds by the agent's
    clock, or within 4 seconds by the daemon's, is answered SERVFAIL, and so is every query
