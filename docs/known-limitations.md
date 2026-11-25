@@ -602,25 +602,14 @@ from `main`.
     `ImportIntegrationTests.configuresTheNetworkWithoutNetplan`; pull request #32, code review.
   - **Phase:** None yet. `systemctl --root` from the imported root file system, if it has one,
     would enable the units completely.
-- **An imported distribution without systemd-resolved has no DNS.**
-  - **Seen:** `maw --import` links `/etc/resolv.conf` to systemd-resolved's stub resolver, as
-    the installation does. An archive without systemd-resolved, such as one of Debian, which
-    does not install it by default, boots with a link that leads nowhere, and names do not
-    resolve.
-  - **Evidence:** `ProvisioningScript.text` in `Sources/MawDaemonKit/ProvisioningScript.swift`
-    writes the link in both modes; pull request B of phase 06b decided not to handle it.
-  - **Phase:** None yet. Since phase 08, the import could write a `resolv.conf` that names the
-    agent's DNS server, `169.254.77.53`, which is the same in every distribution
-    ([decision record 0024](decisions/0024-dns-through-the-mac.md)); a user can write that line
-    already.
-- **An imported distribution whose systemd-networkd or systemd-resolved is masked has no
-  network or no DNS.**
-  - **Seen:** An archive in which the user masked either unit, as some WSL setups do, keeps the
-    mask; the import does not unmask a unit that the user masked.
+- **An imported distribution whose systemd-networkd is masked has no network.**
+  - **Seen:** An archive in which the user masked the unit, as some WSL setups do, keeps the
+    mask; the import does not unmask a unit that the user masked. A masked systemd-resolved
+    leaves DNS to the resolver file that the initramfs writes, since phase 08
+    (`DNSIntegrationTests.answersThroughTheBootsResolverFileWithoutSystemdResolved`).
   - **Evidence:** `ProvisioningScript.text` only adds masks; pull request B of phase 06b decided
     not to handle it.
-  - **Phase:** None yet. `systemctl unmask systemd-networkd systemd-resolved` in the
-    distribution restores them.
+  - **Phase:** None yet. `systemctl unmask systemd-networkd` in the distribution restores it.
 - **A `maw --export` killed with SIGKILL leaves its file.**
   - **Seen:** maw removes the file of a failed or cancelled export, on Ctrl-C, SIGTERM, and
     SIGHUP as well, but a SIGKILL ends it before it can. The partial file, of mode 600, stays

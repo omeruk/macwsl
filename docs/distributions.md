@@ -449,6 +449,6 @@ result already in place.
 | A drvfs line in `/etc/fstab`, such as `C: /mnt/c drvfs defaults 0 0` | A mount of a device that maw does not have | Replaces the file |
 | A machine ID | The same DHCP client ID as other imports of the archive | Empties it |
 | No `/etc/maw.conf` | Sessions as `root` | Writes the default user into it |
-| No `systemd-resolved` (Debian's default) | The stub link leads nowhere: no DNS | Nothing ([docs/known-limitations.md](known-limitations.md)) |
-| `systemd-networkd` or `systemd-resolved` masked | No network or no DNS | Nothing ([docs/known-limitations.md](known-limitations.md)) |
+| No `systemd-resolved` (Debian's default), or `systemd-resolved` masked | The stub link leads to the file that the initramfs writes: lookups go to the agent's DNS server, without a cache (see "DNS") | Nothing |
+| `systemd-networkd` masked | No network | Nothing ([docs/known-limitations.md](known-limitations.md)) |
 | An init that is not systemd | The guest agent never starts | Refuses the archive, naming what `/sbin/init` leads to |
