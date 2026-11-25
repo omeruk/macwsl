@@ -143,9 +143,10 @@ struct DNSIntegrationTests {
         }
     }
 
-    /// A server that maw does not configure, given to the link by hand as another network
-    /// manager would, makes the agent write a line to the console log, and another when it
-    /// goes. The session waits for each line in the agent's journal, so that the machine does
+    /// A server that maw does not configure, given to the link by hand with the link as a
+    /// default route, as another network manager would, makes the agent write a line to the
+    /// console log, and another when it goes. systemd-resolved lists the server of a link that
+    /// is not a default route nowhere, and sends it no query without a routing domain. The session waits for each line in the agent's journal, so that the machine does
     /// not stop for want of a session meanwhile, which would drop the server.
     @Test func writesAConsoleLineForAServerThatMawDoesNotConfigure() async throws {
         func waitFor(_ text: String) -> String {
@@ -162,6 +163,7 @@ struct DNSIntegrationTests {
             \(MawIntegration.defaultInterface)
             for i in $(seq 100); do systemctl -q is-active systemd-resolved && break; sleep 0.1; done
             resolvectl dns "$IF" 192.168.64.1 || echo "resolvectl dns failed"
+            resolvectl default-route "$IF" yes || echo "resolvectl default-route failed"
             \(waitFor(added))
             resolvectl revert "$IF" || echo "resolvectl revert failed"
             \(waitFor(removed))
