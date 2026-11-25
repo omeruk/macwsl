@@ -57,12 +57,14 @@
         private func start(
             _ query: Query, name: DNSName, continuation: CheckedContinuation<DNSLookup, Never>
         ) {
-            query.continuation = continuation
-            query.resolver = self
+            // A task cancelled before the lookup began has already finished the query, with no
+            // continuation to resume.
             guard !query.isFinished else {
-                finish(query, .failed)
+                continuation.resume(returning: DNSLookup(.failed))
                 return
             }
+            query.continuation = continuation
+            query.resolver = self
             if connection == nil {
                 var created: DNSServiceRef?
                 guard Int(DNSServiceCreateConnection(&created)) == kDNSServiceErr_NoError,

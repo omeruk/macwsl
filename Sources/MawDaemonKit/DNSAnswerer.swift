@@ -127,6 +127,11 @@
 
         /// A lookup, or `nil` when `maximumLookups` are in flight.
         private func lookup(_ name: DNSName, type: UInt16) async -> DNSLookup? {
+            // A name built here, from a search domain such as `local` or the end of a CNAME
+            // chain, never goes to multicast DNS either; a failure claims nothing about it.
+            if DNSQueryPolicy.multicastSuffixes.contains(where: { name.isEqualOrUnder($0) }) {
+                return DNSLookup(.failed)
+            }
             let admitted = lookups.withLock { count in
                 guard count < maximumLookups else { return false }
                 count += 1

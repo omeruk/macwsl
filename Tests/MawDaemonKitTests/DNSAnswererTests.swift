@@ -66,6 +66,39 @@ final class FakeResolver: SystemDNSResolving, @unchecked Sendable {
         DNSQuery(id: 1, name: name(text), type: type)
     }
 
+    /// docs/security.md: no name under `.local` or a link-local reverse zone reaches the
+    /// Mac's resolver, also one built from a search domain or a CNAME chain.
+    @Test func neverLooksUpAMulticastNameItBuilt() async {
+        let resolver = FakeResolver()
+        resolver.setSearchDomains(["local", "example.com"])
+        resolver.set(
+            "printer.example.com", DNSRecordType.a,
+            DNSLookup(.found, records: [Self.record("printer.example.com", 1, [192, 0, 2, 7])]))
+        resolver.set(
+            "alias.example.com", DNSRecordType.aaaa,
+            DNSLookup(.noSuchRecord, records: [Self.cname("alias.example.com", "box.local")]))
+        let answerer = DNSAnswerer(resolver: resolver)
+        let found = await answerer.answer(Self.query("printer"))
+        #expect(found.code == .noError && found.records.count == 2)
+        let alias = await answerer.answer(Self.query("alias.example.com", DNSRecordType.aaaa))
+        #expect(alias.code == .noError)
+        #expect(
+            !resolver.asked.contains {
+                $0.name.isEqualOrUnder(Self.name("local"))
+            })
+    }
+
+    /// A lookup from a task cancelled before it began returns at once, as the existence
+    /// probes' and the relay's cancellations need; it never reaches mDNSResponder.
+    @Test(.timeLimit(.minutes(1))) func returnsALookupCancelledBeforeItBegan() async {
+        let resolver = MacDNSResolver()
+        let outcome = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await resolver.lookup(Self.name("example.com"), type: DNSRecordType.a).outcome
+        }.value
+        #expect(outcome == .failed)
+    }
+
     @Test func answersWithTheMacsRecords() async {
         let resolver = FakeResolver()
         let a = Self.record("github.com", DNSRecordType.a, [140, 82, 121, 3], ttl: 37)
