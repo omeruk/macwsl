@@ -98,10 +98,12 @@ to port 53 that left it, during the same eight lookups of several kinds in each 
    does not cache negative answers; the Mac's cache does.
 
 3. **The agent answers on `169.254.77.53`, UDP and TCP port 53** (`AgentProtocol.dnsAddress`,
-   `DNSServer`), an address that it adds to the loopback interface with rtnetlink at its start.
-   It is not in `127.0.0.0/8` because Docker drops loopback nameservers and gives containers on
-   its default bridge `8.8.8.8` instead, which would bypass the Mac; a non-loopback address on
-   `lo` is reachable from a container's network namespace (measured above). A link-local
+   `DNSServer`), an address that it adds, with rtnetlink at its start, to a dummy link that it
+   creates, `maw-dns` (`AgentProtocol.dnsLink`; the guest kernel has `CONFIG_DUMMY`). It is not
+   in `127.0.0.0/8` because Docker drops loopback nameservers and gives containers on its
+   default bridge `8.8.8.8` instead, which would bypass the Mac; a non-loopback address of
+   global scope is reachable from a container's network namespace (measured above, on `lo`).
+   It is on a link of its own, and not on `lo`, for systemd-resolved: decision 7. A link-local
    address does not collide with a VPN's or a LAN's ranges; 77 is "M", as in the agent's vsock
    ports. Port 53 because a `resolv.conf` cannot name another port. The sockets have
    `SO_REUSEADDR` and no `SO_BINDTODEVICE` (measured above). The agent listens from its start,
@@ -171,7 +173,7 @@ to port 53 that left it, during the same eight lookups of several kinds in each 
    query of an unsupported type costs that one retry.
 
 7. **The first query of a boot.** The path no longer depends on DHCP or on the NAT network:
-   it crosses `lo` and vsock. The daemon opens the DNS channel as soon as the agent answers
+   it crosses the guest's local delivery and vsock. The daemon opens the DNS channel as soon as the agent answers
    `info`, before the forwarding channel. A query that arrives before the channel is open waits
    for it for up to 500 ms, at most 64 queries, and is then answered SERVFAIL.
 
@@ -183,6 +185,22 @@ to port 53 that left it, during the same eight lookups of several kinds in each 
    `stub-resolv.conf` and `resolv.conf` there with `nameserver 169.254.77.53`, and
    systemd-resolved replaces both when it starts. The alternative, holding the machine's
    readiness until systemd-resolved runs, would delay every cold start.
+
+   Between systemd-resolved's start and DHCP's address there was a second gap. systemd-resolved
+   (v255, `dns_scope_network_good`) sends a query to a global server only while some link other
+   than `lo` is up, has carrier, and has an address of global scope; otherwise it fails the
+   query at once with "Network is down". The gap had a median of 27 ms and was at most 69 ms in
+   the cold starts described next (in some, DHCP came first). With
+   the agent's address on `lo`, a first lookup made in it failed: of 125 cold starts with the
+   lookup delayed by 0 to 960 ms in 40 ms steps, 6 failed within 1 to 7 ms, all at delays of
+   160 or 200 ms and all between systemd-resolved's start (0.42 to 0.46 s after boot) and the
+   address (0.45 to 0.51 s). The owner's check hit the same gap. In the guest, `resolvectl
+   query` with the network device's addresses removed reported "Network is down", and answered
+   once a veth link held a global address. The agent's address is therefore on its own dummy
+   link, which is up with carrier and a global address from the agent's start, so
+   systemd-resolved uses the agent's server whatever DHCP is doing. The link has no multicast,
+   so systemd-resolved runs no LLMNR or multicast DNS on it, and netplan's file matches only
+   the `virtio_net` device, so systemd-networkd leaves it unmanaged.
 
 8. **Failure.** A query passed to the host and not answered within 5 seconds by the agent's
    clock, or within 4 seconds by the daemon's, is answered SERVFAIL, and so is every query

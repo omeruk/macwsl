@@ -214,8 +214,10 @@ Mac's VPNs, its scoped resolvers under `/etc/resolver/`, and its other DNS setti
 ([decision record 0024](decisions/0024-dns-through-the-mac.md)).
 
 - **What the distribution sees.** systemd-resolved has one DNS server, `169.254.77.53`, which
-  the guest agent adds to the loopback interface and answers on, UDP and TCP port 53;
-  `resolvectl status` shows it as the global server, and the network interface has none.
+  the guest agent adds to a dummy link of its own, `maw-dns`, and answers on, UDP and TCP port
+  53; `resolvectl status` shows it as the global server, and no link has a server. Because
+  `maw-dns` is up with that address, systemd-resolved uses the server from its start, also
+  before DHCP has given the network interface its address; `ip addr` lists the link.
   `/etc/resolv.conf` stays the link to systemd-resolved's stub, `127.0.0.53`. A program or a
   container that reads `/run/systemd/resolve/resolv.conf`, as Docker does, gets
   `169.254.77.53`, which a container's network namespace can reach.

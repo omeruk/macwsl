@@ -274,10 +274,11 @@ host                                            agent
    `error` (`busy`); an agent that answers no DNS, as on the initramfs machine, answers `busy`
    too. The channel does not count against the agent's 64 connections. It lasts until either
    side closes it; the host opens another 1 second after one ends.
-2. **The agent's server.** In a distribution, the agent adds `169.254.77.53/32`
-   (`AgentProtocol.dnsAddress`) to the loopback interface at its start and answers DNS there,
-   on UDP and TCP port 53, before any channel is open. A query that arrives while no channel
-   is open waits for one for up to 500 ms, at most 64 queries, and is then answered SERVFAIL.
+2. **The agent's server.** In a distribution, the agent creates the dummy link `maw-dns`
+   (`AgentProtocol.dnsLink`) at its start, adds `169.254.77.53/32` (`AgentProtocol.dnsAddress`)
+   to it, and answers DNS there, on UDP and TCP port 53, before any channel is open. A query
+   that arrives while no channel is open waits for one for up to 500 ms, at most 64 queries,
+   and is then answered SERVFAIL.
 3. **Queries.** The agent parses each query (`DNSQuery`) and answers itself what it does not
    pass on: FORMERR to a malformed query or one larger than 512 bytes, NOTIMP to an opcode,
    class, or type other than A, AAAA, CNAME, MX, TXT, SRV, and PTR, REFUSED to `.local` and

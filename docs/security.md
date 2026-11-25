@@ -594,7 +594,7 @@ docs/daemon.md).
   a server or an address: the daemon asks only the Mac's resolver, and only the name and type
   of a well-formed query reach it.
 - **Who can reach the agent's server.** The agent answers on `169.254.77.53`, port 53, an
-  address that it adds to the guest's loopback interface; processes and containers in the
+  address that it adds to the guest's dummy link `maw-dns`; processes and containers in the
   guest reach it. Other machines cannot: the NAT network is private to this Mac. Guest root
   can bind the same address and port with `SO_REUSEADDR` and receive the guest's UDP queries
   itself; it can do more than that as root.
