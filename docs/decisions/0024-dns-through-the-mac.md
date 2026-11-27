@@ -279,12 +279,14 @@ of the 500 ms hold for the boot's first queries. The owner's official run below 
 so the dial-back stays where it is.
 
 **The owner's official run** on 27 November 2026: commit `4efb9ef`, guest files from Guest run
-45626325790 at `4efb9ef`, after a restart, on AC power, with the lid open, Low Power Mode
-off, only Terminal open, and `caffeinate -dims`. Each measurement started with the one-minute load average under
-2, given in the table. Median and slowest of 5 runs:
+45626325790 at `4efb9ef`, after a restart, on AC power, with the lid open, Low Power Mode off,
+only Terminal open, and `caffeinate -dims`. Each measurement started with the one-minute load
+average under 2, given in the table. Median and slowest of 5 runs:
 
 | Measurement | Load | Median | Slowest | Target |
 |---|---|---|---|---|
+| A warm lookup in the guest, `resolvectl query --cache=no github.com`, median of 20 (at `fe6adb6`) | 1.37 | 5.700 ms | 5.900 ms | under 10 ms: met |
+| A warm `getent hosts github.com`, systemd-resolved's cache, process start included, median of 20 (at `fe6adb6`) | 1.37 | 10.594 ms | 10.820 ms | |
 | The first lookup after a cold start, `getent hosts github.com`, in the guest | 1.88 | 6.044 ms | 13.431 ms | under 1 s: met |
 | That session from the Mac, cold start included | 1.88 | 656.119 ms | 711.905 ms | |
 | Cold start to a prompt, with DNS through the Mac | 1.83 | 875.534 ms | 908.333 ms | |
@@ -294,11 +296,13 @@ off, only Terminal open, and `caffeinate -dims`. Each measurement started with t
 | AAAA for `github.com`, warm | 1.87 | 7.695 ms | 23.682 ms | |
 | A name that does not exist, through the agent, cold / warm | 1.87 | 111.599 / 7.143 ms | 118.808 / 7.669 ms | |
 
-The warm lookup (`measuresAWarmLookup`, load 1.98) failed after 0.834 s: its first session
-cold-started the machine, and every `resolvectl` run printed `sd_bus_open_system: No such file
-or directory`, because the guest's system bus was not up yet, which a cold start before the
-measurement reproduced against the test daemon; the 20 `getent` lookups were answered. The measurement now waits until `resolvectl status` answers (`fdf548c`). Its
-official run is still to come; the development figure above meets the target.
+The warm lookup's first official run at `4efb9ef` (load 1.98) failed after 0.834 s: its first
+session cold-started the machine, and every `resolvectl` run printed `sd_bus_open_system: No
+such file or directory`, because the guest's system bus was not up yet, which a cold start
+before the measurement reproduced against the test daemon; the 20 `getent` lookups were
+answered. The measurement now waits until `resolvectl status` answers (`fdf548c`). The owner
+ran it again alone at `fe6adb6`, with the same guest files, after another restart under the
+same conditions; the figures in the table's first two rows are from that run.
 
 **Part 1's lookups, measured again** through `MacDNSResolver` in the test process (warm unless
 marked cold, median of 5), in the development run and in the owner's official run at a load of
