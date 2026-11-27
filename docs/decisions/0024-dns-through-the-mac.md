@@ -272,28 +272,51 @@ a load of 1.89 (medians 925.3 and 867.8 ms). A trace of three further pairs from
 log found no step that DNS lengthens: the agent was ready after 462, 455, and 718 ms with it
 and 436, 464, and 446 ms without, a variation that the daemon's DNS, which starts only after
 the agent is ready, cannot cause; from the session's start to the prompt took 388, 360, and
-510 ms with it and 345, 434, and 374 ms without. The development runs therefore neither meet
-nor miss the target clearly. The candidate for a cost is the DNS channel's dial-back, which
-the daemon requests when the agent is ready, just before the first session's own; opening it
-after the first session's connection would remove it, at the price of the 500 ms hold for the
-boot's first queries. The owner's official run decides.
+510 ms with it and 345, 434, and 374 ms without. The candidate for a cost was the DNS
+channel's dial-back, which the daemon requests when the agent is ready, just before the first
+session's own; opening it after the first session's connection would remove it, at the price
+of the 500 ms hold for the boot's first queries. The owner's official run below measured +5 ms,
+so the dial-back stays where it is.
 
-**Part 1's lookups, measured again** through `MacDNSResolver` in the test process (warm,
-median of 5):
+**The owner's official run** on 27 November 2026: commit `4efb9ef`, guest files from Guest run
+45626325790 at `4efb9ef`, after a restart, on AC power, with the lid open, Low Power Mode
+off, only Terminal open, and `caffeinate -dims`. Each measurement started with the one-minute load average under
+2, given in the table. Median and slowest of 5 runs:
 
-| Lookup | Outcome | Median |
-|---|---|---|
-| A `github.com` | 1 A record | 0.63 ms |
-| AAAA `google.com` | 1 AAAA record | 0.44 ms |
-| CNAME `www.github.com` | 1 CNAME record | 0.42 ms |
-| MX `gmail.com` | 5 MX records | 0.52 ms |
-| TXT `google.com` | 17 TXT records | 1.81 ms |
-| SRV `_imaps._tcp.gmail.com` | 1 SRV record | 1.19 ms |
-| PTR `1.1.1.1.in-addr.arpa` | 1 PTR record | 1.18 ms |
-| AAAA `github.com` | `kDNSServiceErr_NoSuchRecord` | 0.40 ms |
-| A for a name that does not exist | `kDNSServiceErr_NoSuchRecord` | 0.71 ms |
-| A for a new name, cold | found | 191.5 ms |
-| A for a name that does not exist, cold | `kDNSServiceErr_NoSuchRecord` | 36.9 ms |
+| Measurement | Load | Median | Slowest | Target |
+|---|---|---|---|---|
+| The first lookup after a cold start, `getent hosts github.com`, in the guest | 1.88 | 6.044 ms | 13.431 ms | under 1 s: met |
+| That session from the Mac, cold start included | 1.88 | 656.119 ms | 711.905 ms | |
+| Cold start to a prompt, with DNS through the Mac | 1.83 | 875.534 ms | 908.333 ms | |
+| Cold start to a prompt, with `mawd serve --without-dns` | 1.83 | 870.287 ms | 905.969 ms | |
+| What DNS through the Mac adds to the median | 1.83 | +5.2 ms | | under 20 ms: met |
+| AAAA for a name with an A record only, through the agent, cold / warm | 1.87 | 153.814 / 7.252 ms | 155.380 / 10.962 ms | |
+| AAAA for `github.com`, warm | 1.87 | 7.695 ms | 23.682 ms | |
+| A name that does not exist, through the agent, cold / warm | 1.87 | 111.599 / 7.143 ms | 118.808 / 7.669 ms | |
+
+The warm lookup (`measuresAWarmLookup`, load 1.98) failed after 0.834 s: its first session
+cold-started the machine, and every `resolvectl` run printed `sd_bus_open_system: No such file
+or directory`, because the guest's system bus was not up yet, which a cold start before the
+measurement reproduced against the test daemon; the 20 `getent` lookups were answered. The measurement now waits until `resolvectl status` answers (`fdf548c`). Its
+official run is still to come; the development figure above meets the target.
+
+**Part 1's lookups, measured again** through `MacDNSResolver` in the test process (warm unless
+marked cold, median of 5), in the development run and in the owner's official run at a load of
+1.81, with the slowest of a cold lookup in parentheses:
+
+| Lookup | Outcome | Development | Official |
+|---|---|---|---|
+| A `github.com` | 1 A record | 0.63 ms | 0.514 ms |
+| AAAA `google.com` | 1 AAAA record | 0.44 ms | 0.734 ms |
+| CNAME `www.github.com` | 1 CNAME record | 0.42 ms | 0.638 ms |
+| MX `gmail.com` | 5 MX records | 0.52 ms | 0.530 ms |
+| TXT `google.com` | 17 TXT records | 1.81 ms | 1.372 ms |
+| SRV `_imaps._tcp.gmail.com` | 1 SRV record | 1.19 ms | 0.782 ms |
+| PTR `1.1.1.1.in-addr.arpa` | 1 PTR record | 1.18 ms | 0.813 ms |
+| AAAA `github.com` | `kDNSServiceErr_NoSuchRecord` | 0.40 ms | 0.796 ms |
+| A for a name that does not exist | `kDNSServiceErr_NoSuchRecord` | 0.71 ms | 0.360 ms |
+| A for a new name, cold | found | 191.5 ms | 72.838 ms (134.303 ms) |
+| A for a name that does not exist, cold | `kDNSServiceErr_NoSuchRecord` | 36.9 ms | 52.261 ms (146.438 ms) |
 
 They confirm Part 1: every type is answered with its records, and the API returns the same
 error for a name that does not exist and for a name without the type.
