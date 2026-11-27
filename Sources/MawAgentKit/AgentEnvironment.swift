@@ -104,7 +104,7 @@ func readAll(_ descriptor: Int32, limit: Int) -> ReadOutcome {
     }
 }
 
-private func directoryEntries(_ path: String) -> [String] {
+func directoryEntries(_ path: String) -> [String] {
     guard let directory = opendir(path) else { return [] }
     defer { closedir(directory) }
     var names: [String] = []

@@ -1,5 +1,6 @@
 #if os(Linux)
     import CMawSystem
+    import Logging
     import MawProtocol
 
     #if canImport(Glibc)
@@ -11,12 +12,29 @@
     extension AgentConfiguration {
         /// The configuration of the agent in the guest. Power-off goes through PID 1, which is
         /// busybox `init` or systemd; see `InitSystem`.
+        /// In a distribution, under systemd, the agent also answers the guest's DNS and keeps
+        /// the network's own DNS servers out (`DNSServer`, `NetworkDNSWatch`).
         public static func guest() -> AgentConfiguration {
-            AgentConfiguration(forwarding: .guest()) { () throws(SystemError) in
-                let initSystem = InitSystem.detect { path in
-                    var status = stat()
-                    return stat(path, &status) == 0 && (status.st_mode & S_IFMT) == S_IFDIR
+            let initSystem = InitSystem.detect { path in
+                var status = stat()
+                return stat(path, &status) == 0 && (status.st_mode & S_IFMT) == S_IFDIR
+            }
+            var dns: DNSServer?
+            if initSystem == .systemd {
+                let logger = Logger(label: "dev.maw.agent")
+                do {
+                    let server = try DNSServer(environment: .guest(), logger: logger)
+                    if server.start() {
+                        dns = server
+                    } else {
+                        logger.error("dns: cannot start the DNS server's thread")
+                    }
+                } catch {
+                    logger.error("dns: cannot start the DNS server: \(error)")
                 }
+                _ = NetworkDNSWatch(logger: logger).start()
+            }
+            return AgentConfiguration(forwarding: .guest(), dns: dns) { () throws(SystemError) in
                 let signal = initSystem.powerOffSignal
                 guard kill(1, signal) == 0 else {
                     throw SystemError("kill(1, \(signal))")

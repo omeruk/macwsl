@@ -19,7 +19,8 @@ reviews it as a whole.
   other than NAT's. The only other connections it can open to the Mac are to the dial-back
   listeners on vsock, which give it nothing without a nonce that the daemon issued. Since
   phase 08, the guest's TCP servers on its wildcard and loopback addresses are reachable on
-  the Mac's `127.0.0.1` and `::1` (see "`localhost` forwarding").
+  the Mac's `127.0.0.1` and `::1` (see "`localhost` forwarding"), and the guest's DNS queries
+  reach the Mac's resolver through the daemon (see "DNS through the Mac").
 - **Downloads are not trusted** until they are verified against a value that maw pins.
 
 ## Entry points
@@ -455,6 +456,8 @@ From phase 05 each distribution has a virtio network device with
   vsock, not on this network.
 - `localhost` forwarding (phase 08) reaches the guest over vsock, not over this network, and
   the daemon never connects to the NAT address: see "`localhost` forwarding".
+- Since phase 08, the guest's DNS no longer uses the NAT network's server at `192.168.64.1`:
+  see "DNS through the Mac".
 
 ### Files on the Mac
 
@@ -571,6 +574,46 @@ Since phase 08, each TCP port on which a running distribution listens, on `0.0.0
   A guest process cannot open it: the daemon opens it, and only the agent receives the nonce.
   Guest root can replace the agent, and then report any listeners: that makes the daemon listen
   on free loopback ports within the limits above, which any guest process can do by listening.
+
+### DNS through the Mac
+
+Since phase 08, the guest's DNS queries are answered by the Mac's system resolver through the
+agent and the daemon ([decision record 0024](decisions/0024-dns-through-the-mac.md),
+docs/daemon.md).
+
+- **What it gives the guest.** Any process in a distribution, as any user, and any container in
+  it, can ask the Mac's resolver for any name, as any program on the Mac can. With a VPN
+  connected, or a scoped resolver under `/etc/resolver/`, that includes the names that only
+  the VPN or that resolver knows, and their addresses. A single-label name is tried with the
+  Mac's search domains, so the CNAME of a name found that way shows one of them to the guest.
+- **What it never does.** A query only makes the daemon look a name up with
+  `DNSServiceQueryRecord`: nothing registers, reconfirms, or flushes a record, and nothing
+  changes the Mac's DNS configuration or its cache beyond an ordinary lookup. Names under
+  `.local` and the link-local reverse zones are refused, so a query never makes the Mac send
+  multicast DNS, which would need the Local Network permission. Nothing from the guest chooses
+  a server or an address: the daemon asks only the Mac's resolver, and only the name and type
+  of a well-formed query reach it.
+- **Who can reach the agent's server.** The agent answers on `169.254.77.53`, port 53, an
+  address that it adds to the guest's dummy link `maw-dns`; processes and containers in the
+  guest reach it. Other machines cannot: the NAT network is private to this Mac. Guest root
+  can bind the same address and port with `SO_REUSEADDR` and receive the guest's UDP queries
+  itself; it can do more than that as root.
+- **What comes from the guest, and how it is bounded.**
+  - **Queries**: at most 512 bytes, one question of class IN, at most one OPT record, names
+    of labels of 1 to 63 bytes and at most 255 bytes, no compression; the agent parses each
+    one and passes it on re-encoded, and the daemon parses it again. Anything else is answered
+    FORMERR, NOTIMP, or REFUSED, or not at all.
+  - **Volume**: at most 128 queries in flight and 500 per second, in bursts of 1,000, per
+    distribution, and 256 lookups of the Mac's resolver per distribution, the existence probes
+    included; beyond them, REFUSED or no probe. Each lookup ends after 3.5 s, each query after
+    4 s in the daemon and 5 s in the agent.
+  - **Frames**: a `dnsQuery` carries a 4-byte tag and 1 to 65,535 bytes; any other size, or any
+    other frame on the channel, closes it.
+  - **Logs**: the daemon never logs a name, an address, or a type; it counts the answers by
+    kind, once a minute.
+- **The channel** is a connection that the agent dialed through port 19800, as the forwarding
+  channel is; a guest process cannot open it. Guest root can replace the agent and send
+  queries within the limits above, which any guest process can do through the agent's server.
 
 ## Known gaps
 

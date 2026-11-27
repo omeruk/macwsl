@@ -14,8 +14,10 @@
 #    "maw-agent self-test: ok" on success, and powers off. The QEMU smoke test uses this.
 # 6. With maw.root=<device>, boots the distribution on that disk: checks it with
 #    maw-check-root, mounts it, provides the guest agent to it as a runtime systemd unit,
-#    orders systemd-timesyncd after systemd-resolved with a runtime drop-in, mounts the Mac's
-#    home directory at /mnt/mac with maw.share=<tag>, and switches to its systemd. A failed
+#    orders systemd-timesyncd after systemd-resolved with a runtime drop-in, points
+#    systemd-resolved at the agent's DNS server and keeps the network's own DNS servers out,
+#    mounts the Mac's home directory at /mnt/mac with maw.share=<tag>, and switches to its
+#    systemd. A failed
 #    check powers the machine off; a failed mount of the share does not.
 #    docs/decisions/0013-systemd-and-the-agent.md describes this path.
 # 7. Otherwise, writes /etc/inittab and executes busybox init, which becomes PID 1 and
@@ -120,6 +122,49 @@ UNIT
             printf '[Unit]\nAfter=systemd-resolved.service\n' > "$timesyncd_dropins/maw-order.conf"
     }; then
         echo "maw-initramfs: could not order systemd-timesyncd after systemd-resolved" >&2
+    fi
+
+    # DNS through the Mac (docs/decisions/0024-dns-through-the-mac.md): systemd-resolved asks
+    # the agent's server, and before systemd-networkd starts, the agent writes a drop-in for
+    # every .network file that turns off the DHCP and router-advertised servers, whatever the
+    # files are called. Both drop-ins are named to apply after the distribution's own.
+    # Without them the distribution still boots, so a failure only warns.
+    if ! {
+        mkdir -p /sysroot/run/systemd/resolved.conf.d &&
+            printf '%s\n' '# Written by maw at every boot. docs/distributions.md' '[Resolve]' \
+                'DNS=169.254.77.53' 'Domains=~.' 'ResolveUnicastSingleLabel=yes' \
+                > /sysroot/run/systemd/resolved.conf.d/99-maw-dns.conf &&
+            cat > /sysroot/run/systemd/system/maw-network-dns.service << 'UNIT' &&
+[Unit]
+Description=maw: keep the network's own DNS servers out of systemd-resolved
+Documentation=https://github.com/omeruk/macwsl/blob/main/docs/distributions.md
+DefaultDependencies=no
+Before=systemd-networkd.service systemd-resolved.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/run/maw/maw-agent network-dns
+StandardOutput=journal+console
+StandardError=journal+console
+UNIT
+            ln -s ../maw-network-dns.service \
+                /sysroot/run/systemd/system/sysinit.target.wants/maw-network-dns.service
+    }; then
+        echo "maw-initramfs: could not point systemd-resolved at the agent's DNS server" >&2
+    fi
+    # A session can start before systemd-resolved does. Until then glibc finds nss-resolve
+    # unavailable and reads /etc/resolv.conf, which links to one of these files; without them
+    # it asks 127.0.0.1 and fails. These send it to the agent's server, and systemd-resolved
+    # replaces both when it starts.
+    resolve=/sysroot/run/systemd/resolve
+    if ! {
+        mkdir -p "$resolve" &&
+            printf '%s\n' '# Written by maw until systemd-resolved starts.' \
+                'nameserver 169.254.77.53' > "$resolve/stub-resolv.conf" &&
+            cp "$resolve/stub-resolv.conf" "$resolve/resolv.conf"
+    }; then
+        echo "maw-initramfs: could not write the resolver files for the first lookups" >&2
     fi
 
     # The Mac's home directory at /mnt/mac, only on a machine that the daemon gave the share.

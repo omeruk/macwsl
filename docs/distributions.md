@@ -127,8 +127,11 @@ systemd unit in a tmpfs on `/run`, and switches to the distribution's systemd. I
 directory, `/run/systemd/system`, it writes the drop-in
 `systemd-timesyncd.service.d/maw-order.conf`, which orders `systemd-timesyncd` after
 `systemd-resolved`, so that a shutdown soon after a boot does not wait 5 s for
-`systemd-timesyncd`. Both are gone when the machine stops, and neither is written into the
-distribution's own files. The agent starts
+`systemd-timesyncd`, and the unit `maw-network-dns.service` with the drop-in
+`/run/systemd/resolved.conf.d/99-maw-dns.conf` for DNS through the Mac, with
+`stub-resolv.conf` and `resolv.conf` in `/run/systemd/resolve` for the lookups before
+systemd-resolved starts (see "DNS"). All of them
+are gone when the machine stops, and none is written into the distribution's own files. The agent starts
 with systemd, so that a session can begin while other units still start. Each machine gets every
 CPU of the Mac and half of its memory, and reaches the network through NAT.
 
@@ -203,6 +206,44 @@ or `::1`, is reachable on the Mac's `127.0.0.1` and `::1` under the same port
   forwards, and UDP. The distributions screen names the reason for each.
 - **The machine's idle stop** counts sessions only: a server started in a session keeps being
   forwarded only while the machine runs, which a session keeps it doing.
+
+## DNS
+
+The distribution's DNS queries are answered by the Mac's own resolver, so that names follow the
+Mac's VPNs, its scoped resolvers under `/etc/resolver/`, and its other DNS settings
+([decision record 0024](decisions/0024-dns-through-the-mac.md)).
+
+- **What the distribution sees.** systemd-resolved has one DNS server, `169.254.77.53`, which
+  the guest agent adds to a dummy link of its own, `maw-dns`, and answers on, UDP and TCP port
+  53; `resolvectl status` shows it as the global server, and no link has a server. Because
+  `maw-dns` is up with that address, systemd-resolved uses the server from its start, also
+  before DHCP has given the network interface its address; `ip addr` lists the link.
+  `/etc/resolv.conf` stays the link to systemd-resolved's stub, `127.0.0.53`. A program or a
+  container that reads `/run/systemd/resolve/resolv.conf`, as Docker does, gets
+  `169.254.77.53`, which a container's network namespace can reach.
+- **Before systemd-resolved starts.** A session can begin before systemd-resolved runs. Until
+  then, glibc reads the stub file that the initramfs wrote, which names `169.254.77.53`, and
+  asks the agent's server directly; systemd-resolved replaces the file when it starts.
+- **The NAT network's server is not used.** At every boot, before systemd-networkd starts, a
+  runtime drop-in for every `.network` file, whatever it is called, turns off the DNS servers
+  and domains of DHCP and router advertisements
+  (`/run/systemd/network/<name>.network.d/99-maw-dns.conf`). The agent writes the drop-in for a
+  `.network` file added later and reloads systemd-networkd, and writes a line to the console log
+  when systemd-resolved holds any other server, as one that NetworkManager would give a link.
+- **What is answered:** A, AAAA, CNAME, MX, TXT, SRV, and PTR, with the Mac's records and TTLs;
+  NXDOMAIN for a name that does not exist, and NODATA for a name without the requested type.
+  Other types get NOTIMP, and `.local` names and link-local reverse names REFUSED. DNSSEC is not
+  validated.
+- **Single-label names.** `getent hosts buildhost` tries the Mac's search domains, in order, and
+  shows the full name it found.
+- **When the Mac does not answer**, a lookup fails with SERVFAIL, at the latest after 5 seconds,
+  and the next lookup tries again. There is no other server to fall back to.
+- **Nothing is written to the distribution's disk.** Everything above lives in `/run` and is gone
+  when the machine stops.
+- **Without systemd-resolved**, as in an imported Debian, `/etc/resolv.conf` leads to the stub
+  file that the initramfs writes and nothing replaces, so lookups go to the agent's server
+  directly, without a cache. A distribution that replaced the link with a file of its own uses
+  the servers in that file.
 
 ## Sessions
 
@@ -410,6 +451,6 @@ result already in place.
 | A drvfs line in `/etc/fstab`, such as `C: /mnt/c drvfs defaults 0 0` | A mount of a device that maw does not have | Replaces the file |
 | A machine ID | The same DHCP client ID as other imports of the archive | Empties it |
 | No `/etc/maw.conf` | Sessions as `root` | Writes the default user into it |
-| No `systemd-resolved` (Debian's default) | The stub link leads nowhere: no DNS | Nothing ([docs/known-limitations.md](known-limitations.md)) |
-| `systemd-networkd` or `systemd-resolved` masked | No network or no DNS | Nothing ([docs/known-limitations.md](known-limitations.md)) |
+| No `systemd-resolved` (Debian's default), or `systemd-resolved` masked | The stub link leads to the file that the initramfs writes: lookups go to the agent's DNS server, without a cache (see "DNS") | Nothing |
+| `systemd-networkd` masked | No network | Nothing ([docs/known-limitations.md](known-limitations.md)) |
 | An init that is not systemd | The guest agent never starts | Refuses the archive, naming what `/sbin/init` leads to |

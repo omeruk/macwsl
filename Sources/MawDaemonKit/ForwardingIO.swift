@@ -31,23 +31,24 @@
         }
     }
 
-    /// The daemon's side of a forwarding channel (docs/protocol.md, "Forwarding"), on a thread
-    /// that alone uses the connection: it reads at all times and delivers each message, in
-    /// order, to `messages`, and writes what `send(_:)` queues. The agent dialed the
-    /// connection, so a pause in this thread would only hold the agent's writes back.
-    final class ForwardingChannelLink: @unchecked Sendable {
+    /// The daemon's side of a channel to the agent, the forwarding channel or the DNS channel
+    /// (docs/protocol.md, "Forwarding" and "DNS"), on a thread that alone uses the connection:
+    /// it reads at all times and delivers each frame, in order, to `frames`, and writes what
+    /// `send(_:)` queues. The agent dialed the connection, so a pause in this thread would only
+    /// hold the agent's writes back.
+    final class ChannelLink: @unchecked Sendable {
         /// What ended the channel.
         enum Ending: Sendable, Equatable {
             case closed
             case failed(String)
         }
 
-        let messages: AsyncStream<ControlMessage>
-        private let continuation: AsyncStream<ControlMessage>.Continuation
+        let frames: AsyncStream<Frame>
+        private let continuation: AsyncStream<Frame>.Continuation
         private let connection: FrameConnection
         private let wakePipe: WakePipe
         private let lock = OSAllocatedUnfairLock(
-            initialState: (outgoing: [ControlMessage](), isClosed: false))
+            initialState: (outgoing: [Frame](), isClosed: false))
         private let ended: @Sendable (Ending) -> Void
 
         /// Starts the thread. `ended` runs once, on it, when the channel ends.
@@ -57,15 +58,15 @@
             self.connection = connection
             self.ended = ended
             wakePipe = try WakePipe()
-            (messages, continuation) = AsyncStream.makeStream(of: ControlMessage.self)
+            (frames, continuation) = AsyncStream.makeStream(of: Frame.self)
             guard startDetachedThread({ [self] in run() }) else {
                 continuation.finish()
                 throw SystemError("pthread_create", code: EAGAIN)
             }
         }
 
-        func send(_ message: ControlMessage) {
-            lock.withLock { $0.outgoing.append(message) }
+        func send(_ frame: Frame) {
+            lock.withLock { $0.outgoing.append(frame) }
             wakePipe.wake()
         }
 
@@ -94,8 +95,8 @@
                     return (state.outgoing, state.isClosed)
                 }
                 if isClosed { return .closed }
-                for message in outgoing {
-                    connection.enqueue(.control(message))
+                for frame in outgoing {
+                    connection.enqueue(frame)
                 }
                 try connection.flush()
                 var requests = [
@@ -117,11 +118,7 @@
                 if requests[0].revents & Int16(POLLIN | POLLHUP | POLLERR) != 0 {
                     try connection.receive()
                     while let frame = try connection.nextFrame() {
-                        do throws(FrameError) {
-                            continuation.yield(try frame.controlMessage())
-                        } catch {
-                            throw .frame(error)
-                        }
+                        continuation.yield(frame)
                     }
                     if connection.isAtEndOfInput {
                         return .failed("the agent closed the channel")

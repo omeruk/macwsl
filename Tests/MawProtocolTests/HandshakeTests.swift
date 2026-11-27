@@ -282,7 +282,8 @@ private let peerDeadline = Duration.seconds(60)
         server.serveOnNewThread(peer)
 
         let connection = try FrameConnection(host)
-        connection.enqueue(.version(9))
+        let other = ProtocolVersion.current + 1
+        connection.enqueue(.version(other))
         try connection.flush(until: .now + peerDeadline)
         let reply = try await runOnDedicatedThread { () throws(ConnectionError) -> [Frame] in
             [
@@ -293,8 +294,9 @@ private let peerDeadline = Duration.seconds(60)
         #expect(try reply[0].protocolVersion() == ProtocolVersion.current)
         let current = ProtocolVersion.current
         let error = AgentError(
-            .versionMismatch, "the host speaks protocol version 9, the agent version \(current)",
-            hostVersion: 9, guestVersion: current)
+            .versionMismatch,
+            "the host speaks protocol version \(other), the agent version \(current)",
+            hostVersion: other, guestVersion: current)
         #expect(try reply[1].controlMessage() == .error(error))
         // Then the agent closes the connection.
         let end = await runOnDedicatedThread { () -> Bool in
@@ -308,7 +310,7 @@ private let peerDeadline = Duration.seconds(60)
         #expect(end)
         #expect(
             GuestAgentClient.map(.remote(error), during: "info")
-                == .guestAgentVersionMismatch(host: 9, guest: current))
+                == .guestAgentVersionMismatch(host: other, guest: current))
     }
 
     @Test func clientTimesOutOnASilentPeer() async throws {

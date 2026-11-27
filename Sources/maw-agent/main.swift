@@ -19,6 +19,9 @@ import MawProtocol
 //   maw-agent mount-mac-share <root> <tag>
 //                         mount the Mac's home directory at <root>/mnt/mac, from /init before
 //                         switch_root; exit 0 if it is mounted
+//   maw-agent network-dns write the drop-ins that keep the network's DNS servers out of
+//                         systemd-resolved, from the boot's unit before systemd-networkd
+//                         (NetworkDNS)
 //   maw-agent login-shell <directory> fall-back|exact <shell>
 //                         runuser -l's shell helper for a login shell in a working directory
 //                         (LoginShellHelper)
@@ -155,9 +158,22 @@ case .mountMacShare(let root, let tag):
     }
     exit(result.mounted ? 0 : 1)
 
+case .networkDNS:
+    let (written, failures) = NetworkDNS.writeDropIns(files: .live)
+    if !written.isEmpty {
+        writeLine(
+            "maw-agent: dns: DHCP and router-advertised DNS off for \(written.joined(separator: ", "))"
+        )
+    }
+    for failure in failures {
+        writeLine("maw-agent: dns: cannot write the drop-in for \(failure)")
+    }
+    // The boot goes on either way: the agent writes what is missing once it runs.
+    exit(0)
+
 case .usage(let status):
     writeLine(
-        "usage: maw-agent [self-test | mount-mac-share <root> <tag>"
+        "usage: maw-agent [self-test | mount-mac-share <root> <tag> | network-dns"
             + " | login-shell <directory> fall-back|exact <shell> | --version]")
     exit(status)
 }

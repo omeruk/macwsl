@@ -332,6 +332,28 @@ curl -s localhost:8000 | head -3         # on the Mac, or open http://localhost:
   [docs/decisions/0023-localhost-forwarding.md](docs/decisions/0023-localhost-forwarding.md)
   describes the design.
 
+### DNS in Linux, VPNs included
+
+Linux looks names up through the Mac's own resolver, as WSL's DNS tunneling does: a name that
+the Mac resolves, through a VPN, a corporate DNS server, or a resolver file under
+`/etc/resolver/`, resolves in Linux too, and stops resolving when the Mac stops resolving it,
+without restarting the distribution.
+
+```sh
+maw -- getent hosts github.com           # an address, through the Mac
+maw -- resolvectl status                 # the DNS server is 169.254.77.53, the guest agent
+```
+
+- Every distribution with systemd-resolved, as Ubuntu has, uses it, and nothing is written into
+  the distribution: maw configures it in `/run` at every boot. The DNS server of the virtual
+  network, `192.168.64.1`, is not used.
+- A name without dots, such as `buildhost`, is tried with the Mac's search domains.
+- A, AAAA, CNAME, MX, TXT, SRV, and PTR records are answered; other types are not supported.
+- The daemon's log, `~/Library/Logs/maw/mawd.log`, counts the answers once a minute, without
+  names.
+  [docs/decisions/0024-dns-through-the-mac.md](docs/decisions/0024-dns-through-the-mac.md)
+  describes the design.
+
 ### Managing distributions
 
 ```sh

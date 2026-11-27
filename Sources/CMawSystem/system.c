@@ -598,7 +598,12 @@ int maw_tcp_accept(int listener, int *fd) {
     *fd = -1;
     int connection;
     do {
+#if defined(__linux__)
+        // Atomically: the agent starts session processes from other threads meanwhile.
+        connection = accept4(listener, NULL, NULL, SOCK_CLOEXEC);
+#else
         connection = accept(listener, NULL, NULL);
+#endif
     } while (connection < 0 && errno == EINTR);
     if (connection < 0) {
         return errno;
@@ -766,6 +771,295 @@ int maw_mount_virtiofs(const char *tag, int directory, const char *options) {
     (void)tag;
     (void)directory;
     (void)options;
+    return ENOSYS;
+#endif
+}
+
+// MARK: DNS in the guest
+
+#if defined(__linux__)
+#include <net/if.h>
+#include <spawn.h>
+#include <sys/inotify.h>
+
+// linux/rtnetlink.h is not in the sysroot either; these are its stable values and layouts.
+#define MAW_NETLINK_ROUTE 0
+#define MAW_RTM_NEWLINK 16
+#define MAW_RTM_NEWADDR 20
+#define MAW_NLMSG_ERROR 2
+#define MAW_NLM_F_REQUEST 0x1
+#define MAW_NLM_F_ACK 0x4
+#define MAW_NLM_F_CREATE 0x400
+#define MAW_NLM_F_EXCL 0x200
+#define MAW_IFA_ADDRESS 1
+#define MAW_IFA_LOCAL 2
+#define MAW_RT_SCOPE_UNIVERSE 0
+#define MAW_IFLA_IFNAME 3
+#define MAW_IFLA_LINKINFO 18
+#define MAW_IFLA_INFO_KIND 1
+#define MAW_IFF_UP 0x1
+
+struct maw_nlmsghdr {
+    uint32_t nlmsg_len;
+    uint16_t nlmsg_type;
+    uint16_t nlmsg_flags;
+    uint32_t nlmsg_seq;
+    uint32_t nlmsg_pid;
+};
+struct maw_ifaddrmsg {
+    uint8_t ifa_family;
+    uint8_t ifa_prefixlen;
+    uint8_t ifa_flags;
+    uint8_t ifa_scope;
+    uint32_t ifa_index;
+};
+struct maw_ifinfomsg {
+    uint8_t ifi_family;
+    uint8_t ifi_pad;
+    uint16_t ifi_type;
+    int32_t ifi_index;
+    uint32_t ifi_flags;
+    uint32_t ifi_change;
+};
+struct maw_rtattr {
+    uint16_t rta_len;
+    uint16_t rta_type;
+};
+
+/// Sends one rtnetlink request and reads its acknowledgement. Returns 0, also for EEXIST, or
+/// an errno value.
+static int maw_netlink_request(const void *request, size_t length) {
+    int fd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, MAW_NETLINK_ROUTE);
+    if (fd < 0) {
+        return errno;
+    }
+    struct maw_sockaddr_nl kernel;
+    memset(&kernel, 0, sizeof kernel);
+    kernel.nl_family = AF_NETLINK;
+    ssize_t sent;
+    do {
+        sent = sendto(fd, request, length, 0, (struct sockaddr *)&kernel, sizeof kernel);
+    } while (sent < 0 && errno == EINTR);
+    if (sent < 0) {
+        return maw_close_preserving_errno(fd, errno);
+    }
+    // The acknowledgement: NLMSG_ERROR with 0, or with the negative errno value.
+    union {
+        struct maw_nlmsghdr header;
+        uint8_t bytes[512];
+    } reply;
+    ssize_t received;
+    do {
+        received = recv(fd, &reply, sizeof reply, 0);
+    } while (received < 0 && errno == EINTR);
+    if (received < 0) {
+        return maw_close_preserving_errno(fd, errno);
+    }
+    close(fd);
+    if ((size_t)received < sizeof(struct maw_nlmsghdr) + sizeof(int32_t) ||
+        reply.header.nlmsg_type != MAW_NLMSG_ERROR) {
+        return EPROTO;
+    }
+    int32_t error;
+    memcpy(&error, reply.bytes + sizeof(struct maw_nlmsghdr), sizeof error);
+    return error == 0 || error == -EEXIST ? 0 : -error;
+}
+#endif
+
+int maw_add_dummy_link_address(const char *name, const uint8_t address[4]) {
+#if defined(__linux__)
+    size_t name_length = strlen(name);
+    if (name_length == 0 || name_length > 15) {
+        return EINVAL;
+    }
+    // The link: created if it is missing, and up. A dummy link has carrier once it is up.
+    struct {
+        struct maw_nlmsghdr header;
+        struct maw_ifinfomsg message;
+        struct maw_rtattr name;
+        char name_bytes[16];
+        struct maw_rtattr info;
+        struct maw_rtattr kind;
+        char kind_bytes[8];
+    } create;
+    memset(&create, 0, sizeof create);
+    create.header.nlmsg_len = sizeof create;
+    create.header.nlmsg_type = MAW_RTM_NEWLINK;
+    create.header.nlmsg_flags = MAW_NLM_F_REQUEST | MAW_NLM_F_ACK | MAW_NLM_F_CREATE;
+    create.header.nlmsg_seq = 1;
+    create.message.ifi_flags = MAW_IFF_UP;
+    create.message.ifi_change = MAW_IFF_UP;
+    create.name.rta_len = sizeof create.name + sizeof create.name_bytes;
+    create.name.rta_type = MAW_IFLA_IFNAME;
+    memcpy(create.name_bytes, name, name_length);
+    create.info.rta_len = sizeof create.info + sizeof create.kind + sizeof create.kind_bytes;
+    create.info.rta_type = MAW_IFLA_LINKINFO;
+    create.kind.rta_len = sizeof create.kind + sizeof "dummy";
+    create.kind.rta_type = MAW_IFLA_INFO_KIND;
+    memcpy(create.kind_bytes, "dummy", sizeof "dummy");
+    int error = maw_netlink_request(&create, sizeof create);
+    if (error != 0) {
+        return error;
+    }
+    unsigned index = if_nametoindex(name);
+    if (index == 0) {
+        return errno != 0 ? errno : ENODEV;
+    }
+
+    struct {
+        struct maw_nlmsghdr header;
+        struct maw_ifaddrmsg message;
+        struct maw_rtattr local;
+        uint8_t local_address[4];
+        struct maw_rtattr address;
+        uint8_t address_address[4];
+    } add;
+    memset(&add, 0, sizeof add);
+    add.header.nlmsg_len = sizeof add;
+    add.header.nlmsg_type = MAW_RTM_NEWADDR;
+    add.header.nlmsg_flags = MAW_NLM_F_REQUEST | MAW_NLM_F_ACK | MAW_NLM_F_CREATE | MAW_NLM_F_EXCL;
+    add.header.nlmsg_seq = 2;
+    add.message.ifa_family = AF_INET;
+    add.message.ifa_prefixlen = 32;
+    // Global scope, `ip addr add`'s default: a container's network namespace reaches it, and
+    // systemd-resolved counts the link as routable (docs/decisions/0024-dns-through-the-mac.md).
+    add.message.ifa_scope = MAW_RT_SCOPE_UNIVERSE;
+    add.message.ifa_index = index;
+    add.local.rta_len = sizeof add.local + 4;
+    add.local.rta_type = MAW_IFA_LOCAL;
+    memcpy(add.local_address, address, 4);
+    add.address.rta_len = sizeof add.address + 4;
+    add.address.rta_type = MAW_IFA_ADDRESS;
+    memcpy(add.address_address, address, 4);
+    return maw_netlink_request(&add, sizeof add);
+#else
+    (void)name;
+    (void)address;
+    return ENOSYS;
+#endif
+}
+
+int maw_inet4_bind(int stream, const uint8_t address[4], uint16_t port, int backlog, int *fd) {
+    *fd = -1;
+    int type = stream ? SOCK_STREAM : SOCK_DGRAM;
+#if defined(__linux__)
+    // Atomically: the agent starts session processes from other threads meanwhile.
+    type |= SOCK_CLOEXEC;
+#endif
+    int socket_fd = socket(AF_INET, type, 0);
+    if (socket_fd < 0) {
+        return errno;
+    }
+    if (fcntl(socket_fd, F_SETFD, FD_CLOEXEC) < 0) {
+        return maw_close_preserving_errno(socket_fd, errno);
+    }
+    int error = maw_set_nonblocking(socket_fd);
+    if (error != 0) {
+        return maw_close_preserving_errno(socket_fd, error);
+    }
+    // SO_REUSEADDR, so that a restarted agent binds beside its earlier connections in
+    // TIME_WAIT, and a program's UDP socket on the wildcard address with SO_REUSEADDR can
+    // bind beside this one (docs/decisions/0024-dns-through-the-mac.md).
+    int one = 1;
+    if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one) < 0) {
+        return maw_close_preserving_errno(socket_fd, errno);
+    }
+#if defined(__APPLE__)
+    if (setsockopt(socket_fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one) < 0) {
+        return maw_close_preserving_errno(socket_fd, errno);
+    }
+#endif
+    struct sockaddr_in in;
+    memset(&in, 0, sizeof in);
+#if defined(__APPLE__)
+    in.sin_len = sizeof in;
+#endif
+    in.sin_family = AF_INET;
+    in.sin_port = htons(port);
+    memcpy(&in.sin_addr, address, 4);
+    if (bind(socket_fd, (struct sockaddr *)&in, sizeof in) < 0) {
+        return maw_close_preserving_errno(socket_fd, errno);
+    }
+    if (stream && listen(socket_fd, backlog) < 0) {
+        return maw_close_preserving_errno(socket_fd, errno);
+    }
+    *fd = socket_fd;
+    return 0;
+}
+
+ssize_t maw_datagram_receive(int fd, void *buffer, size_t size,
+                             struct sockaddr_storage *peer, socklen_t *peer_length) {
+    *peer_length = sizeof *peer;
+    ssize_t received;
+    do {
+#if defined(__linux__)
+        received = recvfrom(fd, buffer, size, MSG_TRUNC, (struct sockaddr *)peer, peer_length);
+#else
+        received = recvfrom(fd, buffer, size, 0, (struct sockaddr *)peer, peer_length);
+#endif
+    } while (received < 0 && errno == EINTR);
+    return received;
+}
+
+ssize_t maw_datagram_send(int fd, const void *buffer, size_t size,
+                          const struct sockaddr_storage *peer, socklen_t peer_length) {
+    ssize_t sent;
+    do {
+        sent = sendto(fd, buffer, size, 0, (const struct sockaddr *)peer, peer_length);
+    } while (sent < 0 && errno == EINTR);
+    return sent;
+}
+
+int maw_inotify_open(void) {
+#if defined(__linux__)
+    return inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+int maw_inotify_watch(int fd, const char *path) {
+#if defined(__linux__)
+    uint32_t mask = IN_CREATE | IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_DELETE;
+    return inotify_add_watch(fd, path, mask) < 0 ? errno : 0;
+#else
+    (void)fd;
+    (void)path;
+    return ENOSYS;
+#endif
+}
+
+int maw_run_quietly(char *const argv[], int *status) {
+#if defined(__linux__)
+    posix_spawn_file_actions_t actions;
+    int error = posix_spawn_file_actions_init(&actions);
+    if (error != 0) {
+        return error;
+    }
+    for (int stream = 0; stream <= 2; stream++) {
+        error = posix_spawn_file_actions_addopen(
+            &actions, stream, "/dev/null", stream == 0 ? O_RDONLY : O_WRONLY, 0);
+        if (error != 0) {
+            posix_spawn_file_actions_destroy(&actions);
+            return error;
+        }
+    }
+    char *environment[] = {NULL};
+    pid_t pid;
+    error = posix_spawn(&pid, argv[0], &actions, NULL, argv, environment);
+    posix_spawn_file_actions_destroy(&actions);
+    if (error != 0) {
+        return error;
+    }
+    pid_t waited;
+    do {
+        waited = waitpid(pid, status, 0);
+    } while (waited < 0 && errno == EINTR);
+    return waited < 0 ? errno : 0;
+#else
+    (void)argv;
+    (void)status;
     return ENOSYS;
 #endif
 }

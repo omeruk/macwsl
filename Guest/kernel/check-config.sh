@@ -75,6 +75,8 @@ INET=y
 IPV6=y
 UNIX=y
 PACKET=y
+# The guest agent holds its DNS address on a dummy link (docs/decisions/0024).
+DUMMY=y
 
 # Containers.
 NAMESPACES=y

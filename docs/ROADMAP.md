@@ -14,7 +14,7 @@ pass on a real Apple Silicon Mac.
 | 06a | Distro management             | list, set-default, terminate                                             | Done    |
 | 06b | Distro removal and transfer   | unregister, export, import                                               | Done    |
 | 07 | File sharing and paths         | `/mnt/mac` via virtiofs, cwd translation, `mawpath`                      | Done    |
-| 08 | Networking                     | Port forwarding and `localhost` access from macOS, DNS under VPNs (NAT and DHCP arrived in 05) | Planned |
+| 08 | Networking                     | Port forwarding and `localhost` access from macOS, DNS under VPNs (NAT and DHCP arrived in 05) | Done    |
 | 09 | Interop                        | Run macOS commands from Linux, clipboard, `open`                         | Planned |
 | 10 | Rosetta                        | Run x86_64 Linux binaries through Rosetta                                 | Planned |
 | 11a | Terminal app foundation      | maw app: title-bar tabs, split panes, command palette, themes, settings (local shell) | Done    |
@@ -33,4 +33,6 @@ second (#30) shows them on the distributions screen. Phase 06b is delivered in t
 requests: the first (#31) adds `maw --unregister` and `maw --export`, and the second (#32) adds
 `maw --import`. Phase 07 is delivered in two pull requests: the first (#33) shares the home
 directory at `/mnt/mac`, and the second (#35) translates the working directory, registers login
-shells in a directory with `systemd-logind`, and adds `mawpath`.
+shells in a directory with `systemd-logind`, and adds `mawpath`. Phase 08 is delivered in two
+pull requests: the first (#36) forwards `localhost`, and the second (#37) answers the guest's
+DNS with the Mac's resolver.

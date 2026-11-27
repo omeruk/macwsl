@@ -45,6 +45,12 @@ struct Serve: AsyncParsableCommand {
     @Flag(name: .customLong("without-forwarding"), help: .hidden)
     var withoutForwarding = false
 
+    /// For the measurements only: distribution machines open no DNS channel, so that a cold
+    /// start can be compared with and without DNS through the Mac. Their agent then answers
+    /// SERVFAIL. `mawd install` neither accepts nor writes it (docs/daemon.md).
+    @Flag(name: .customLong("without-dns"), help: .hidden)
+    var withoutDNS = false
+
     func validate() throws {
         if let sampleInterval, sampleInterval < 100 {
             throw ValidationError("--sample-interval-ms must be at least 100.")
@@ -102,7 +108,8 @@ struct Serve: AsyncParsableCommand {
                 samplesWithInfo: sampleWithInfo,
                 macHome: withoutMacShare ? nil : FileManager.default.homeDirectoryForCurrentUser,
                 forwardedPorts: withoutForwarding ? nil : ForwardedPortRegistry(),
-                forwardingChanged: { changesContinuation.yield() }),
+                forwardingChanged: { changesContinuation.yield() },
+                dnsResolver: withoutDNS ? nil : MacDNSResolver()),
             activityChanged: { activityContinuation.yield($0) },
             stateChanged: { changesContinuation.yield() }, operations: operations)
         let sampler = FigureSampler(

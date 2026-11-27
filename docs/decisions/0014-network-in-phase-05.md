@@ -4,6 +4,8 @@
 - Date: 2026-10-22
 - Superseded in part by [0017](0017-dial-back-for-sessions.md): "Nothing listens on the Mac for
   the guest" holds for the network; on vsock, the daemon's dial-back listener is an exception.
+- Superseded in part by [0024](0024-dns-through-the-mac.md): the guest's DNS no longer uses the
+  DNS server that the NAT network's DHCP names.
 
 ## Context
 
@@ -25,6 +27,9 @@ macOS, and DNS behavior under VPNs.
    `/etc/resolv.conf` to systemd-resolved's stub resolver. `systemd-networkd-wait-online` is
    masked, so that the boot does not wait for the network.
 4. Port forwarding, `localhost` access from macOS, and DNS under VPNs remain in phase 08.
+   Phase 08 forwards the guest's TCP ports to the Mac's loopback addresses
+   ([0023](0023-localhost-forwarding.md)) and answers the guest's DNS with the Mac's resolver
+   instead of the NAT's server ([0024](0024-dns-through-the-mac.md)).
 
 ## Reasons
 

@@ -4,7 +4,7 @@
 /// versions differ, so that a host and a guest agent from different builds never misread each
 /// other. Any change to the messages in `ControlMessage` increments the version.
 public enum ProtocolVersion {
-    public static let current: UInt32 = 8
+    public static let current: UInt32 = 9
 }
 
 /// Constants of the wire protocol.
@@ -37,4 +37,19 @@ public enum AgentProtocol {
     public static let maximumListeners = 1_024
     /// How often the agent lists the guest's listeners while the forwarding channel is open.
     public static let listenerScanInterval = Duration.milliseconds(250)
+    /// The guest address on which the agent answers DNS queries, on port 53 over UDP and TCP
+    /// (docs/decisions/0024-dns-through-the-mac.md). A link-local address that the agent adds
+    /// to the dummy link `dnsLink`: containers in the guest can reach it, unlike 127.0.0.0/8,
+    /// and systemd-resolved uses its servers while that link is up, before DHCP has finished.
+    public static let dnsAddress: [UInt8] = [169, 254, 77, 53]
+    public static let dnsAddressText = "169.254.77.53"
+    /// The guest's dummy link that holds `dnsAddress`.
+    public static let dnsLink = "maw-dns"
+    public static let dnsPort: UInt16 = 53
+    /// The largest payload of a `dnsQuery` or `dnsAnswer` frame: a 4-byte tag and a message of
+    /// at most 65,535 bytes.
+    public static let maximumDNSFramePayload = 4 + 65_535
+    /// The guest's queries that the agent has passed to the host and not yet had answered.
+    /// Beyond them, a query is answered REFUSED.
+    public static let maximumDNSQueriesInFlight = 128
 }

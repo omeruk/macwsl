@@ -53,6 +53,7 @@ import Testing
         .foregroundProgram(
             id: 9, program: ForegroundProcess(processGroup: 1, name: "a (b) c\u{1B}")),
         .forwarding,
+        .dns,
         .connect(
             ForwardingConnect(
                 id: 7, port: 8000, family: .ipv4,
@@ -89,7 +90,7 @@ import Testing
                 "exec", "info", "shutdown", "stdinEOF", "signal", "resize", "started", "exited",
                 "agentInfo", "shutdownAcknowledged", "error", "dialBack", "dialedBack",
                 "foregroundQuery", "foregroundProgram", "sample", "sampled", "forwarding",
-                "connect", "listeners", "connectFailed",
+                "dns", "connect", "listeners", "connectFailed",
             ])
     }
 
@@ -213,9 +214,10 @@ import Testing
 
     /// Version 5 adds `sample`, `sampled`, and `sampleFailed`; version 6 adds `agentInfo`'s
     /// `macShareMounted`; version 7 adds `exec`'s `fallsBackToHome` and `started`'s
-    /// `workingDirectoryFallback`.
-    @Test func speaksVersion8() {
-        #expect(ProtocolVersion.current == 8)
+    /// `workingDirectoryFallback`; version 8 adds the forwarding channel; version 9 adds the
+    /// DNS channel: `dns`, `dnsQuery`, and `dnsAnswer`.
+    @Test func speaksVersion9() {
+        #expect(ProtocolVersion.current == 9)
     }
 
     @Test func writesTheFallbackOnlyWhenItIsAllowed() throws {
