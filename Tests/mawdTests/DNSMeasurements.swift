@@ -51,7 +51,9 @@ struct DNSMeasurements {
     /// A warm lookup in the guest: the time that `resolvectl query --cache=no` reports, which
     /// passes systemd-resolved, the agent, the daemon, and the Mac's cache, and `getent hosts`
     /// with systemd-resolved's cache, as a program sees it, process start included. Each run is
-    /// the median of 20 lookups.
+    /// the median of 20 lookups. A session can start the machine, and resolvectl needs the system
+    /// bus and systemd-resolved, which start later than the agent, so each run first waits until
+    /// `resolvectl status` answers.
     @Test func measuresAWarmLookup() async throws {
         var resolvectl: [Double] = []
         var getent: [Double] = []
@@ -59,6 +61,14 @@ struct DNSMeasurements {
             let result = try await maw.session([
                 "-e", "sh", "-c",
                 """
+                for i in $(seq 300); do
+                    resolvectl status > /dev/null 2>&1 && break
+                    sleep 0.1
+                done
+                if ! out=$(resolvectl status 2>&1); then
+                    echo "not ready after 30 seconds: $out"
+                    exit 1
+                fi
                 getent hosts github.com > /dev/null; resolvectl query github.com > /dev/null
                 for i in $(seq 20); do
                     out=$(resolvectl query --cache=no github.com 2>&1)
