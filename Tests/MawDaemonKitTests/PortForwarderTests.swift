@@ -413,8 +413,12 @@ import os
         #expect(await Self.eventually { forwarder.forwarding.forwarded == [port] })
         let first = try Self.connect(false, port).get()
         let (_, guest) = try #require(await agent.takeConnection())
-        let second = try Self.connect(false, port).get()
-        #expect(Self.readToEnd(second).error == ECONNRESET)
+        // The forwarder resets the second at once, so the reset may already fail the connect
+        // helper's TCP_NODELAY, after the connection was made, rather than the first read.
+        switch Self.connect(false, port) {
+        case .success(let second): #expect(Self.readToEnd(second).error == ECONNRESET)
+        case .failure(let failure): #expect(failure.code == ECONNRESET, "\(failure)")
+        }
         // The first still works.
         try Self.send("ping", first)
         _ = shutdown(first.rawValue, SHUT_WR)
