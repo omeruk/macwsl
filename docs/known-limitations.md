@@ -500,6 +500,27 @@ from `main`.
     guest"; `DNSIntegrationTests.sharesPort53AndAnswersContainers`.
   - **Phase:** None yet.
 
+- **The guest's close wait has four small imprecisions.**
+  - **Seen:** Found by the fourth code review of pull request 40 and not changed, because none
+    loses data or affects a Mac client, and each needs a guest build:
+    - A host that aborts a finished connection shuts it down before its reset; a guest already
+      waiting for the host's close reads that as the close and reports a complete end. The Mac
+      client still receives the reset.
+    - The limit can start up to one poll interval (1 second) before the guest's `streamEnd`
+      frame is written, because the wait polls for up to a second while the write is still
+      in progress: 1 second of the 120.
+    - The guest's wait for its own `streamEnd` write has no deadline. It ends when the write
+      finishes or fails, or at an abort; a host that half-closed and then stopped reading
+      would hold it, and the connection, without end. The daemon never half-closes the
+      connection, so this needs a host that does not follow docs/protocol.md.
+    - The agent's log line names the configured limit, not the one in force after
+      `ByteRelay.minimumCloseWaitLimit` raised it; they differ only below 100 ms, which only
+      tests use.
+  - **Evidence:** `Sources/MawProtocol/ByteRelay.swift` (`receiveFromStream`, `CloseWait`,
+    `sendingDirectionWroteItsEnd`); `Sources/MawAgentKit/ForwardingChannel.swift`.
+  - **Phase:** None yet; together with the next change to `ByteRelay`, such as phase 09 A's
+    framed byte streams.
+
 - **Ports below 1024 are not forwarded.**
   - **Seen:** A server in a distribution on port 80, 443, or any port below 1024 is not
     reachable as `localhost` on the Mac; the distributions screen names the reason,
