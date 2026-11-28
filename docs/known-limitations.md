@@ -975,12 +975,20 @@ Deliberate choices that a decision record explains and that no phase plans to ch
   that close for as long as its send queue moves, and closes the connection itself after
   120 seconds without progress once its own end is written. The send queue empties while up
   to about 0.5 MiB can still wait on the Mac's side, which the agent cannot see, so a Mac
-  client that reads nothing for 120 seconds after that finds the connection closed by the
-  agent first. Whether it then still receives the rest and the end was not measured: a
+  client that does not take that rest within 120 seconds after the queue empties, however
+  steadily it reads, finds the connection closed by the agent first. Whether it then still receives the rest and the end was not measured: a
   guest's close without the host's half-close delivered everything while the host was
   reading. Whatever such a client sends afterwards resets the connection. Progress that the
   agent could see on the Mac's side would need an acknowledgement from the daemon.
   [Decision record 0023](decisions/0023-localhost-forwarding.md), "Correction of 2026-11-28".
+- **The daemon stops watching a forwarded connection's stream after the guest's end.** Once
+  the guest's `streamEnd` frame has arrived, the daemon reads nothing more from the agent's
+  connection, so a later reset by the agent, for example when the guest server's socket
+  fails while the Mac client still sends, reaches the Mac client only at its next write or
+  its close. Until then the connection keeps its two threads and its place among the 256.
+  `main` behaved the same way. Watching the stream after the end would need a way to wake
+  that direction when the daemon's own end is written, so that it can close at once.
+  `Sources/MawProtocol/ByteRelay.swift`; found by the code review of pull request 40.
 - **Output from the guest is slower on guest-opened connections.** 1.3 GB of output took a
   median of 2,996 ms with the dial-back against 2,455 ms with host-opened sessions (22 %).
   The cost lies in Virtualization.framework's transport, and no buffer or write size closed

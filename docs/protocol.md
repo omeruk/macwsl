@@ -232,7 +232,8 @@ host                                            agent
    `dialBackNonce` frame), each direction carries only `streamData` frames of 1 to 131,072
    bytes, then one `streamEnd` frame, and nothing after it. Any other frame, size, or byte
    after `streamEnd` is a protocol violation, and the receiver resets the connection.
-2. **No half-close.** Neither side calls `shutdown(2)` on the connection. Virtualization.framework
+2. **No half-close.** Neither side calls `shutdown(2)` on the connection while it ends
+   normally; only an abort shuts it down, before the reset of its close. Virtualization.framework
    does not carry a guest's half-close once data waits for the host, and discards data that
    the guest has sent when the guest closes after the host has half-closed
    ([decision record 0023](decisions/0023-localhost-forwarding.md), "Correction of
@@ -249,7 +250,9 @@ host                                            agent
    never closes therefore costs the guest nothing after that. The queue empties while up to
    about 0.5 MiB can still wait on the Mac's side (Virtualization.framework's buffer, the
    daemon's, and the Mac's TCP buffers), which the agent cannot see: a reader on the Mac that
-   reads nothing for 120 seconds after that finds the connection closed by the agent first.
+   does not take that rest within 120 seconds after the queue empties, however steadily it
+   reads, finds the connection closed by the agent first. Where the queue cannot be read at
+   all, time alone counts, and the log line says so.
    Whether it then still receives the rest was not measured ([docs/known-limitations.md](known-limitations.md)).
 5. **An early end is a failure.** A connection that ends before its `streamEnd` frame, or
    while the agent still sends, has lost data: the receiver resets whatever it relays the

@@ -435,8 +435,8 @@ byte streams"), protocol version 10:
   reader that is slow while the guest's queue holds data is never cut off. `SIOCOUTQ`
   reaches 0 while up to about 0.5 MiB can still wait on the Mac's side (the framework's
   buffer, the daemon's 128 KiB, and the Mac's TCP buffers), which the agent cannot see; a
-  Mac reader that reads nothing for the whole limit after that finds the connection closed
-  by the agent first. The limit is therefore twice the minimum of 60 seconds. Progress that
+  Mac reader that does not take that rest within the limit after the queue empties, however
+  steadily it reads, finds the connection closed by the agent first. The limit is therefore twice the minimum of 60 seconds. Progress that
   the agent could see on the Mac's side would need an acknowledgement from the daemon, a
   further protocol change that this correction does not make;
 - a connection that ends before its `streamEnd` frame, or carries invalid frames, resets the

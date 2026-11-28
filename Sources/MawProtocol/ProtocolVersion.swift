@@ -41,9 +41,10 @@ public enum AgentProtocol {
     /// directions have ended and its own `streamEnd` frame is written, counting only time in
     /// which its send queue (`SIOCOUTQ`) did not shrink. A reader on the Mac that is slow
     /// while that queue holds data is never cut off. The queue empties while up to about
-    /// 0.5 MiB can still wait on the Mac's side, which it does not see: a reader that then
-    /// reads nothing for this long finds the connection closed by the agent first. A host that
-    /// never closes the connection costs the guest nothing after this long.
+    /// 0.5 MiB can still wait on the Mac's side, which it does not see: a reader that does not
+    /// take that rest within this long after the queue empties finds the connection closed by
+    /// the agent first, however steadily it reads. A host that never closes the connection
+    /// costs the guest nothing after this long.
     public static let streamCloseWaitLimit = Duration.seconds(120)
     /// The most listeners one `listeners` message may carry.
     public static let maximumListeners = 1_024
