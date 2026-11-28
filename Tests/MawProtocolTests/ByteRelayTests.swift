@@ -412,9 +412,11 @@ import Testing
         usleep(1_500_000)
         #expect(ending.now == nil)
         let frames = try #require(try Self.readFramesToEnd(host))
+        // The host closes at once, within the limit: comparing 2 MiB first took longer than
+        // the 200 ms limit in CI's debug build.
+        host.close()
         #expect(frames.last == Frame(type: .streamEnd))
         #expect(frames.dropLast().flatMap(\.payload) == response)
-        host.close()
         #expect(ending.wait() == .completed)
     }
 
@@ -435,13 +437,15 @@ import Testing
             usleep(100_000)
         }
         #expect(ending.now == nil)
+        let closed = ContinuousClock.now
         server.close()
         let frames = try #require(try Self.readFramesToEnd(host))
         #expect(frames.dropLast().reduce(0) { $0 + $1.payload.count } == 800)
-        // The guest still waits for the host's close, for at least the minimum limit; before
-        // the limit was raised, it closed as soon as its end was written.
-        #expect(!Self.isReadable(host, within: 50))
         let ended = ending.wait(within: .seconds(5))
+        // The guest waited at least the minimum limit after its end, which came after the
+        // server's close; before the limit was raised, it closed as soon as its end was
+        // written.
+        #expect(ContinuousClock.now - closed >= ByteRelay.minimumCloseWaitLimit)
         guard case .closedWithoutAcknowledgement = ended else {
             Issue.record("the relay ended \(ended.map { "\($0)" } ?? "never")")
             return
