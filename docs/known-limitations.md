@@ -966,6 +966,18 @@ Deliberate choices that a decision record explains and that no phase plans to ch
 - **OpenPGP is not checked at installation.** The catalog pins each image's SHA-256, so maw
   needs no OpenPGP implementation, at the cost of a new release of maw for a new image.
   [Decision record 0012](decisions/0012-ubuntu-image.md), "Trade-offs".
+- **A forwarded connection never relies on vsock's own half-close or close.**
+  Virtualization.framework drops a guest's half-close once data waits for the host, and
+  discards data that the guest has sent when the guest closes after the host has
+  half-closed. Forwarded connections are therefore framed byte streams with the end of each
+  direction inside the stream, which costs a 5-byte header per 128 KiB and a parse of that
+  header in the daemon, and the daemon closes each connection first. The agent waits for
+  that close for as long as its send queue moves, and closes the connection itself after
+  120 seconds without progress. Whether a Mac client that has read nothing for that long
+  still receives the rest and the end was not measured: a guest's close without the host's
+  half-close delivered everything while the host was reading. Whatever such a client sends
+  afterwards resets the connection.
+  [Decision record 0023](decisions/0023-localhost-forwarding.md), "Correction of 2026-11-28".
 - **Output from the guest is slower on guest-opened connections.** 1.3 GB of output took a
   median of 2,996 ms with the dial-back against 2,455 ms with host-opened sessions (22 %).
   The cost lies in Virtualization.framework's transport, and no buffer or write size closed
