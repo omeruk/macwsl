@@ -209,6 +209,10 @@ struct ForwardingIntegrationTests {
     @Test func endsALargeResponseWhenTheServerCloses() async throws {
         let watcher = try Watcher(maw)
         defer { watcher.stop() }
+        // A forwarded connection does not keep the machine running; this session does, so
+        // that the test daemon's short idle timeout cannot end the transfer.
+        let keeper = try maw.start(["-d", maw.distribution, "-e", "sleep", "600"])
+        defer { keeper.signal(SIGTERM) }
         let port = try MawIntegration.freePort()
         let server = try await maw.startStreamServer("send", port: port, watcher: watcher)
         let client = try MacStreamClient(port: port)
@@ -234,6 +238,10 @@ struct ForwardingIntegrationTests {
     @Test func carriesAResponseAfterTheClientHalfCloses() async throws {
         let watcher = try Watcher(maw)
         defer { watcher.stop() }
+        // A forwarded connection does not keep the machine running; this session does, so
+        // that the test daemon's short idle timeout cannot end the transfer.
+        let keeper = try maw.start(["-d", maw.distribution, "-e", "sleep", "600"])
+        defer { keeper.signal(SIGTERM) }
         let port = try MawIntegration.freePort()
         let server = try await maw.startStreamServer("request", port: port, watcher: watcher)
         let client = try MacStreamClient(port: port)
