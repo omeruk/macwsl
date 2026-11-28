@@ -45,7 +45,7 @@ import Testing
     /// An agent whose `dialBack` and forwarding dials hand their far ends to `guest`.
     static func agent(
         _ guest: Guest, maximumConnections: Int = 64, maximumForwarded: Int = 256,
-        forwards: Bool = true
+        forwards: Bool = true, closeWaitLimit: Duration = AgentProtocol.streamCloseWaitLimit
     ) -> AgentServer {
         let dial: @Sendable () throws(DialBackError) -> OwnedDescriptor = {
             () throws(DialBackError) -> OwnedDescriptor in
@@ -62,7 +62,7 @@ import Testing
                 if fails { throw .kernel(-2) }
                 return listeners
             }, dialHost: dial, scanInterval: .milliseconds(20),
-            maximumConnections: maximumForwarded)
+            maximumConnections: maximumForwarded, streamCloseWaitLimit: closeWaitLimit)
         return AgentServer(
             configuration: AgentConfiguration(
                 maximumConnections: maximumConnections, requestTimeout: peerDeadline,
@@ -197,10 +197,34 @@ import Testing
                 == .listeners(Array(all.prefix(AgentProtocol.maximumListeners))))
     }
 
-    @Test func relaysAConnectionWithItsHalfClose() throws {
-        let guest = Guest()
+    /// Reads frames from `descriptor` until a `streamEnd` frame, and returns the data before
+    /// it, or `nil` at the connection's end or the deadline without one.
+    static func readStreamToEnd(_ descriptor: OwnedDescriptor) throws -> String? {
+        let connection = try FrameConnection(descriptor)
+        var text: [UInt8] = []
+        while true {
+            let frame = try connection.receiveFrame(until: .now + peerDeadline)
+            switch frame.type {
+            case .streamData: text += frame.payload
+            case .streamEnd: return String(decoding: text, as: UTF8.self)
+            default: return nil
+            }
+        }
+    }
+
+    static func streamFrames(_ text: String, ending: Bool) -> [UInt8] {
+        Frame(type: .streamData, payload: Array(text.utf8)).encoded
+            + (ending ? FramedStream.endFrame : [])
+    }
+
+    /// Asks the agent to connect to a listener of the test process, and returns the guest
+    /// server's side and the host's side of the forwarded connection, after its nonce.
+    static func forwardedConnection(_ guest: Guest, closeWaitLimit: Duration) throws -> (
+        server: OwnedDescriptor, host: OwnedDescriptor, channel: FrameConnection
+    ) {
         let (listener, port) = try Self.listen()
-        let channel = try Self.openChannel(Self.agent(guest), guest)
+        let channel = try Self.openChannel(
+            Self.agent(guest, closeWaitLimit: closeWaitLimit), guest)
         _ = try Self.nextMessage(channel)
         let nonce = DialBackNonce.random()
         channel.enqueue(
@@ -209,21 +233,49 @@ import Testing
 
         let server = try Self.accept(listener)
         let host = try #require(guest.takeDialed())
-        // The dialed connection starts with the nonce frame, and carries raw bytes after it.
+        // The dialed connection starts with the nonce frame, and carries a framed byte stream
+        // after it.
         var header = [UInt8](repeating: 0, count: 37)
         _ = maw_set_blocking(host.rawValue)
         #expect(read(host.rawValue, &header, 37) == 37)
         #expect(Array(header[0..<5]) == [0, 0, 0, 32, FrameType.dialBackNonce.rawValue])
         #expect(DialBackNonce(bytes: Array(header[5...])) == nonce)
+        return (server, host, channel)
+    }
 
-        // The Mac's side sends a request and half-closes; the guest's server sees the end,
-        // answers, and closes.
-        try Self.send("GET /", to: host)
-        _ = shutdown(host.rawValue, Int32(SHUT_WR))
+    /// The host's side sends a request and its end; the guest's server sees the end, answers,
+    /// and closes; the agent sends the answer and its end, and then waits for the host's close.
+    @Test func relaysAConnectionWithItsHalfClose() throws {
+        let guest = Guest()
+        let (server, host, channel) = try Self.forwardedConnection(
+            guest, closeWaitLimit: .seconds(60))
+        try writeAll(Self.streamFrames("GET /", ending: true), to: host.rawValue)
         #expect(Self.readToEnd(server) == "GET /")
         try Self.send("200 OK", to: server)
         server.close()
-        #expect(Self.readToEnd(host) == "200 OK")
+        #expect(try Self.readStreamToEnd(host) == "200 OK")
+        // The agent does not close first.
+        var request = pollfd(fd: host.rawValue, events: Int16(POLLIN), revents: 0)
+        #expect(poll(&request, 1, 1_500) == 0)
+        host.close()
+        _ = channel
+    }
+
+    /// An agent whose host never closes a finished connection closes it after the wait limit
+    /// without progress.
+    @Test func closesAConnectionTheHostDoesNotClose() throws {
+        let guest = Guest()
+        let (server, host, channel) = try Self.forwardedConnection(
+            guest, closeWaitLimit: .milliseconds(300))
+        try writeAll(FramedStream.endFrame, to: host.rawValue)
+        server.close()
+        #expect(try Self.readStreamToEnd(host) == "")
+        // Within the limit and one poll interval, the agent closes: the connection ends.
+        var request = pollfd(fd: host.rawValue, events: Int16(POLLIN), revents: 0)
+        #expect(poll(&request, 1, 5_000) == 1)
+        var byte: UInt8 = 0
+        #expect(read(host.rawValue, &byte, 1) == 0)
+        _ = channel
     }
 
     @Test func connectsOverIPv6() throws {

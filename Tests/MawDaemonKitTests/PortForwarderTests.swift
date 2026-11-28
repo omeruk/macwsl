@@ -23,7 +23,8 @@ import os
         let lock = ConditionLock()
         var channel: FrameConnection?
         var channelsOpened = 0
-        /// The guest's side of each forwarded connection, by request.
+        /// The guest server's side of each forwarded connection, by request: the agent's relay
+        /// carries it over the framed byte stream, as in the guest.
         var connections: [(request: ForwardingConnect, guest: OwnedDescriptor)] = []
         var connects: [ForwardingConnect] = []
         /// Ports whose `connect` the guest refuses.
@@ -77,7 +78,15 @@ import os
             try? writeAll(Frame.dialBackNonce(request.nonce).encoded, to: guest.rawValue)
             guard gate.admit(sourcePort: 1023) == nil else { return }
             _ = startDetachedThread { [gate] in _ = gate.authenticate(host) }
-            lock.withLock { connections.append((request, guest)) }
+            guard maw_socketpair(&fds) == 0 else { return }
+            let server = OwnedDescriptor(fds[1])
+            guard
+                ByteRelay.start(
+                    plain: OwnedDescriptor(fds[0]), stream: guest,
+                    role: .guest(closeWaitLimit: PortForwarderTests.patience), finished: { _ in })
+                    != nil
+            else { return }
+            lock.withLock { connections.append((request, server)) }
         }
 
         func send(_ message: ControlMessage) {

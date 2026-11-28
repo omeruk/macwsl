@@ -24,6 +24,9 @@ public struct ForwardingEnvironment: Sendable {
     public var dialHost: @Sendable () throws(DialBackError) -> OwnedDescriptor
     public var scanInterval: Duration
     public var maximumConnections: Int
+    /// How long a forwarded connection waits without progress for the host to close it, once
+    /// both of its directions have ended (`ByteRelay.Role.guest`).
+    public var streamCloseWaitLimit: Duration
 
     public init(
         scanListeners:
@@ -38,13 +41,15 @@ public struct ForwardingEnvironment: Sendable {
             try DialBackDialer(port: AgentProtocol.forwardingPort).dial()
         },
         scanInterval: Duration = AgentProtocol.listenerScanInterval,
-        maximumConnections: Int = AgentProtocol.maximumForwardedConnections
+        maximumConnections: Int = AgentProtocol.maximumForwardedConnections,
+        streamCloseWaitLimit: Duration = AgentProtocol.streamCloseWaitLimit
     ) {
         self.scanListeners = scanListeners
         self.connectToListener = connectToListener
         self.dialHost = dialHost
         self.scanInterval = scanInterval
         self.maximumConnections = maximumConnections
+        self.streamCloseWaitLimit = streamCloseWaitLimit
     }
 
     /// How long the agent waits for the guest's listener to accept a connection.
@@ -83,6 +88,7 @@ final class ForwardingChannel: @unchecked Sendable {
     private let lock = ConditionLock()
     private var failures: [(id: UInt32, reason: String)] = []
     private var openConnections = 0
+    private var unacknowledgedCloses = 0
     private let wake: (read: OwnedDescriptor, write: OwnedDescriptor)
 
     init(
@@ -101,6 +107,10 @@ final class ForwardingChannel: @unchecked Sendable {
 
     /// The forwarded connections open now; for tests.
     var connectionCount: Int { lock.withLock { openConnections } }
+
+    /// The forwarded connections that the agent closed because the host did not close them
+    /// within `streamCloseWaitLimit` of no progress; for tests.
+    var unacknowledgedCloseCount: Int { lock.withLock { unacknowledgedCloses } }
 
     /// Serves the channel until the host closes it. Forwarded connections that are open go on
     /// until they end.
@@ -240,10 +250,28 @@ final class ForwardingChannel: @unchecked Sendable {
             report(request.id, "cannot dial the host: \(error)")
             return
         }
-        let relay = ByteRelay.start(listener, host) { [self] _ in connectionEnded() }
+        let relay = ByteRelay.start(
+            plain: listener, stream: host,
+            role: .guest(closeWaitLimit: environment.streamCloseWaitLimit)
+        ) { [self] ending in
+            if ending == .closedWithoutAcknowledgement { closedWithoutAcknowledgement() }
+            connectionEnded()
+        }
         if relay == nil {
             connectionEnded()
         }
+    }
+
+    /// Counts and logs a forwarded connection that the host did not close. The line names no
+    /// address, port, or data.
+    private func closedWithoutAcknowledgement() {
+        let count = lock.withLock {
+            unacknowledgedCloses += 1
+            return unacknowledgedCloses
+        }
+        logger.warning(
+            "closed a forwarded connection that the host did not close within \(environment.streamCloseWaitLimit) without progress (\(count) on this channel)"
+        )
     }
 
     private func connectionEnded() {
