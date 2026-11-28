@@ -215,9 +215,10 @@ import Testing
     /// Version 5 adds `sample`, `sampled`, and `sampleFailed`; version 6 adds `agentInfo`'s
     /// `macShareMounted`; version 7 adds `exec`'s `fallsBackToHome` and `started`'s
     /// `workingDirectoryFallback`; version 8 adds the forwarding channel; version 9 adds the
-    /// DNS channel: `dns`, `dnsQuery`, and `dnsAnswer`.
-    @Test func speaksVersion9() {
-        #expect(ProtocolVersion.current == 9)
+    /// DNS channel: `dns`, `dnsQuery`, and `dnsAnswer`; version 10 carries forwarded
+    /// connections as framed byte streams: `streamData` and `streamEnd`.
+    @Test func speaksVersion10() {
+        #expect(ProtocolVersion.current == 10)
     }
 
     @Test func writesTheFallbackOnlyWhenItIsAllowed() throws {

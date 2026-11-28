@@ -22,6 +22,12 @@ public enum FrameType: UInt8, Sendable, CaseIterable {
     /// On the DNS channel, host to guest: the response to the `dnsQuery` with the same tag, in
     /// the same layout.
     case dnsAnswer = 0x06
+    /// Bytes of a framed byte stream, in either direction (docs/protocol.md, "Framed byte
+    /// streams"): 1 to `AgentProtocol.streamChunkSize` bytes.
+    case streamData = 0x07
+    /// The end of a framed byte stream in its sender's direction, with no payload. The sender
+    /// sends nothing after it; the host closes the connection once both directions have ended.
+    case streamEnd = 0x08
     /// Raw bytes for the process's standard input (host to guest).
     case stdin = 0x10
     /// Raw bytes from the process's standard output, or from its terminal (guest to host).
@@ -178,6 +184,8 @@ public enum FrameError: Error, Equatable, Sendable, CustomStringConvertible {
     /// A `dnsQuery` or `dnsAnswer` frame without a message, or with more than
     /// `AgentProtocol.maximumDNSFramePayload` bytes.
     case malformedDNSMessage(size: Int)
+    /// A `streamData` or `streamEnd` frame of a size that its type does not allow.
+    case malformedStream(FramedStreamError)
     /// A control frame whose payload is not a valid `ControlMessage`.
     case malformedControl(String)
     /// A frame of a known type that is not valid at this point of the conversation.
@@ -200,6 +208,8 @@ public enum FrameError: Error, Equatable, Sendable, CustomStringConvertible {
             "a dialBackNonce frame has \(size) bytes instead of \(AgentProtocol.dialBackNonceSize)"
         case .malformedDNSMessage(let size):
             "a DNS frame has \(size) bytes, not 5 to \(AgentProtocol.maximumDNSFramePayload)"
+        case .malformedStream(let problem):
+            problem.description
         case .malformedControl(let reason):
             "a control message could not be decoded: \(reason)"
         case .unexpectedType(let type, let expected):
@@ -258,6 +268,10 @@ public struct FrameDecoder: Sendable {
                 || (5...AgentProtocol.maximumDNSFramePayload).contains(Int(length))
         else {
             throw .malformedDNSMessage(size: Int(length))
+        }
+        // A stream frame's size depends on its type alone, as for a nonce frame.
+        if let problem = FramedStreamError.sizeProblem(type, length) {
+            throw .malformedStream(problem)
         }
         let end = start + Frame.headerSize + Int(length)
         guard buffer.count >= end else { return nil }
