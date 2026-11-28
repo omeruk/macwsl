@@ -61,6 +61,9 @@ public final class ByteRelay: @unchecked Sendable {
     public static let defaultBufferSize = AgentProtocol.streamChunkSize
     /// The longest a direction waits in `poll(2)` before it reads or writes again.
     static let pollIntervalMilliseconds: Int32 = 1_000
+    /// The shortest `closeWaitLimit` the guest role uses; a shorter one, zero or less
+    /// included, is raised to it. Short enough for tests.
+    public static let minimumCloseWaitLimit = Duration.milliseconds(100)
 
     private let lock = ConditionLock()
     private let plain: OwnedDescriptor
@@ -106,6 +109,10 @@ public final class ByteRelay: @unchecked Sendable {
             _ = maw_set_nonblocking(descriptor.rawValue)
             _ = maw_suppress_sigpipe(descriptor.rawValue)
         }
+        var role = role
+        if case .guest(let limit) = role, limit < minimumCloseWaitLimit {
+            role = .guest(closeWaitLimit: minimumCloseWaitLimit)
+        }
         let relay = ByteRelay(
             plain: plain, stream: stream, role: role,
             bufferSize: min(max(bufferSize, 1), AgentProtocol.streamChunkSize),
@@ -129,11 +136,13 @@ public final class ByteRelay: @unchecked Sendable {
     ///
     /// Reading ends at once on both sockets. The plain socket's sending side is not shut down:
     /// that would send its peer a clean end of stream before the reset of the close, and a
-    /// Mac client would read that end first. Both directions see `aborted` instead and stop
-    /// writing within one poll interval.
+    /// Mac client would read that end first. Instead, both directions check for the abort
+    /// before every write and stop, so that nothing is passed on after it; a write that waits
+    /// sees it within one poll interval.
     public func abort() {
         lock.withLock {
             aborted = true
+            lock.broadcast()
             guard !closing else { return }
             _ = maw_set_reset_on_close(plain.rawValue)
             _ = shutdown(plain.rawValue, Int32(SHUT_RD))
@@ -166,7 +175,10 @@ public final class ByteRelay: @unchecked Sendable {
                     sendAll($0.baseAddress!, $0.count, to: stream)
                 }
                 if sent {
-                    lock.withLock { endWritten = true }
+                    lock.withLock {
+                        endWritten = true
+                        lock.broadcast()
+                    }
                 } else {
                     abort()
                 }
@@ -255,18 +267,19 @@ public final class ByteRelay: @unchecked Sendable {
 
     private var hasSentEnd: Bool { lock.withLock { sendingEnd } }
 
-    /// Waits until the sending direction has written its `streamEnd` frame in full, or failed:
-    /// a host that closed before receiving it makes the write fail at once. Returns whether
-    /// the frame was written.
-    private func sendingDirectionWroteItsEnd() -> Bool {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while ContinuousClock.now < deadline {
-            let (written, failed) = lock.withLock { (endWritten, aborted) }
-            if written { return true }
-            if failed { return false }
-            usleep(1_000)
+    /// Waits until the sending direction has written its `streamEnd` frame in full, or the
+    /// relay has aborted; returns whether the frame was written. Each of the three ways the
+    /// sending direction's write can end wakes it: the write finishes and sets `endWritten`;
+    /// it fails, and the direction calls `abort()`; or another thread calls `abort()`, which
+    /// the waiting write sees within one poll interval. A write to a connection whose peer
+    /// has ended, as here, fails rather than waits. Internal for tests.
+    func sendingDirectionWroteItsEnd() -> Bool {
+        lock.withLock {
+            while !endWritten && !aborted {
+                lock.wait()
+            }
+            return endWritten
         }
-        return false
     }
     private var hasWrittenEnd: Bool { lock.withLock { endWritten } }
 
@@ -293,6 +306,12 @@ public final class ByteRelay: @unchecked Sendable {
                 unsent = queued
                 sendQueueVisible = true
             }
+            // Until the guest's own end is written, the limit does not run at all, however
+            // short it is.
+            guard endWritten else {
+                ByteRelay.wait(for: stream, Int32(POLLIN))
+                return false
+            }
             let left = limit - (now - lastProgress)
             guard left > .zero else { return true }
             let milliseconds =
@@ -314,6 +333,8 @@ public final class ByteRelay: @unchecked Sendable {
     ) -> Bool {
         var offset = 0
         while offset < count {
+            // Nothing is passed on after an abort, not even what was already read.
+            if isAborted { return false }
             let written = maw_send(destination.rawValue, pointer + offset, count - offset)
             if written > 0 {
                 offset += written

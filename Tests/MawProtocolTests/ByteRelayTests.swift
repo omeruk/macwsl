@@ -418,6 +418,102 @@ import Testing
         #expect(ending.wait() == .completed)
     }
 
+    /// A wait limit of zero or less is raised to `ByteRelay.minimumCloseWaitLimit`, and runs
+    /// only once the guest's own end is written: a guest whose server still sends is not cut
+    /// off, and one whose host never closes still closes.
+    @Test func aZeroWaitLimitStillWaitsForTheGuestsEnd() throws {
+        let (plain, server) = try Self.pair()
+        let (host, stream) = try Self.pair()
+        let ending = Ending()
+        try #require(
+            ByteRelay.start(
+                plain: plain, stream: stream, role: .guest(closeWaitLimit: .zero),
+                finished: ending.report) != nil)
+        try writeAll(FramedStream.endFrame, to: host.rawValue)
+        for _ in 0..<8 {
+            try writeAll([UInt8](repeating: 2, count: 100), to: server.rawValue)
+            usleep(100_000)
+        }
+        #expect(ending.now == nil)
+        server.close()
+        let frames = try #require(try Self.readFramesToEnd(host))
+        #expect(frames.dropLast().reduce(0) { $0 + $1.payload.count } == 800)
+        // The guest still waits for the host's close, for at least the minimum limit; before
+        // the limit was raised, it closed as soon as its end was written.
+        #expect(!Self.isReadable(host, within: 50))
+        let ended = ending.wait(within: .seconds(5))
+        guard case .closedWithoutAcknowledgement = ended else {
+            Issue.record("the relay ended \(ended.map { "\($0)" } ?? "never")")
+            return
+        }
+    }
+
+    final class WaitResult: @unchecked Sendable {
+        let lock = ConditionLock()
+        var written: Bool?
+
+        func wait(within deadline: Duration) -> Bool? {
+            let deadline = ContinuousClock.now + deadline
+            while lock.withLock({ written }) == nil && ContinuousClock.now < deadline {
+                usleep(1_000)
+            }
+            return lock.withLock { written }
+        }
+    }
+
+    /// A guest relay whose sending direction is held back: its server sends 4 MiB that the
+    /// host does not read. Returns the relay, the host's side, and a thread's wait for the
+    /// guest's end, started.
+    static func heldBackGuest() throws -> (ByteRelay, OwnedDescriptor, WaitResult) {
+        let (plain, server) = try pair()
+        let (host, stream) = try pair()
+        _ = maw_suppress_sigpipe(server.rawValue)
+        let started = ByteRelay.start(
+            plain: plain, stream: stream, role: .guest(closeWaitLimit: .seconds(60))
+        ) { _ in }
+        let relay = try #require(started)
+        let sending = startDetachedThread {
+            try? writeAll([UInt8](repeating: 4, count: 4 << 20), to: server.rawValue)
+            server.close()
+        }
+        try #require(sending)
+        let result = WaitResult()
+        let waiting = startDetachedThread {
+            let written = relay.sendingDirectionWroteItsEnd()
+            result.lock.withLock { result.written = written }
+        }
+        try #require(waiting)
+        usleep(200_000)
+        return (relay, host, result)
+    }
+
+    /// The wait for the guest's own end ends when the end is written.
+    @Test func theWaitForTheGuestsEndEndsWhenItIsWritten() throws {
+        let (_, host, result) = try Self.heldBackGuest()
+        #expect(result.wait(within: .zero) == nil)
+        let frames = try #require(try Self.readFramesToEnd(host))
+        #expect(frames.last == Frame(type: .streamEnd))
+        #expect(result.wait(within: Self.endDeadline) == true)
+        host.close()
+    }
+
+    /// The wait for the guest's own end ends when the relay is aborted.
+    @Test func theWaitForTheGuestsEndEndsAtAnAbort() throws {
+        let (relay, host, result) = try Self.heldBackGuest()
+        #expect(result.wait(within: .zero) == nil)
+        relay.abort()
+        #expect(result.wait(within: .seconds(5)) == false)
+        _ = host
+    }
+
+    /// The wait for the guest's own end ends when the write fails: the host's side closes.
+    @Test func theWaitForTheGuestsEndEndsWhenTheWriteFails() throws {
+        let (_, host, result) = try Self.heldBackGuest()
+        #expect(result.wait(within: .zero) == nil)
+        host.close()
+        #expect(result.wait(within: .seconds(5)) == false)
+    }
+
     /// The host decodes the rest of the read that carries the guest's end: a byte after it
     /// resets both connections instead of ending them cleanly.
     @Test func hostRefusesBytesAfterTheGuestsEnd() throws {
