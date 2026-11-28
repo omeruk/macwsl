@@ -199,4 +199,128 @@ struct ForwardingIntegrationTests {
         await maw.stopServer(server)
         _ = try await maw.run(["-d", maw.distribution, "-e", "rm", "-f", file])
     }
+
+    // MARK: The ends of a forwarded connection
+
+    /// A guest server that sends 64 MiB and closes: every byte reaches the Mac client, and so
+    /// does the end, within 1 s of the last byte, while the client's own side is still open.
+    /// On main before the fix, the end never arrived (decision record 0023, "Correction of
+    /// 2026-11-28").
+    @Test func endsALargeResponseWhenTheServerCloses() async throws {
+        let watcher = try Watcher(maw)
+        defer { watcher.stop() }
+        // A forwarded connection does not keep the machine running; this session does, so
+        // that the test daemon's short idle timeout cannot end the transfer.
+        let keeper = try maw.start(["-d", maw.distribution, "-e", "sleep", "600"])
+        defer { keeper.signal(SIGTERM) }
+        let port = try MawIntegration.freePort()
+        let server = try await maw.startStreamServer("send", port: port, watcher: watcher)
+        let client = try MacStreamClient(port: port)
+        let ending = client.readToEnd()
+        let sent = await server.waitForLine(
+            where: { $0.hasPrefix("sent ") }, every: .milliseconds(5), timeout: .seconds(30))
+        #expect(sent, "\(server.output)\(server.standardError)")
+        #expect(client.received == MawIntegration.transferSize)
+        #expect(DebugBootProcess.lines(of: server.output).contains("sent \(client.receivedDigest)"))
+        guard case .end(let afterLastByte) = ending else {
+            Issue.record("the response ended with \(ending)")
+            await maw.stopServer(server)
+            return
+        }
+        #expect(afterLastByte < .seconds(1))
+        _ = await server.waitForExit(timeout: .seconds(30))
+    }
+
+    /// A Mac client that sends a request and half-closes, then reads a 64 MiB response that
+    /// the guest server sends once it has read the request's end, and closes: every byte
+    /// arrives, by SHA-256, and then the end. On main before the fix, the last 224 to 248 KiB
+    /// were missing, followed by a clean end.
+    @Test func carriesAResponseAfterTheClientHalfCloses() async throws {
+        let watcher = try Watcher(maw)
+        defer { watcher.stop() }
+        // A forwarded connection does not keep the machine running; this session does, so
+        // that the test daemon's short idle timeout cannot end the transfer.
+        let keeper = try maw.start(["-d", maw.distribution, "-e", "sleep", "600"])
+        defer { keeper.signal(SIGTERM) }
+        let port = try MawIntegration.freePort()
+        let server = try await maw.startStreamServer("request", port: port, watcher: watcher)
+        let client = try MacStreamClient(port: port)
+        try client.send("GET 64MiB\n")
+        try client.halfClose()
+        let ending = client.readToEnd()
+        let sent = await server.waitForLine(
+            where: { $0.hasPrefix("sent ") }, every: .milliseconds(5), timeout: .seconds(30))
+        #expect(sent, "\(server.output)\(server.standardError)")
+        #expect(DebugBootProcess.lines(of: server.output).contains("request 10"))
+        #expect(client.received == MawIntegration.transferSize)
+        #expect(DebugBootProcess.lines(of: server.output).contains("sent \(client.receivedDigest)"))
+        #expect(ending.isClean, "\(ending)")
+        _ = await server.waitForExit(timeout: .seconds(30))
+    }
+
+    /// `maw --terminate` during a 64 MiB transfer, in each direction: the Mac client sees an
+    /// error, never a clean end, and nothing is left on the Mac: no socket on the port and no
+    /// `maw` process of the server.
+    @Test(arguments: ["guest to Mac", "Mac to guest"])
+    func terminateDuringATransferResetsTheMacClient(direction: String) async throws {
+        let watcher = try Watcher(maw)
+        defer { watcher.stop() }
+        let port = try MawIntegration.freePort()
+        let toMac = direction == "guest to Mac"
+        let server = try await maw.startStreamServer(
+            toMac ? "send" : "stall", port: port, watcher: watcher)
+        var client: MacStreamClient? = try MacStreamClient(port: port)
+        let ending: MacStreamClient.Ending
+        if toMac {
+            // 4 MiB arrive, and then the client stops reading, which holds the server back.
+            let early = try #require(client).read(atLeast: 4 << 20)
+            #expect(early == nil, "\(early.map { "\($0)" } ?? "")")
+            let terminated = try await maw.run(["--terminate", maw.distribution])
+            #expect(terminated.status == 0, "\(terminated.standardError)")
+            ending = try #require(client).readToEnd(silence: .seconds(30))
+            #expect(try #require(client).received < MawIntegration.transferSize)
+        } else {
+            let writer = try #require(client)
+            let outcome = Outcome()
+            Thread.detachNewThread {
+                outcome.set(writer.writeUntilItEnds(within: .seconds(120)).ending)
+            }
+            let stalled = await server.waitForLine(
+                where: { $0 == "stalled" }, every: .milliseconds(5), timeout: .seconds(60))
+            try #require(stalled, "\(server.output)\(server.standardError)")
+            let terminated = try await maw.run(["--terminate", maw.distribution])
+            #expect(terminated.status == 0, "\(terminated.standardError)")
+            ending = try await outcome.wait(within: .seconds(60))
+        }
+        guard case .error = ending else {
+            Issue.record("\(direction): the client saw \(ending), not an error")
+            client = nil
+            await maw.stopServer(server)
+            return
+        }
+        client = nil
+        _ = await server.waitForExit(timeout: .seconds(30))
+        #expect(!server.isRunning, "the server's maw process is still running")
+        #expect(try await MawIntegration.waitUntilRefused(port, within: .seconds(5)))
+        #expect(try await MawIntegration.macSockets(on: port) == [])
+    }
+
+    /// The ending that a client thread reports.
+    final class Outcome: @unchecked Sendable {
+        private let lock = NSLock()
+        private var ending: MacStreamClient.Ending?
+
+        func set(_ ending: MacStreamClient.Ending) {
+            lock.withLock { self.ending = ending }
+        }
+
+        func wait(within timeout: Duration) async throws -> MacStreamClient.Ending {
+            let deadline = ContinuousClock.now + timeout
+            while ContinuousClock.now < deadline {
+                if let ending = lock.withLock({ ending }) { return ending }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            return .silence(timeout)
+        }
+    }
 }

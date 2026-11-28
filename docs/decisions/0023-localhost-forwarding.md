@@ -60,7 +60,8 @@ guest:
 | 1 GiB throughput | 383 to 388 MB/s | 7,540 to 7,735 MB/s |
 | Time to the first byte, median of 100 requests per run | 0.544 to 0.609 ms | 0.246 to 0.304 ms |
 
-Every 1 GiB response arrived with the expected SHA-256 on both paths. In the daemon, the median
+Every 1 GiB response arrived with the expected SHA-256 on both paths (but see "Correction of
+2026-11-28": that check could not show a lost end). In the daemon, the median
 time from accepting the Mac's connection to the guest's dialed connection arriving was 270 µs
 (slowest 2.65 ms, 511 connections). A half-close was carried (the guest saw the end of the
 request and answered), and a connection to a port on which the guest did not listen reset the
@@ -147,6 +148,7 @@ Mac, with Apple's `/usr/bin/python3` and the daemon's own sockets: `net.inet.tcp
    or `127.0.0.1`, `::1` otherwise), then dials 19801 from a source port below 1024, sends the
    nonce frame, and copies raw bytes. `ByteRelay` copies on both sides: the end of a stream
    becomes `shutdown(SHUT_WR)` on the other side, and an error resets both connections.
+   (Replaced on 2026-11-28 by a framed byte stream: see "Correction of 2026-11-28".)
 
    **Why the relay waits in `poll(2)`.** `ByteRelay` first copied each direction with blocking
    `read(2)` and `write(2)`. On macOS 27 (Darwin 27.0.0), a thread blocked in `read(2)` on a
@@ -378,3 +380,91 @@ the cause of that difference was not examined.
 - The machine's idle stop counts sessions only: a forwarded connection does not keep a machine
   running (phase 12).
 - UDP is not forwarded.
+
+## Correction of 2026-11-28
+
+Phase 09's Part 1 found two defects in this record's forwarding on `main` (`eed86ea`), and the
+branch `fix/forwarding-close` corrects them. The figures below are development figures, taken
+through the test daemon on the Mac described above, macOS 27.0.1, on battery power at a
+one-minute load average of about 2.7, unless they say otherwise.
+
+**The defects.** Both were shown with `main`'s unmodified code, 5 of 5 times each:
+
+1. A guest server that sends 64 MiB and closes: every byte reaches the Mac client, but the end
+   does not; the client waited 120 seconds.
+2. A Mac client that sends a request, half-closes, and reads a 64 MiB response that the server
+   sends before it closes: the last 229,376 to 253,952 bytes are missing, and the client then
+   receives a clean end, so it cannot tell that the response is incomplete.
+
+**What the earlier checks measured.** The 1 GiB check of "Carrying a connection" and of the
+measurements read the response with `curl`, which stops at `Content-Length` and closes, from a
+server that half-closes and then waits for the client to close. The client never needed the
+guest's end, and the guest never closed first, so neither defect could show. The half-close
+that "was carried" went from the Mac to the guest; that direction works, as below.
+
+**The cause, verified.** A guest program dialed temporary host listeners directly, with no maw
+code on either side of the connection; the host read each connection's descriptor at once:
+
+| Case | Result |
+|---|---|
+| The guest sends N bytes and calls `shutdown(SHUT_WR)` | every byte arrives; the end arrives for 6 bytes and 4 KiB (3 of 3 each), for 16 KiB 1 of 3, and for 64 KiB, 1 MiB, and 64 MiB 0 of 3 each |
+| The host half-closes, then the guest sends N bytes and closes at once | 64 KiB: 8 to 16 KiB arrive; 1 MiB and 64 MiB: 212,992 to 229,376 bytes short; a clean end each time |
+| The same, but the guest first waits until `SIOCOUTQ` reports 0 unsent bytes | 1 MiB: 40,960 and 81,920 bytes short in 2 of 3; the guest kernel had passed every byte to the device |
+| The same, but the guest waits 1 second before closing | intact, 12 of 12 |
+| The guest closes after 64 MiB, without the host's half-close | intact, with the end, 6 of 6 |
+| The host writes 64 KiB to 64 MiB and closes at once, or half-closes | intact, with the end, 15 of 15 each |
+
+Virtualization.framework therefore drops a guest's half-close once data waits for the host
+(defect 1: the agent's relay passed the server's close on as `shutdown(SHUT_WR)`), and
+discards what it still holds from the guest when the guest closes after the host has
+half-closed (defect 2: the agent closed right after its last write). The daemon's relay,
+counted in the same runs, passed on exactly what it read. The host-to-guest direction is
+reliable in both respects.
+
+**The decision.** A forwarded connection is a framed byte stream (docs/protocol.md, "Framed
+byte streams"), protocol version 10:
+
+- after the nonce, each direction carries `streamData` frames and one `streamEnd` frame; the
+  connection's own half-close is never used;
+- the daemon closes the connection once both ends have passed; the agent never closes first,
+  except on an error;
+- the agent waits for that close, once its own `streamEnd` frame is written in full, for as
+  long as its send queue on the connection shrinks, and closes it itself after 120 seconds
+  without progress, with one log line and a count, so that a daemon that never closes leaves
+  nothing behind in the guest. Time without progress, not total time, counts, so that a Mac
+  reader that is slow while the guest's queue holds data is never cut off. `SIOCOUTQ`
+  reaches 0 while up to about 0.5 MiB can still wait on the Mac's side (the framework's
+  buffer, the daemon's 128 KiB, and the Mac's TCP buffers), which the agent cannot see; a
+  Mac reader that does not take that rest within the limit after the queue empties, however
+  steadily it reads, finds the connection closed by the agent first. The owner set a
+  minimum of 60 seconds; 120 seconds, twice that, was chosen to leave such a reader more
+  time, and was not derived from a measurement. Progress that the agent could see on the
+  Mac's side would need an acknowledgement from the daemon, a further protocol change that
+  this correction does not make;
+- a connection that ends before its `streamEnd` frame, or carries invalid frames, resets the
+  other connection, so that a loss shows as an error rather than as a complete end.
+
+Rejected: framing only the guest-to-Mac direction (the agent could not tell the daemon's
+half-close from its close, and would close too early again); carrying the ends and byte
+counts on the forwarding channel (it couples two connections, with state and ordering in
+both processes); and delaying the agent's close by a fixed time or until `SIOCOUTQ` is 0
+(neither fixes defect 1, the second still lost data above, and the first fails for a slow
+reader).
+
+**For phase 09 A.** The frame types, `FramedStreamDecoder`, the close order, and the guest's
+bounded wait are not specific to forwarding: they are named for a framed byte stream, and
+`ByteRelay` takes a role (`host` or `guest`) rather than knowing about ports. A stream that
+phase 09 A carries between a guest process and a Mac program over a connection the agent
+dials is to use the same frames and the same rule, the host closing first, so that the end
+of a Mac program's output and of a guest program's input arrive intact. `ByteRelay` relays a
+socket on its plain side; a stream whose Mac side is a pipe needs a plain side for pipes,
+without `shutdown(2)`, which phase 09 A adds.
+
+**Tests.** `ForwardingIntegrationTests` checks a 64 MiB response after which the server
+closes (the end within 1 second of the last byte), a 64 MiB response to a client that has
+half-closed (every byte by SHA-256), and `maw --terminate` during a 64 MiB transfer in each
+direction (the Mac client sees an error, never a clean end, and no socket or process is left
+on the Mac). All four failed on `main` with the guest files of `133ae9d`: no end until the
+machine stopped 3.0 seconds after the last byte, 66,863,104 of 67,108,864 bytes, and a clean
+end in both directions at `maw --terminate`.
+

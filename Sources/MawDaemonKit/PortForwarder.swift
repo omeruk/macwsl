@@ -402,7 +402,7 @@
                 openConnections -= 1
                 return
             }
-            let relay = ByteRelay.start(mac, guest) { [weak self] _ in
+            let relay = ByteRelay.start(plain: mac, stream: guest, role: .host) { [weak self] _ in
                 Task { await self?.relayEnded(id) }
             }
             if let relay {

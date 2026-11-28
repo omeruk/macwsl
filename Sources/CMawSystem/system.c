@@ -696,6 +696,18 @@ int maw_socket_option(int fd, int level, int name, int *value) {
     return getsockopt(fd, level, name, value, &length) == 0 ? 0 : errno;
 }
 
+int maw_unsent_bytes(int fd) {
+#if defined(__linux__)
+    // SIOCOUTQ has the value of TIOCOUTQ (linux/sockios.h), which <sys/ioctl.h> defines.
+    int value = 0;
+    return ioctl(fd, TIOCOUTQ, &value) == 0 ? value : -1;
+#else
+    (void)fd;
+    errno = ENOTSUP;
+    return -1;
+#endif
+}
+
 // MARK: Socket diagnostics
 
 #if defined(__linux__)

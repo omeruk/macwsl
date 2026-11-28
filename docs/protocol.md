@@ -65,6 +65,8 @@ as soon as the five header bytes have arrived, before reading the payload.
 | `0x04` | `dialBackNonce` | guest to host | the nonce of a `dialBack` request, exactly 32 bytes; the first frame on a connection the agent dials. A header that declares any other size is a protocol error as soon as it arrives. |
 | `0x05` | `dnsQuery` | guest to host | on the DNS channel: a tag, 4 bytes, big-endian, then one DNS query; 5 to 65,539 bytes in all (`AgentProtocol.maximumDNSFramePayload`). A header that declares another size is a protocol error as soon as it arrives. |
 | `0x06` | `dnsAnswer` | host to guest | on the DNS channel: the tag of a `dnsQuery`, then the response to it, in the same layout and with the same sizes |
+| `0x07` | `streamData` | both | on a framed byte stream ([Framed byte streams](#framed-byte-streams)): 1 to 131,072 bytes of the stream (`AgentProtocol.streamChunkSize`). A header that declares another size is a protocol error as soon as it arrives. |
+| `0x08` | `streamEnd` | both | on a framed byte stream: the end of the sender's direction, with no payload |
 | `0x10` | `stdin` | host to guest | raw bytes for the process's standard input |
 | `0x11` | `stdout` | guest to host | raw bytes from standard output, or from the terminal |
 | `0x12` | `stderr` | guest to host | raw bytes from standard error (pipe mode only) |
@@ -211,6 +213,51 @@ host                                    agent
    `sessionDialBackMissing`. The host never falls back to running the session on a
    connection that it opened.
 
+## Framed byte streams
+
+A framed byte stream is a connection between the host and the agent that carries one byte
+stream in each direction, with the end of each direction inside the stream. Forwarded
+connections use it ([Forwarding](#forwarding)); it is meant for any later connection that
+carries a program's bytes between the Mac and the guest. `FramedStream`,
+`FramedStreamDecoder`, and `ByteRelay` in `Sources/MawProtocol` implement it.
+
+```
+host                                            agent
+ | streamData ... streamData streamEnd ---> |  the host's direction
+ |  <--- streamData ... streamData streamEnd |  the agent's direction
+ | close  ---------------------------------> |  once both streamEnd frames have passed
+```
+
+1. **Frames.** After whatever the connection starts with (for a forwarded connection, the
+   `dialBackNonce` frame), each direction carries only `streamData` frames of 1 to 131,072
+   bytes, then one `streamEnd` frame, and nothing after it. Any other frame, size, or byte
+   after `streamEnd` is a protocol violation, and the receiver resets the connection.
+2. **No half-close.** Neither side calls `shutdown(2)` on the connection while it ends
+   normally; only an abort shuts it down, before the reset of its close. Virtualization.framework
+   does not carry a guest's half-close once data waits for the host, and discards data that
+   the guest has sent when the guest closes after the host has half-closed
+   ([decision record 0023](decisions/0023-localhost-forwarding.md), "Correction of
+   2026-11-28"). The end of a direction is its `streamEnd` frame.
+3. **The host closes first.** The host closes the connection once it has sent its
+   `streamEnd` and received the agent's. The agent never closes first while both ends have
+   not passed, except on an error; once they have, it waits for the host's close.
+4. **The agent's wait is bounded by progress, not by time.** The wait starts once both ends
+   have passed and the agent's `streamEnd` frame is written in full; a write that the host
+   holds back does not count. While it waits, the agent reads its send queue on the
+   connection (`SIOCOUTQ`) about once a second. Only time in which the queue did not shrink
+   counts; after 120 seconds of it (`AgentProtocol.streamCloseWaitLimit`), the agent closes
+   the connection itself, logs one line without addresses or data, and counts it. A host that
+   never closes therefore costs the guest nothing after that. The queue empties while up to
+   about 0.5 MiB can still wait on the Mac's side (Virtualization.framework's buffer, the
+   daemon's, and the Mac's TCP buffers), which the agent cannot see: a reader on the Mac that
+   does not take that rest within 120 seconds after the queue empties, however steadily it
+   reads, finds the connection closed by the agent first. Where the queue cannot be read at
+   all, time alone counts, and the log line says so.
+   Whether it then still receives the rest was not measured ([docs/known-limitations.md](known-limitations.md)).
+5. **An early end is a failure.** A connection that ends before its `streamEnd` frame, or
+   while the agent still sends, has lost data: the receiver resets whatever it relays the
+   stream to, so that the loss shows as an error rather than a complete end.
+
 ## Forwarding
 
 `forwarding` makes a connection the machine's forwarding channel, which carries `localhost`
@@ -225,7 +272,8 @@ host                                            agent
  |  <-------------- control listeners[...] |  at once, then whenever they change
  | control connect{id,port,family,nonce} -> |  connect to the guest's listener;
  |                                          |  then dial port 19801:
- |  <---------------------- dialBackNonce   |      (new connection) nonce, then raw bytes
+ |  <---------------------- dialBackNonce   |      (new connection) nonce, then a
+ |                                          |      framed byte stream
  |  <------------ control connectFailed{id} |  or, when connecting failed
 ```
 
@@ -245,9 +293,11 @@ host                                            agent
 3. **Connections.** For `connect`, the agent connects to `127.0.0.1` (`ipv4`) or `::1` (`ipv6`)
    on `port`, within 2 seconds, then dials the host's port 19801 as for `dialBack` (the highest
    free source port below 1024, within 2 seconds), sends a `dialBackNonce` frame with the
-   request's nonce, and copies raw bytes between the two connections from then on: no frames
-   follow the nonce. The end of one side's stream is carried as `shutdown(SHUT_WR)` on the
-   other; an error resets both. If either step fails, the agent closes what it opened and sends
+   request's nonce, and relays the guest's connection as a framed byte stream from then on
+   ([Framed byte streams](#framed-byte-streams)): `streamData` frames carry the bytes, the end
+   of a TCP stream becomes `streamEnd`, and `streamEnd` becomes `shutdown(SHUT_WR)` on the TCP
+   connection on the other side. An error, invalid stream bytes, or an early end resets both
+   TCP connections. If either step fails, the agent closes what it opened and sends
    `connectFailed` with the request's `id`. It holds at most 256 forwarded connections
    (`AgentProtocol.maximumForwardedConnections`); a `connect` beyond them fails at once.
 4. **The host's port 19801** has a gate of its own, with the same checks as port 19800

@@ -169,6 +169,11 @@ int maw_set_reset_on_close(int fd);
 /// Reads an integer socket option. Returns 0 and sets `*value`, or returns an errno value.
 int maw_socket_option(int fd, int level, int name, int *value);
 
+/// The bytes that a socket has queued and not yet sent (`SIOCOUTQ`), which a framed byte
+/// stream watches while it waits for the host's close. Returns the count, or -1 with errno set
+/// (ENOTSUP outside Linux).
+int maw_unsent_bytes(int fd);
+
 /// Opens a close-on-exec netlink socket for NETLINK_SOCK_DIAG, which lists the guest's sockets
 /// for `localhost` forwarding. Returns the descriptor, or -1 with errno set (ENOSYS outside
 /// Linux).

@@ -500,6 +500,27 @@ from `main`.
     guest"; `DNSIntegrationTests.sharesPort53AndAnswersContainers`.
   - **Phase:** None yet.
 
+- **The guest's close wait has four small imprecisions.**
+  - **Seen:** Found by the fourth code review of pull request 40 and not changed, because none
+    loses data or affects a Mac client, and each needs a guest build:
+    - A host that aborts a finished connection shuts it down before its reset; a guest already
+      waiting for the host's close reads that as the close and reports a complete end. The Mac
+      client still receives the reset.
+    - The limit can start up to one poll interval (1 second) before the guest's `streamEnd`
+      frame is written, because the wait polls for up to a second while the write is still
+      in progress: 1 second of the 120.
+    - The guest's wait for its own `streamEnd` write has no deadline. It ends when the write
+      finishes or fails, or at an abort; a host that half-closed and then stopped reading
+      would hold it, and the connection, without end. The daemon never half-closes the
+      connection, so this needs a host that does not follow docs/protocol.md.
+    - The agent's log line names the configured limit, not the one in force after
+      `ByteRelay.minimumCloseWaitLimit` raised it; they differ only below 100 ms, which only
+      tests use.
+  - **Evidence:** `Sources/MawProtocol/ByteRelay.swift` (`receiveFromStream`, `CloseWait`,
+    `sendingDirectionWroteItsEnd`); `Sources/MawAgentKit/ForwardingChannel.swift`.
+  - **Phase:** None yet; together with the next change to `ByteRelay`, such as phase 09 A's
+    framed byte streams.
+
 - **Ports below 1024 are not forwarded.**
   - **Seen:** A server in a distribution on port 80, 443, or any port below 1024 is not
     reachable as `localhost` on the Mac; the distributions screen names the reason,
@@ -966,6 +987,30 @@ Deliberate choices that a decision record explains and that no phase plans to ch
 - **OpenPGP is not checked at installation.** The catalog pins each image's SHA-256, so maw
   needs no OpenPGP implementation, at the cost of a new release of maw for a new image.
   [Decision record 0012](decisions/0012-ubuntu-image.md), "Trade-offs".
+- **A forwarded connection never relies on vsock's own half-close or close.**
+  Virtualization.framework drops a guest's half-close once data waits for the host, and
+  discards data that the guest has sent when the guest closes after the host has
+  half-closed. Forwarded connections are therefore framed byte streams with the end of each
+  direction inside the stream, which costs a 5-byte header per read of up to 128 KiB (so 5
+  bytes for each small write that arrives on its own) and a parse of that header in the
+  daemon, and the daemon closes each connection first. The agent waits for
+  that close for as long as its send queue moves, and closes the connection itself after
+  120 seconds without progress once its own end is written. The send queue empties while up
+  to about 0.5 MiB can still wait on the Mac's side, which the agent cannot see, so a Mac
+  client that does not take that rest within 120 seconds after the queue empties, however
+  steadily it reads, finds the connection closed by the agent first. Whether it then still receives the rest and the end was not measured: a
+  guest's close without the host's half-close delivered everything while the host was
+  reading. Whatever such a client sends afterwards resets the connection. Progress that the
+  agent could see on the Mac's side would need an acknowledgement from the daemon.
+  [Decision record 0023](decisions/0023-localhost-forwarding.md), "Correction of 2026-11-28".
+- **The daemon stops watching a forwarded connection's stream after the guest's end.** Once
+  the guest's `streamEnd` frame has arrived, the daemon reads nothing more from the agent's
+  connection, so a later reset or close by the agent, for example when the guest server's
+  socket fails while the Mac client still sends, or when the agent's wait for the daemon's
+  close runs out, reaches the Mac client only at its next write or its close. Until then the connection keeps its two threads and its place among the 256.
+  `main` behaved the same way. Watching the stream after the end would need a way to wake
+  that direction when the daemon's own end is written, so that it can close at once.
+  `Sources/MawProtocol/ByteRelay.swift`; found by the code review of pull request 40.
 - **Output from the guest is slower on guest-opened connections.** 1.3 GB of output took a
   median of 2,996 ms with the dial-back against 2,455 ms with host-opened sessions (22 %).
   The cost lies in Virtualization.framework's transport, and no buffer or write size closed

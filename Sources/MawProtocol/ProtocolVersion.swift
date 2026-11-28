@@ -2,9 +2,10 @@
 ///
 /// Both sides send their version first on every connection and close the connection if the
 /// versions differ, so that a host and a guest agent from different builds never misread each
-/// other. Any change to the messages in `ControlMessage` increments the version.
+/// other. Any change to the messages in `ControlMessage`, or to the frames or what a connection
+/// carries after them, increments the version.
 public enum ProtocolVersion {
-    public static let current: UInt32 = 9
+    public static let current: UInt32 = 10
 }
 
 /// Constants of the wire protocol.
@@ -33,6 +34,18 @@ public enum AgentProtocol {
     /// The forwarded connections the agent keeps open at once. A `connect` beyond them fails
     /// with `connectFailed`.
     public static let maximumForwardedConnections = 256
+    /// The largest payload of a `streamData` frame, and the most bytes that each direction of
+    /// a framed byte stream's relay reads at a time (docs/protocol.md, "Framed byte streams").
+    public static let streamChunkSize = 128 << 10
+    /// How long the agent waits for the host to close a framed byte stream once both of its
+    /// directions have ended and its own `streamEnd` frame is written, counting only time in
+    /// which its send queue (`SIOCOUTQ`) did not shrink. A reader on the Mac that is slow
+    /// while that queue holds data is never cut off. The queue empties while up to about
+    /// 0.5 MiB can still wait on the Mac's side, which it does not see: a reader that does not
+    /// take that rest within this long after the queue empties finds the connection closed by
+    /// the agent first, however steadily it reads. A host that never closes the connection
+    /// costs the guest nothing after this long.
+    public static let streamCloseWaitLimit = Duration.seconds(120)
     /// The most listeners one `listeners` message may carry.
     public static let maximumListeners = 1_024
     /// How often the agent lists the guest's listeners while the forwarding channel is open.
