@@ -436,9 +436,11 @@ byte streams"), protocol version 10:
   reaches 0 while up to about 0.5 MiB can still wait on the Mac's side (the framework's
   buffer, the daemon's 128 KiB, and the Mac's TCP buffers), which the agent cannot see; a
   Mac reader that does not take that rest within the limit after the queue empties, however
-  steadily it reads, finds the connection closed by the agent first. The limit is therefore twice the minimum of 60 seconds. Progress that
-  the agent could see on the Mac's side would need an acknowledgement from the daemon, a
-  further protocol change that this correction does not make;
+  steadily it reads, finds the connection closed by the agent first. The owner set a
+  minimum of 60 seconds; 120 seconds, twice that, was chosen to leave such a reader more
+  time, and was not derived from a measurement. Progress that the agent could see on the
+  Mac's side would need an acknowledgement from the daemon, a further protocol change that
+  this correction does not make;
 - a connection that ends before its `streamEnd` frame, or carries invalid frames, resets the
   other connection, so that a loss shows as an error rather than as a complete end.
 

@@ -970,8 +970,9 @@ Deliberate choices that a decision record explains and that no phase plans to ch
   Virtualization.framework drops a guest's half-close once data waits for the host, and
   discards data that the guest has sent when the guest closes after the host has
   half-closed. Forwarded connections are therefore framed byte streams with the end of each
-  direction inside the stream, which costs a 5-byte header per 128 KiB and a parse of that
-  header in the daemon, and the daemon closes each connection first. The agent waits for
+  direction inside the stream, which costs a 5-byte header per read of up to 128 KiB (so 5
+  bytes for each small write that arrives on its own) and a parse of that header in the
+  daemon, and the daemon closes each connection first. The agent waits for
   that close for as long as its send queue moves, and closes the connection itself after
   120 seconds without progress once its own end is written. The send queue empties while up
   to about 0.5 MiB can still wait on the Mac's side, which the agent cannot see, so a Mac
@@ -983,9 +984,9 @@ Deliberate choices that a decision record explains and that no phase plans to ch
   [Decision record 0023](decisions/0023-localhost-forwarding.md), "Correction of 2026-11-28".
 - **The daemon stops watching a forwarded connection's stream after the guest's end.** Once
   the guest's `streamEnd` frame has arrived, the daemon reads nothing more from the agent's
-  connection, so a later reset by the agent, for example when the guest server's socket
-  fails while the Mac client still sends, reaches the Mac client only at its next write or
-  its close. Until then the connection keeps its two threads and its place among the 256.
+  connection, so a later reset or close by the agent, for example when the guest server's
+  socket fails while the Mac client still sends, or when the agent's wait for the daemon's
+  close runs out, reaches the Mac client only at its next write or its close. Until then the connection keeps its two threads and its place among the 256.
   `main` behaved the same way. Watching the stream after the end would need a way to wake
   that direction when the daemon's own end is written, so that it can close at once.
   `Sources/MawProtocol/ByteRelay.swift`; found by the code review of pull request 40.
