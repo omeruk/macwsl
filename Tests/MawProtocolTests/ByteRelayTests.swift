@@ -443,8 +443,11 @@ import Testing
         try #require(
             maw_tcp_connect_loopback(0, UInt16(bigEndian: address.sin_port), 2_000, &connected)
                 == 0)
+        // The listener is nonblocking: wait until the connection is there to accept.
+        var request = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
+        try #require(poll(&request, 1, 5_000) == 1)
         let accepted = accept(listener, nil, nil)
-        try #require(accepted >= 0)
+        try #require(accepted >= 0, "accept: errno \(errno)")
         return (OwnedDescriptor(connected), OwnedDescriptor(accepted))
     }
 
@@ -510,6 +513,68 @@ import Testing
         try writeAll(bytes, to: other.rawValue)
         #expect(ending.wait() == .aborted, "\(name)")
         _ = peer
+    }
+
+    /// How a TCP peer's read ends: 0 for a clean end, or the errno value of a failure.
+    static func readEnding(_ descriptor: OwnedDescriptor) -> Int32? {
+        let deadline = ContinuousClock.now + endDeadline
+        var buffer = [UInt8](repeating: 0, count: 65536)
+        while ContinuousClock.now < deadline {
+            var request = pollfd(fd: descriptor.rawValue, events: Int16(POLLIN), revents: 0)
+            guard poll(&request, 1, 100) > 0 else { continue }
+            let count = read(descriptor.rawValue, &buffer, buffer.count)
+            if count == 0 { return 0 }
+            if count < 0 && errno != EINTR && errno != EAGAIN { return errno }
+        }
+        return nil
+    }
+
+    /// An abort resets the plain socket's TCP peer without a clean end first, as a Mac client
+    /// sees it when `maw --terminate` stops forwarding.
+    @Test func abortResetsThePlainPeerWithoutACleanEnd() throws {
+        let (client, plain) = try Self.tcpPair()
+        let (stream, other) = try Self.pair()
+        let ending = Ending()
+        let relay = try #require(
+            ByteRelay.start(plain: plain, stream: stream, role: .host, finished: ending.report))
+        try writeAll(Self.dataFrame(Array("partial".utf8)), to: other.rawValue)
+        usleep(100_000)
+        relay.abort()
+        #expect(ending.wait() == .aborted)
+        var buffer = [UInt8](repeating: 0, count: 7)
+        _ = read(client.rawValue, &buffer, 7)
+        #expect(Self.readEnding(client) == ECONNRESET)
+    }
+
+    /// A stream that ends before its `streamEnd` frame resets the plain socket's TCP peer.
+    @Test func anEarlyEndResetsThePlainPeer() throws {
+        let (client, plain) = try Self.tcpPair()
+        let (stream, other) = try Self.pair()
+        let ending = Ending()
+        try #require(
+            ByteRelay.start(plain: plain, stream: stream, role: .host, finished: ending.report)
+                != nil)
+        other.close()
+        #expect(ending.wait() == .aborted)
+        #expect(Self.readEnding(client) == ECONNRESET)
+    }
+
+    /// A plain peer that never reads cannot hold an aborted relay: the blocked write gives up.
+    @Test func abortEndsARelayWhosePeerDoesNotRead() throws {
+        let (client, plain) = try Self.tcpPair()
+        let (stream, other) = try Self.pair()
+        let ending = Ending()
+        let relay = try #require(
+            ByteRelay.start(plain: plain, stream: stream, role: .host, finished: ending.report))
+        let chunk = Self.dataFrame([UInt8](repeating: 7, count: 65536))
+        try #require(
+            startDetachedThread {
+                for _ in 0..<256 { if (try? writeAll(chunk, to: other.rawValue)) == nil { break } }
+            })
+        usleep(300_000)
+        relay.abort()
+        #expect(ending.wait() == .aborted)
+        _ = client
     }
 
     /// Frames that arrive one byte at a time are carried intact.

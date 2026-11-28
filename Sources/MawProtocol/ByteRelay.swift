@@ -125,15 +125,22 @@ public final class ByteRelay: @unchecked Sendable {
     }
 
     /// Ends both directions at once and resets both connections.
+    ///
+    /// Reading ends at once on both sockets. The plain socket's sending side is not shut down:
+    /// that would send its peer a clean end of stream before the reset of the close, and a
+    /// Mac client would read that end first. Both directions see `aborted` instead and stop
+    /// writing within one poll interval.
     public func abort() {
         lock.withLock {
             aborted = true
             guard !closing else { return }
-            for descriptor in [plain, stream] {
-                _ = shutdown(descriptor.rawValue, Int32(SHUT_RDWR))
-            }
+            _ = maw_set_reset_on_close(plain.rawValue)
+            _ = shutdown(plain.rawValue, Int32(SHUT_RD))
+            _ = shutdown(stream.rawValue, Int32(SHUT_RDWR))
         }
     }
+
+    private var isAborted: Bool { lock.withLock { aborted } }
 
     // MARK: Plain to stream
 
@@ -151,6 +158,8 @@ public final class ByteRelay: @unchecked Sendable {
                     break
                 }
             } else if count == 0 {
+                // After `abort()`, the plain socket reads as ended; that end is not its peer's.
+                if isAborted { break }
                 lock.withLock { sendingEnd = true }
                 let sent = FramedStream.endFrame.withUnsafeBytes {
                     sendAll($0.baseAddress!, $0.count, to: stream)
@@ -283,6 +292,8 @@ public final class ByteRelay: @unchecked Sendable {
             if written > 0 {
                 offset += written
             } else if written < 0 && Self.mustWait(errno) {
+                // A peer that does not read would otherwise hold an aborted relay forever.
+                if isAborted { return false }
                 Self.wait(for: destination, Int32(POLLOUT))
             } else {
                 return false
