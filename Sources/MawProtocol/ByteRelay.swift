@@ -73,6 +73,10 @@ public final class ByteRelay: @unchecked Sendable {
     /// Set, under `lock`, once the plain socket's end is read, before the `streamEnd` frame is
     /// written: from then on, the host may close the connection at any moment.
     private var sendingEnd = false
+    /// Set, under `lock`, once the `streamEnd` frame is written in full: the guest's wait for
+    /// the host's close starts only then, so that a write that the host holds back is never
+    /// taken for a host that does not close.
+    private var endWritten = false
     /// Set, under `lock`, before both descriptors are closed: `abort()` must not shut down a
     /// number that may already belong to another socket.
     private var closing = false
@@ -151,7 +155,11 @@ public final class ByteRelay: @unchecked Sendable {
                 let sent = FramedStream.endFrame.withUnsafeBytes {
                     sendAll($0.baseAddress!, $0.count, to: stream)
                 }
-                if !sent { abort() }
+                if sent {
+                    lock.withLock { endWritten = true }
+                } else {
+                    abort()
+                }
                 break
             } else if Self.mustWait(errno) {
                 Self.wait(for: plain, Int32(POLLIN))
@@ -176,6 +184,9 @@ public final class ByteRelay: @unchecked Sendable {
             let count = read(stream.rawValue, buffer, bufferSize)
             if count > 0 {
                 var offset = 0
+                // The host stops reading at the guest's end, but first decodes the rest of the
+                // read that carried it, so that a byte after the end resets both connections.
+                var hostReachedEnd = false
                 do {
                     while let event = try decoder.next(
                         UnsafeRawBufferPointer(start: buffer, count: count), from: &offset)
@@ -189,17 +200,21 @@ public final class ByteRelay: @unchecked Sendable {
                             }
                         case .end:
                             _ = shutdown(plain.rawValue, Int32(SHUT_WR))
-                            guard case .guest(let limit) = role else { break receiving }
-                            closeWait = CloseWait(limit: limit)
+                            if case .guest(let limit) = role {
+                                closeWait = CloseWait(limit: limit)
+                            } else {
+                                hostReachedEnd = true
+                            }
                         }
                     }
                 } catch {
                     abort()
                     break
                 }
+                if hostReachedEnd { break }
             } else if count < 0 && Self.mustWait(errno) {
                 if var wait = closeWait {
-                    let expired = wait.waitForClose(of: stream, sendingEnd: hasSentEnd)
+                    let expired = wait.waitForClose(of: stream, endWritten: hasWrittenEnd)
                     closeWait = wait
                     if expired {
                         lock.withLock { unacknowledged = true }
@@ -208,10 +223,14 @@ public final class ByteRelay: @unchecked Sendable {
                 } else {
                     Self.wait(for: stream, Int32(POLLIN))
                 }
-            } else {
+            } else if count == 0 {
                 // The connection ended: the host's close, which the guest waits for once both
                 // directions have ended, or else an early end, which loses data.
                 if closeWait == nil || !hasSentEnd { abort() }
+                break
+            } else {
+                // A reset or another failure is never the host's close.
+                abort()
                 break
             }
         }
@@ -219,6 +238,7 @@ public final class ByteRelay: @unchecked Sendable {
     }
 
     private var hasSentEnd: Bool { lock.withLock { sendingEnd } }
+    private var hasWrittenEnd: Bool { lock.withLock { endWritten } }
 
     /// The guest's wait for the host's close, which counts only time without progress.
     private struct CloseWait {
@@ -229,12 +249,12 @@ public final class ByteRelay: @unchecked Sendable {
         init(limit: Duration) { self.limit = limit }
 
         /// Waits up to one poll interval for the connection's end; returns whether the limit
-        /// has passed without progress. Before the guest has sent its own end, its sending
-        /// direction is still writing, which counts as progress.
-        mutating func waitForClose(of stream: OwnedDescriptor, sendingEnd: Bool) -> Bool {
+        /// has passed without progress. Until the guest's own `streamEnd` frame is written in
+        /// full, its sending direction is still writing, and the limit does not run.
+        mutating func waitForClose(of stream: OwnedDescriptor, endWritten: Bool) -> Bool {
             let now = ContinuousClock.now
             let queued = maw_unsent_bytes(stream.rawValue)
-            if !sendingEnd || (queued >= 0 && queued < unsent) {
+            if !endWritten || (queued >= 0 && queued < unsent) {
                 lastProgress = now
             }
             if queued >= 0 { unsent = queued }

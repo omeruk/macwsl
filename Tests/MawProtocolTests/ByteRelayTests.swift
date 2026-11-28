@@ -385,6 +385,87 @@ import Testing
         #expect(ending.wait() == .completed)
     }
 
+    /// The wait limit runs only once the guest's `streamEnd` frame is written in full: a host
+    /// that holds the guest's last writes back for longer than the limit, as a slow reader on
+    /// the Mac does, is not taken for a host that does not close.
+    @Test func guestWaitLimitStartsOnlyOnceItsEndIsWritten() throws {
+        let (plain, server) = try Self.pair()
+        let (host, stream) = try Self.pair()
+        let ending = Ending()
+        try #require(
+            ByteRelay.start(
+                plain: plain, stream: stream, role: .guest(closeWaitLimit: .milliseconds(200)),
+                bufferSize: 4096, finished: ending.report) != nil)
+        try writeAll(FramedStream.endFrame, to: host.rawValue)
+        let response = (0..<(2 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 3) }
+        try #require(
+            startDetachedThread {
+                try? writeAll(response, to: server.rawValue)
+                server.close()
+            })
+        // The host reads nothing for several times the limit.
+        usleep(1_500_000)
+        #expect(ending.now == nil)
+        let frames = try #require(try Self.readFramesToEnd(host))
+        #expect(frames.last == Frame(type: .streamEnd))
+        #expect(frames.dropLast().flatMap(\.payload) == response)
+        host.close()
+        #expect(ending.wait() == .completed)
+    }
+
+    /// The host decodes the rest of the read that carries the guest's end: a byte after it
+    /// resets both connections instead of ending them cleanly.
+    @Test func hostRefusesBytesAfterTheGuestsEnd() throws {
+        let (client, plain) = try Self.pair()
+        let (stream, guest) = try Self.pair()
+        let ending = Ending()
+        try #require(
+            ByteRelay.start(plain: plain, stream: stream, role: .host, finished: ending.report)
+                != nil)
+        try writeAll(Self.dataFrame([1]) + FramedStream.endFrame + [0], to: guest.rawValue)
+        #expect(ending.wait() == .aborted)
+        _ = client
+    }
+
+    /// A connected loopback TCP pair, which, unlike a socket pair, can be reset.
+    static func tcpPair() throws -> (OwnedDescriptor, OwnedDescriptor) {
+        var listener: Int32 = -1
+        try #require(maw_tcp_listen_loopback(0, 0, 4, 0, &listener) == 0)
+        defer { close(listener) }
+        var address = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(listener, $0, &length)
+            }
+        }
+        var connected: Int32 = -1
+        try #require(
+            maw_tcp_connect_loopback(0, UInt16(bigEndian: address.sin_port), 2_000, &connected)
+                == 0)
+        let accepted = accept(listener, nil, nil)
+        try #require(accepted >= 0)
+        return (OwnedDescriptor(connected), OwnedDescriptor(accepted))
+    }
+
+    /// Once both ends have passed, a reset of the stream's connection is a failure, not the
+    /// host's close.
+    @Test func guestTakesAResetForAFailureNotTheHostsClose() throws {
+        let (plain, server) = try Self.pair()
+        let (host, stream) = try Self.tcpPair()
+        let ending = Ending()
+        try #require(
+            ByteRelay.start(
+                plain: plain, stream: stream, role: .guest(closeWaitLimit: .seconds(60)),
+                finished: ending.report) != nil)
+        try writeAll(FramedStream.endFrame, to: host.rawValue)
+        server.close()
+        #expect(try Self.readFramesToEnd(host) == [Frame(type: .streamEnd)])
+        _ = maw_set_reset_on_close(host.rawValue)
+        host.close()
+        #expect(ending.wait() == .aborted)
+    }
+
     // MARK: Failures
 
     /// The stream's connection ending before its `streamEnd` frame loses data: both relays
