@@ -560,14 +560,15 @@ Since phase 08, each TCP port on which a running distribution listens, on `0.0.0
   - **Connection bytes** travel as a framed byte stream (docs/protocol.md, "Framed byte
     streams"). The daemon parses only the five-byte header of each frame from the guest, in
     place, without copying or interpreting the payload: a `streamData` frame of 1 to
-    131,072 bytes or one empty `streamEnd` frame, and nothing after it. Any other type,
-    size, or byte resets both connections. At most 128 KiB is read at a time in each
+    131,072 bytes or one empty `streamEnd` frame, and nothing after it. Any other type or
+    size, or a byte after `streamEnd` in the read that carried it, resets both connections;
+    the daemon reads nothing more after the guest's `streamEnd`. At most 128 KiB is read at a time in each
     direction, and the reading side waits while the writing side cannot write, so nothing is
     queued beyond that. At most 256 connections per distribution are open or waiting.
   - **The close.** The daemon closes the agent's connection; the agent waits for that close
     for as long as its send queue moves, and closes it itself after 120 seconds without
-    progress, so that a daemon that never closes leaves no connection or memory behind in
-    the guest. A connection that ends before its `streamEnd` frame resets the Mac's
+    progress once its own end is written, so that a daemon that never closes leaves no
+    connection or memory behind in the guest. A connection that ends before its `streamEnd` frame resets the Mac's
     connection, so that a Mac client never mistakes a truncated response for a complete one.
   - **`connectFailed` reasons**: at most 256 bytes, never logged or shown.
   - **`connect`** goes from the daemon to the guest only, and names a port that the guest

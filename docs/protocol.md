@@ -240,12 +240,17 @@ host                                            agent
 3. **The host closes first.** The host closes the connection once it has sent its
    `streamEnd` and received the agent's. The agent never closes first while both ends have
    not passed, except on an error; once they have, it waits for the host's close.
-4. **The agent's wait is bounded by progress, not by time.** While it waits for the host's
-   close, the agent reads its send queue on the connection (`SIOCOUTQ`) about once a second.
-   Only time in which the queue did not shrink counts; after 120 seconds of it
-   (`AgentProtocol.streamCloseWaitLimit`), the agent closes the connection itself, logs one
-   line without addresses or data, and counts it. A slow reader on the Mac therefore never
-   cuts a transfer short, and a host that never closes costs the guest nothing after that.
+4. **The agent's wait is bounded by progress, not by time.** The wait starts once both ends
+   have passed and the agent's `streamEnd` frame is written in full; a write that the host
+   holds back does not count. While it waits, the agent reads its send queue on the
+   connection (`SIOCOUTQ`) about once a second. Only time in which the queue did not shrink
+   counts; after 120 seconds of it (`AgentProtocol.streamCloseWaitLimit`), the agent closes
+   the connection itself, logs one line without addresses or data, and counts it. A host that
+   never closes therefore costs the guest nothing after that. The queue empties while up to
+   about 0.5 MiB can still wait on the Mac's side (Virtualization.framework's buffer, the
+   daemon's, and the Mac's TCP buffers), which the agent cannot see: a reader on the Mac that
+   reads nothing for 120 seconds after that finds the connection closed by the agent first.
+   Whether it then still receives the rest was not measured ([docs/known-limitations.md](known-limitations.md)).
 5. **An early end is a failure.** A connection that ends before its `streamEnd` frame, or
    while the agent still sends, has lost data: the receiver resets whatever it relays the
    stream to, so that the loss shows as an error rather than a complete end.

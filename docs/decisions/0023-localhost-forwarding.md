@@ -428,13 +428,17 @@ byte streams"), protocol version 10:
   connection's own half-close is never used;
 - the daemon closes the connection once both ends have passed; the agent never closes first,
   except on an error;
-- the agent waits for that close for as long as its send queue on the connection shrinks, and
-  closes it itself after 120 seconds without progress, with one log line and a count, so
-  that a daemon that never closes leaves nothing behind in the guest. Time without progress,
-  not total time, counts, so that a slow reader on the Mac never cuts a transfer short.
-  `SIOCOUTQ` reaches 0 while up to about 0.5 MiB can still wait on the Mac's side (the
-  framework's buffer, the daemon's 128 KiB, and the Mac's TCP buffers), so the limit is twice
-  the 60 seconds that a stalled reader would otherwise have;
+- the agent waits for that close, once its own `streamEnd` frame is written in full, for as
+  long as its send queue on the connection shrinks, and closes it itself after 120 seconds
+  without progress, with one log line and a count, so that a daemon that never closes leaves
+  nothing behind in the guest. Time without progress, not total time, counts, so that a Mac
+  reader that is slow while the guest's queue holds data is never cut off. `SIOCOUTQ`
+  reaches 0 while up to about 0.5 MiB can still wait on the Mac's side (the framework's
+  buffer, the daemon's 128 KiB, and the Mac's TCP buffers), which the agent cannot see; a
+  Mac reader that reads nothing for the whole limit after that finds the connection closed
+  by the agent first. The limit is therefore twice the minimum of 60 seconds. Progress that
+  the agent could see on the Mac's side would need an acknowledgement from the daemon, a
+  further protocol change that this correction does not make;
 - a connection that ends before its `streamEnd` frame, or carries invalid frames, resets the
   other connection, so that a loss shows as an error rather than as a complete end.
 
