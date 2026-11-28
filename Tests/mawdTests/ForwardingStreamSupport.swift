@@ -161,7 +161,9 @@ final class MacStreamClient: @unchecked Sendable {
         var lastByte = ContinuousClock.now
         while !done() {
             var request = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-            let milliseconds = Int32(silence.components.seconds * 1_000)
+            let milliseconds = Int32(
+                silence.components.seconds * 1_000
+                    + silence.components.attoseconds / 1_000_000_000_000_000)
             guard poll(&request, 1, milliseconds) > 0 else { return .silence(silence) }
             let count = Darwin.read(descriptor, &buffer, buffer.count)
             if count == 0 { return .end(afterLastByte: ContinuousClock.now - lastByte) }

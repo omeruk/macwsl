@@ -52,8 +52,9 @@ public final class ByteRelay: @unchecked Sendable {
         /// `abort()` reset both connections.
         case aborted
         /// The guest waited `closeWaitLimit` without progress for the host's close, and closed
-        /// the connection itself.
-        case closedWithoutAcknowledgement
+        /// the connection itself. `sendQueueVisible` is false when its send queue could never
+        /// be read (`SIOCOUTQ`), so that only time counted.
+        case closedWithoutAcknowledgement(sendQueueVisible: Bool)
     }
 
     /// The bytes each direction reads and writes at a time, and the most it accepts.
@@ -69,7 +70,7 @@ public final class ByteRelay: @unchecked Sendable {
     private let finished: @Sendable (Ending) -> Void
     private var running = 2
     private var aborted = false
-    private var unacknowledged = false
+    private var unacknowledged: Ending?
     /// Set, under `lock`, once the plain socket's end is read, before the `streamEnd` frame is
     /// written: from then on, the host may close the connection at any moment.
     private var sendingEnd = false
@@ -226,7 +227,9 @@ public final class ByteRelay: @unchecked Sendable {
                     let expired = wait.waitForClose(of: stream, endWritten: hasWrittenEnd)
                     closeWait = wait
                     if expired {
-                        lock.withLock { unacknowledged = true }
+                        let ending = Ending.closedWithoutAcknowledgement(
+                            sendQueueVisible: wait.sendQueueVisible)
+                        lock.withLock { unacknowledged = ending }
                         break
                     }
                 } else {
@@ -234,8 +237,12 @@ public final class ByteRelay: @unchecked Sendable {
                 }
             } else if count == 0 {
                 // The connection ended: the host's close, which the guest waits for once both
-                // directions have ended, or else an early end, which loses data.
-                if closeWait == nil || !hasSentEnd { abort() }
+                // directions have ended, or else an early end, which loses data. The host may
+                // close as soon as the guest's end arrives, before the sending direction has
+                // recorded that the write finished, so that direction decides.
+                if closeWait == nil || !hasSentEnd || !sendingDirectionWroteItsEnd() {
+                    abort()
+                }
                 break
             } else {
                 // A reset or another failure is never the host's close.
@@ -247,6 +254,20 @@ public final class ByteRelay: @unchecked Sendable {
     }
 
     private var hasSentEnd: Bool { lock.withLock { sendingEnd } }
+
+    /// Waits until the sending direction has written its `streamEnd` frame in full, or failed:
+    /// a host that closed before receiving it makes the write fail at once. Returns whether
+    /// the frame was written.
+    private func sendingDirectionWroteItsEnd() -> Bool {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while ContinuousClock.now < deadline {
+            let (written, failed) = lock.withLock { (endWritten, aborted) }
+            if written { return true }
+            if failed { return false }
+            usleep(1_000)
+        }
+        return false
+    }
     private var hasWrittenEnd: Bool { lock.withLock { endWritten } }
 
     /// The guest's wait for the host's close, which counts only time without progress.
@@ -254,6 +275,8 @@ public final class ByteRelay: @unchecked Sendable {
         let limit: Duration
         private var lastProgress = ContinuousClock.now
         private var unsent = Int32.max
+        /// Whether `SIOCOUTQ` could be read at least once.
+        private(set) var sendQueueVisible = false
 
         init(limit: Duration) { self.limit = limit }
 
@@ -266,7 +289,10 @@ public final class ByteRelay: @unchecked Sendable {
             if !endWritten || (queued >= 0 && queued < unsent) {
                 lastProgress = now
             }
-            if queued >= 0 { unsent = queued }
+            if queued >= 0 {
+                unsent = queued
+                sendQueueVisible = true
+            }
             let left = limit - (now - lastProgress)
             guard left > .zero else { return true }
             let milliseconds =
@@ -323,8 +349,7 @@ public final class ByteRelay: @unchecked Sendable {
         let (last, ending) = lock.withLock { () -> (Bool, Ending) in
             running -= 1
             closing = running == 0
-            let ending: Ending =
-                aborted ? .aborted : unacknowledged ? .closedWithoutAcknowledgement : .completed
+            let ending: Ending = aborted ? .aborted : unacknowledged ?? .completed
             return (running == 0, ending)
         }
         guard last else { return }

@@ -254,7 +254,9 @@ final class ForwardingChannel: @unchecked Sendable {
             plain: listener, stream: host,
             role: .guest(closeWaitLimit: environment.streamCloseWaitLimit)
         ) { [self] ending in
-            if ending == .closedWithoutAcknowledgement { closedWithoutAcknowledgement() }
+            if case .closedWithoutAcknowledgement(let visible) = ending {
+                closedWithoutAcknowledgement(sendQueueVisible: visible)
+            }
             connectionEnded()
         }
         if relay == nil {
@@ -264,13 +266,16 @@ final class ForwardingChannel: @unchecked Sendable {
 
     /// Counts and logs a forwarded connection that the host did not close. The line names no
     /// address, port, or data.
-    private func closedWithoutAcknowledgement() {
+    private func closedWithoutAcknowledgement(sendQueueVisible: Bool) {
         let count = lock.withLock {
             unacknowledgedCloses += 1
             return unacknowledgedCloses
         }
+        let progress =
+            sendQueueVisible
+            ? "without progress" : "(its send queue could not be read, so time alone counted)"
         logger.warning(
-            "closed a forwarded connection that the host did not close within \(environment.streamCloseWaitLimit) without progress (\(count) on this channel)"
+            "closed a forwarded connection that the host did not close within \(environment.streamCloseWaitLimit) \(progress) (\(count) on this channel)"
         )
     }
 

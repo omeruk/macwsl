@@ -355,7 +355,12 @@ import Testing
         server.close()
         #expect(try Self.readFramesToEnd(host) == [Frame(type: .streamEnd)])
         let started = ContinuousClock.now
-        #expect(ending.wait() == .closedWithoutAcknowledgement)
+        let ended = ending.wait()
+        // The send queue of a socket pair can be read on Linux only.
+        guard case .closedWithoutAcknowledgement = ended else {
+            Issue.record("the relay ended \(ended.map { "\($0)" } ?? "never")")
+            return
+        }
         #expect(ContinuousClock.now - started < .seconds(5))
         #expect(Self.readToEnd(host) == [])
     }
